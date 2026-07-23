@@ -4,7 +4,7 @@ import csv
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Iterator, Optional, TextIO
 
 from openpyxl import load_workbook
 
@@ -22,7 +22,7 @@ ALIASES = {
 }
 
 
-@dataclass
+@dataclass(slots=True)
 class Point:
     plate: str
     time: datetime
@@ -86,6 +86,30 @@ def is_header_row(row: Iterable[Any]) -> bool:
     return all(key in columns for key in ("plate", "time", "lat", "lon"))
 
 
+def row_to_point(row: list[Any], columns: dict[str, int]) -> Optional[Point]:
+    if not row or len(row) <= max(columns.values()):
+        return None
+
+    plate = str(row[columns["plate"]] or "").strip()
+    timestamp = as_datetime(row[columns["time"]])
+    lat = as_float(row[columns["lat"]])
+    lon = as_float(row[columns["lon"]])
+    if not plate or timestamp is None or lat is None or lon is None:
+        return None
+
+    return Point(
+        plate=plate,
+        time=timestamp,
+        lat=lat,
+        lon=lon,
+        odometer=as_float(row[columns["odometer"]]) if "odometer" in columns else None,
+        source_distance=as_float(row[columns["distance"]]) if "distance" in columns else None,
+        speed=as_float(row[columns["speed"]]) if "speed" in columns else None,
+        region=str(row[columns["region"]] or "").strip() if "region" in columns else "",
+        address=str(row[columns["address"]] or "").strip() if "address" in columns else "",
+    )
+
+
 def rows_to_points(headers: list[Any], rows: Iterable[Iterable[Any]]) -> tuple[list[Point], int]:
     columns = detect_columns(headers)
     missing = [key for key in ("plate", "time", "lat", "lon") if key not in columns]
@@ -95,65 +119,89 @@ def rows_to_points(headers: list[Any], rows: Iterable[Iterable[Any]]) -> tuple[l
     points: list[Point] = []
     skipped = 0
     for source_row in rows:
-        row = list(source_row)
-        if len(row) <= max(columns.values()):
+        point = row_to_point(list(source_row), columns)
+        if point is None:
             skipped += 1
-            continue
-        plate = str(row[columns["plate"]] or "").strip()
-        timestamp = as_datetime(row[columns["time"]])
-        lat = as_float(row[columns["lat"]])
-        lon = as_float(row[columns["lon"]])
-        if not plate or timestamp is None or lat is None or lon is None:
-            skipped += 1
-            continue
-        points.append(
-            Point(
-                plate=plate,
-                time=timestamp,
-                lat=lat,
-                lon=lon,
-                odometer=as_float(row[columns["odometer"]]) if "odometer" in columns else None,
-                source_distance=as_float(row[columns["distance"]]) if "distance" in columns else None,
-                speed=as_float(row[columns["speed"]]) if "speed" in columns else None,
-                region=str(row[columns["region"]] or "").strip() if "region" in columns else "",
-                address=str(row[columns["address"]] or "").strip() if "address" in columns else "",
-            )
-        )
+        else:
+            points.append(point)
     return points, skipped
 
 
 def load_excel(path: Path) -> tuple[list[Point], dict[str, int]]:
     workbook = load_workbook(path, read_only=True, data_only=True)
     sheet = workbook.worksheets[0]
-    rows = list(sheet.iter_rows(values_only=True))
-    workbook.close()
-    header_index = next((index for index, row in enumerate(rows[:50]) if is_header_row(row)), None)
-    if header_index is None:
+    rows = sheet.iter_rows(values_only=True)
+
+    headers: Optional[list[Any]] = None
+    for index, row in enumerate(rows):
+        if index >= 100:
+            break
+        candidate = list(row)
+        if is_header_row(candidate):
+            headers = candidate
+            break
+
+    if headers is None:
+        workbook.close()
         raise ValueError("Не найдена строка заголовков в Excel")
-    points, skipped = rows_to_points(list(rows[header_index]), rows[header_index + 1 :])
+
+    points, skipped = rows_to_points(headers, rows)
+    workbook.close()
     return points, {"loaded": len(points), "skipped": skipped}
 
 
-def read_csv_text(path: Path) -> str:
+def detect_csv_encoding(path: Path) -> str:
+    sample_size = 1024 * 1024
+    raw = path.open("rb").read(sample_size)
     for encoding in ("utf-8-sig", "utf-8", "cp1251", "cp1254"):
         try:
-            return path.read_text(encoding=encoding)
+            raw.decode(encoding)
+            return encoding
         except UnicodeDecodeError:
             continue
     raise ValueError("Не удалось определить кодировку CSV")
 
 
-def load_csv(path: Path) -> tuple[list[Point], dict[str, int]]:
-    text = read_csv_text(path)
+def detect_csv_delimiter(path: Path, encoding: str) -> str:
+    with path.open("r", encoding=encoding, newline="") as handle:
+        sample = handle.read(100_000)
     try:
-        delimiter = csv.Sniffer().sniff(text[:10000], delimiters=";,\t|").delimiter
+        return csv.Sniffer().sniff(sample, delimiters=";,\t|").delimiter
     except csv.Error:
-        delimiter = ";"
-    rows = list(csv.reader(text.splitlines(), delimiter=delimiter))
-    header_index = next((index for index, row in enumerate(rows[:100]) if is_header_row(row)), None)
-    if header_index is None:
+        return ";"
+
+
+def load_csv(path: Path) -> tuple[list[Point], dict[str, int]]:
+    encoding = detect_csv_encoding(path)
+    delimiter = detect_csv_delimiter(path, encoding)
+
+    points: list[Point] = []
+    skipped = 0
+    columns: Optional[dict[str, int]] = None
+
+    # CSV читается построчно. Файл целиком и список всех исходных строк в RAM не загружаются.
+    with path.open("r", encoding=encoding, newline="", errors="strict") as handle:
+        reader = csv.reader(handle, delimiter=delimiter)
+        for row_number, row in enumerate(reader, start=1):
+            if columns is None:
+                if row_number <= 200 and is_header_row(row):
+                    columns = detect_columns(row)
+                elif row_number > 200:
+                    raise ValueError("Не найдена строка заголовков в первых 200 строках CSV")
+                continue
+
+            point = row_to_point(row, columns)
+            if point is None:
+                skipped += 1
+            else:
+                points.append(point)
+
+            if len(points) % 500_000 == 0:
+                print(f"Загружено точек: {len(points):,}".replace(",", " "))
+
+    if columns is None:
         raise ValueError("Не найдена строка заголовков в CSV")
-    points, skipped = rows_to_points(rows[header_index], rows[header_index + 1 :])
+
     return points, {"loaded": len(points), "skipped": skipped}
 
 
