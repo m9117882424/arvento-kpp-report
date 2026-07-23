@@ -10,6 +10,7 @@ from tkinter import Tk, filedialog
 
 from arvento_reports import save_daily_book, save_summary_book
 from geozone_registry import load_registry
+from roster_registry import discover_rosters, enrich_daily_with_rosters
 from sqlite_analysis import analyze_sqlite
 from sqlite_store import import_source_to_sqlite
 
@@ -53,6 +54,14 @@ def main() -> None:
 
         print("Анализ данных по датам и автомобилям...")
         daily, stops = analyze_sqlite(db_path, registry)
+
+        print("Поиск разнарядок в папке исходного файла...")
+        rosters = discover_rosters(source.parent, source)
+        if rosters:
+            enrich_daily_with_rosters(daily, rosters)
+        else:
+            print("  разнарядки не найдены — поля водитель, грейд, должность и дирекция останутся пустыми")
+            enrich_daily_with_rosters(daily, [])
 
         daily_path = source.with_name(source.stem + "_по_дням.xlsx")
         summary_path = source.with_name(source.stem + "_итоговая_сводка.xlsx")
