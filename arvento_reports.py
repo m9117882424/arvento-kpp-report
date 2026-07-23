@@ -12,6 +12,13 @@ from openpyxl.utils import get_column_letter
 
 SUMMARY_HEADERS = [
     "Госномер",
+    "Водитель",
+    "Грейд",
+    "Должность",
+    "Дирекция",
+    "Дата разнарядки",
+    "Первый въезд на площадку",
+    "Последний выезд с площадки",
     "Начало периода",
     "Конец периода",
     "Состояние в начале",
@@ -35,6 +42,13 @@ SUMMARY_HEADERS = [
 def summary_row(item: dict[str, Any]) -> list[Any]:
     return [
         item["plate"],
+        item.get("driver", ""),
+        item.get("grade", ""),
+        item.get("position", ""),
+        item.get("directorate", ""),
+        item.get("roster_date"),
+        item.get("first_entry_time"),
+        item.get("last_exit_time"),
         item["first_time"],
         item["last_time"],
         item["start_state"],
@@ -69,23 +83,23 @@ def style_sheet(sheet) -> None:
             max(
                 len(str(sheet.cell(row, column).value or ""))
                 for row in range(1, min(sheet.max_row, 300) + 1)
-            )
-            + 2,
-            32,
+            ) + 2,
+            36,
         )
         sheet.column_dimensions[get_column_letter(column)].width = max(width, 11)
 
 
-def format_summary_sheet(sheet) -> None:
+def format_summary_sheet(sheet, offset: int = 0) -> None:
     for row in sheet.iter_rows(min_row=2):
-        row[1].number_format = "dd.mm.yyyy hh:mm:ss"
-        row[2].number_format = "dd.mm.yyyy hh:mm:ss"
-        for index in range(7, 10):
-            row[index].number_format = "0.000"
-        for index in (10, 11, 16, 17):
-            row[index].number_format = "0.0%"
-        for index in range(12, 15):
-            row[index].number_format = "[h]:mm:ss"
+        row[offset + 5].number_format = "dd.mm.yyyy"
+        for index in (6, 7, 8, 9):
+            row[offset + index].number_format = "dd.mm.yyyy hh:mm:ss"
+        for index in range(14, 17):
+            row[offset + index].number_format = "0.000"
+        for index in (17, 18, 23, 24):
+            row[offset + index].number_format = "0.0%"
+        for index in range(19, 22):
+            row[offset + index].number_format = "[h]:mm:ss"
     style_sheet(sheet)
 
 
@@ -103,10 +117,23 @@ def aggregate_summaries(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         stopped_seconds = sum(row["stopped_seconds"] for row in rows)
         first = min(rows, key=lambda row: row["first_time"])
         last = max(rows, key=lambda row: row["last_time"])
+        latest_roster_row = max(
+            rows,
+            key=lambda row: (row.get("roster_date") or date.min, row["last_time"]),
+        )
+        entry_times = [row.get("first_entry_time") for row in rows if row.get("first_entry_time")]
+        exit_times = [row.get("last_exit_time") for row in rows if row.get("last_exit_time")]
 
         result.append(
             {
                 "plate": plate,
+                "driver": latest_roster_row.get("driver", ""),
+                "grade": latest_roster_row.get("grade", ""),
+                "position": latest_roster_row.get("position", ""),
+                "directorate": latest_roster_row.get("directorate", ""),
+                "roster_date": latest_roster_row.get("roster_date"),
+                "first_entry_time": min(entry_times) if entry_times else None,
+                "last_exit_time": max(exit_times) if exit_times else None,
                 "first_time": first["first_time"],
                 "last_time": last["last_time"],
                 "start_state": first["start_state"],
@@ -163,48 +190,19 @@ def save_summary_book(
             by_day.append([day] + summary_row(item))
     for row in by_day.iter_rows(min_row=2):
         row[0].number_format = "dd.mm.yyyy"
-        row[2].number_format = "dd.mm.yyyy hh:mm:ss"
-        row[3].number_format = "dd.mm.yyyy hh:mm:ss"
-        for index in range(8, 11):
-            row[index].number_format = "0.000"
-        for index in (11, 12, 17, 18):
-            row[index].number_format = "0.0%"
-        for index in range(13, 16):
-            row[index].number_format = "[h]:mm:ss"
-    style_sheet(by_day)
+    format_summary_sheet(by_day, offset=1)
 
     detail = workbook.create_sheet("Стоянки")
-    detail.append(
-        [
-            "Дата",
-            "Госномер",
-            "Начало стоянки",
-            "Конец стоянки",
-            "Продолжительность",
-            "Геозона",
-            "Достоверность",
-            "Широта до",
-            "Долгота до",
-            "Широта после",
-            "Долгота после",
-        ]
-    )
+    detail.append([
+        "Дата", "Госномер", "Начало стоянки", "Конец стоянки", "Продолжительность",
+        "Геозона", "Достоверность", "Широта до", "Долгота до", "Широта после", "Долгота после",
+    ])
     for stop in sorted(stops, key=lambda item: (item["date"], item["plate"], item["start"])):
-        detail.append(
-            [
-                stop["date"],
-                stop["plate"],
-                stop["start"],
-                stop["end"],
-                stop["seconds"] / 86400.0,
-                stop["zone"],
-                stop["confidence"],
-                stop["lat_before"],
-                stop["lon_before"],
-                stop["lat_after"],
-                stop["lon_after"],
-            ]
-        )
+        detail.append([
+            stop["date"], stop["plate"], stop["start"], stop["end"], stop["seconds"] / 86400.0,
+            stop["zone"], stop["confidence"], stop["lat_before"], stop["lon_before"],
+            stop["lat_after"], stop["lon_after"],
+        ])
     for row in detail.iter_rows(min_row=2):
         row[0].number_format = "dd.mm.yyyy"
         row[2].number_format = "dd.mm.yyyy hh:mm:ss"
@@ -220,14 +218,7 @@ def save_summary_book(
     for stop in stops:
         grouped[(stop["plate"], stop["zone"])].append(stop)
     for (plate, zone), rows in sorted(grouped.items()):
-        zone_summary.append(
-            [
-                plate,
-                zone,
-                len(rows),
-                sum(row["seconds"] for row in rows) / 86400.0,
-            ]
-        )
+        zone_summary.append([plate, zone, len(rows), sum(row["seconds"] for row in rows) / 86400.0])
     for row in zone_summary.iter_rows(min_row=2):
         row[3].number_format = "[h]:mm:ss"
     style_sheet(zone_summary)
