@@ -4,11 +4,8 @@
 """Excel-отчёт о запрещённом повороте налево.
 
 Нарушение фиксируется, когда автомобиль проходит линейную геозону шириной
-20 метров справа налево: от первой (восточной) точки полилинии к последней
-(западной) не более чем за 3 минуты.
-
-После начала прохода кандидат сбрасывается, если автомобиль попадает в
-контрольную геозону радиусом 100 метров. Это исключает разрешённую траекторию.
+20 метров справа налево не более чем за 3 минуты и затем в течение контрольного
+интервала не попадает в разрешающую контрольную геозону радиусом 100 метров.
 
 Поддерживаемые исходники: XLSX, XLSM, CSV — координатные выгрузки Arvento.
 """
@@ -42,12 +39,12 @@ CORRIDOR_POINTS: tuple[tuple[float, float], ...] = (
     (36.31720168033584, 33.87281614041499),
 )
 
-# Попадание сюда после начала прохода отменяет нарушение.
-EXCLUSION_ZONE_CENTER = (36.320004534239345, 33.880070121502186)
-DEFAULT_EXCLUSION_RADIUS_M = 100.0
+CONTROL_ZONE_CENTER = (36.320004534239345, 33.880070121502186)
+CONTROL_ZONE_RADIUS_M = 100.0
 
 DEFAULT_WIDTH_M = 20.0
 DEFAULT_MAX_SEQUENCE_SECONDS = 3 * 60
+DEFAULT_CONTROL_WINDOW_SECONDS = 3 * 60
 DEFAULT_COOLDOWN_SECONDS = 5 * 60
 START_PROGRESS_MAX = 0.25
 FINISH_PROGRESS_MIN = 0.75
@@ -108,23 +105,32 @@ def choose_source() -> Path:
     return Path(selected).resolve()
 
 
-def local_xy_m(lat: float, lon: float, origin_lat: float, origin_lon: float) -> tuple[float, float]:
-    y = (lat - origin_lat) * 111_320.0
-    x = (lon - origin_lon) * 111_320.0 * math.cos(math.radians(origin_lat))
-    return x, y
-
-
 def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     radius = 6_371_000.0
     phi1 = math.radians(lat1)
     phi2 = math.radians(lat2)
     d_phi = math.radians(lat2 - lat1)
     d_lambda = math.radians(lon2 - lon1)
-    value = (
+    a = (
         math.sin(d_phi / 2.0) ** 2
         + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
     )
-    return 2.0 * radius * math.atan2(math.sqrt(value), math.sqrt(1.0 - value))
+    return 2.0 * radius * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+
+
+def in_control_zone(point: TrackPoint) -> bool:
+    return haversine_m(
+        point.lat,
+        point.lon,
+        CONTROL_ZONE_CENTER[0],
+        CONTROL_ZONE_CENTER[1],
+    ) <= CONTROL_ZONE_RADIUS_M
+
+
+def local_xy_m(lat: float, lon: float, origin_lat: float, origin_lon: float) -> tuple[float, float]:
+    y = (lat - origin_lat) * 111_320.0
+    x = (lon - origin_lon) * 111_320.0 * math.cos(math.radians(origin_lat))
+    return x, y
 
 
 def build_polyline_xy() -> tuple[list[tuple[float, float]], list[float], float, float, float]:
@@ -155,9 +161,8 @@ def project_to_corridor(lat: float, lon: float) -> CorridorPosition:
         qx, qy = a[0] + t * vx, a[1] + t * vy
         distance = math.hypot(px - qx, py - qy)
         if distance < best_distance:
-            segment_length = math.sqrt(length_sq)
             best_distance = distance
-            best_along = CUMULATIVE_M[index] + t * segment_length
+            best_along = CUMULATIVE_M[index] + t * math.sqrt(length_sq)
 
     progress = best_along / POLYLINE_LENGTH_M if POLYLINE_LENGTH_M else 0.0
     return CorridorPosition(best_distance, best_along, progress)
@@ -197,16 +202,31 @@ def detect_violations(
     track: list[TrackPoint],
     width_m: float,
     max_sequence_seconds: int,
+    control_window_seconds: int,
     cooldown_seconds: int,
-    exclusion_radius_m: float,
 ) -> list[Violation]:
     half_width = width_m / 2.0
     violations: list[Violation] = []
     active: dict[str, object] | None = None
+    pending: Violation | None = None
     last_violation_time: datetime | None = None
-    exclusion_lat, exclusion_lon = EXCLUSION_ZONE_CENTER
 
     for point in track:
+        # Завершённый проход пока считается кандидатом. Если после выхода машина
+        # попала в контрольную геозону, кандидат отменяется.
+        if pending is not None:
+            seconds_after_finish = (point.timestamp - pending.finish).total_seconds()
+            if 0 <= seconds_after_finish <= control_window_seconds and in_control_zone(point):
+                pending = None
+                active = None
+                continue
+            if seconds_after_finish > control_window_seconds:
+                violations.append(pending)
+                last_violation_time = pending.finish
+                pending = None
+            else:
+                continue
+
         position = project_to_corridor(point.lat, point.lon)
         inside = position.distance_m <= half_width
 
@@ -220,22 +240,15 @@ def detect_violations(
             if elapsed <= 0 or elapsed > max_sequence_seconds:
                 active = None
 
-        # После начала прохода попадание в контрольную геозону отменяет кандидат.
-        if active is not None:
-            exclusion_distance = haversine_m(
-                point.lat,
-                point.lon,
-                exclusion_lat,
-                exclusion_lon,
-            )
-            if exclusion_distance <= exclusion_radius_m:
-                active = None
-                continue
+        # После входа в коридор попадание в контрольную зону отменяет кандидат,
+        # даже если машина уже успела выйти из линейной геозоны.
+        if active is not None and in_control_zone(point):
+            active = None
+            continue
 
         if not inside:
             continue
 
-        # Старт фиксируется только у правой (восточной) части коридора.
         if active is None:
             if position.progress <= START_PROGRESS_MAX:
                 active = {
@@ -249,7 +262,6 @@ def detect_violations(
             continue
 
         last_along = float(active["last_along"])
-        # Существенное движение обратно вправо сбрасывает кандидат.
         if position.along_m < last_along - MAX_BACKTRACK_M:
             active = None
             if position.progress <= START_PROGRESS_MAX:
@@ -275,20 +287,20 @@ def detect_violations(
         start_position = active["start_position"]
         assert isinstance(start_point, TrackPoint)
         assert isinstance(start_position, CorridorPosition)
-        violations.append(
-            Violation(
-                plate=point.plate,
-                start_point=start_point,
-                finish_point=point,
-                start_position=start_position,
-                finish_position=position,
-                min_distance_m=float(active["min_distance"]),
-                max_progress=float(active["max_progress"]),
-                point_count=int(active["point_count"]),
-            )
+        pending = Violation(
+            plate=point.plate,
+            start_point=start_point,
+            finish_point=point,
+            start_position=start_position,
+            finish_position=position,
+            min_distance_m=float(active["min_distance"]),
+            max_progress=float(active["max_progress"]),
+            point_count=int(active["point_count"]),
         )
-        last_violation_time = point.timestamp
         active = None
+
+    if pending is not None:
+        violations.append(pending)
 
     return violations
 
@@ -316,7 +328,7 @@ def save_report(
     source: Path,
     width_m: float,
     max_seconds: int,
-    exclusion_radius_m: float,
+    control_seconds: int,
 ) -> None:
     workbook = Workbook()
     sheet = workbook.active
@@ -331,22 +343,13 @@ def save_report(
 
     for number, item in enumerate(violations, start=1):
         sheet.append([
-            number,
-            item.plate,
-            item.start.date(),
-            item.start,
-            item.finish,
-            item.duration_seconds / 86400.0,
-            item.start_point.speed,
-            item.finish_point.speed,
-            item.start_position.progress,
-            item.finish_position.progress,
-            round(item.min_distance_m, 1),
-            item.point_count,
+            number, item.plate, item.start.date(), item.start, item.finish,
+            item.duration_seconds / 86400.0, item.start_point.speed, item.finish_point.speed,
+            item.start_position.progress, item.finish_position.progress,
+            round(item.min_distance_m, 1), item.point_count,
             f"{item.start_point.lat:.7f}, {item.start_point.lon:.7f}",
             f"{item.finish_point.lat:.7f}, {item.finish_point.lon:.7f}",
-            item.start_point.address,
-            item.finish_point.address,
+            item.start_point.address, item.finish_point.address,
         ])
 
     for row in sheet.iter_rows(min_row=2):
@@ -368,9 +371,10 @@ def save_report(
     settings.append(["Ширина линейной геозоны, м", width_m])
     settings.append(["Максимальное время прохода", max_seconds / 86400.0])
     settings.cell(5, 2).number_format = "[h]:mm:ss"
-    settings.append(["Контрольная геозона", f"{EXCLUSION_ZONE_CENTER[0]}, {EXCLUSION_ZONE_CENTER[1]}"])
-    settings.append(["Радиус контрольной геозоны, м", exclusion_radius_m])
-    settings.append(["Правило контрольной геозоны", "попадание после старта отменяет нарушение"])
+    settings.append(["Ожидание контрольной геозоны после выхода", control_seconds / 86400.0])
+    settings.cell(6, 2).number_format = "[h]:mm:ss"
+    settings.append(["Контрольная геозона", f"{CONTROL_ZONE_CENTER[0]}, {CONTROL_ZONE_CENTER[1]}"])
+    settings.append(["Радиус контрольной геозоны, м", CONTROL_ZONE_RADIUS_M])
     settings.append(["Длина осевой линии, м", round(POLYLINE_LENGTH_M, 1)])
     settings.append(["Начальная часть коридора", f"0–{START_PROGRESS_MAX * 100:.0f}%"])
     settings.append(["Конечная часть коридора", f"{FINISH_PROGRESS_MIN * 100:.0f}–100%"])
@@ -387,19 +391,19 @@ def main() -> None:
     parser.add_argument("output", nargs="?", help="Путь итогового XLSX")
     parser.add_argument("--width", type=float, default=DEFAULT_WIDTH_M, help="Ширина линейной геозоны, м")
     parser.add_argument("--max-minutes", type=float, default=DEFAULT_MAX_SEQUENCE_SECONDS / 60.0)
+    parser.add_argument("--control-minutes", type=float, default=DEFAULT_CONTROL_WINDOW_SECONDS / 60.0)
     parser.add_argument("--cooldown-minutes", type=float, default=DEFAULT_COOLDOWN_SECONDS / 60.0)
-    parser.add_argument(
-        "--exclusion-radius",
-        type=float,
-        default=DEFAULT_EXCLUSION_RADIUS_M,
-        help="Радиус контрольной геозоны, попадание в которую отменяет нарушение",
-    )
     args = parser.parse_args()
 
     source = Path(args.source).expanduser().resolve() if args.source else choose_source()
     if not source.exists():
         raise SystemExit(f"Файл не найден: {source}")
     output = Path(args.output).expanduser().resolve() if args.output else source.with_name(source.stem + "_запрещенный_поворот.xlsx")
+
+    width_m = max(1.0, args.width)
+    max_seconds = max(1, int(args.max_minutes * 60))
+    control_seconds = max(0, int(args.control_minutes * 60))
+    cooldown_seconds = max(0, int(args.cooldown_minutes * 60))
 
     temp_dir = Path(tempfile.mkdtemp(prefix="arvento_left_turn_"))
     db_path = temp_dir / "points.sqlite3"
@@ -411,20 +415,13 @@ def main() -> None:
         for _, track in iter_vehicle_tracks(db_path):
             violations.extend(detect_violations(
                 track,
-                width_m=max(1.0, args.width),
-                max_sequence_seconds=max(1, int(args.max_minutes * 60)),
-                cooldown_seconds=max(0, int(args.cooldown_minutes * 60)),
-                exclusion_radius_m=max(0.0, args.exclusion_radius),
+                width_m=width_m,
+                max_sequence_seconds=max_seconds,
+                control_window_seconds=control_seconds,
+                cooldown_seconds=cooldown_seconds,
             ))
         violations.sort(key=lambda item: (item.start, item.plate))
-        save_report(
-            output,
-            violations,
-            source,
-            max(1.0, args.width),
-            max(1, int(args.max_minutes * 60)),
-            max(0.0, args.exclusion_radius),
-        )
+        save_report(output, violations, source, width_m, max_seconds, control_seconds)
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
         print(f"Найдено нарушений: {len(violations)}")
