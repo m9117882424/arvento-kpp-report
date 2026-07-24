@@ -31,7 +31,10 @@ from sqlite_store import import_source_to_sqlite
 
 
 # Полилиния задана справа налево (с востока на запад).
+# Первая точка расширяет коридор вправо и исключает транспорт,
+# который проходит только по расположенной рядом параллельной дороге.
 CORRIDOR_POINTS: tuple[tuple[float, float], ...] = (
+    (36.31734251137277, 33.877479047073074),
     (36.3172538740116, 33.874474367432896),
     (36.31719343922596, 33.874075574912666),
     (36.31714948662511, 33.8735029497554),
@@ -322,7 +325,7 @@ def save_report(path: Path, violations: list[Violation], source: Path, width_m: 
     settings = workbook.create_sheet("Параметры")
     settings.append(["Параметр", "Значение"])
     settings.append(["Исходный файл", str(source)])
-    settings.append(["Направление", "справа налево (точка 1 → точка 4)"])
+    settings.append(["Направление", "справа налево (точка 1 → точка 5)"])
     settings.append(["Ширина линейной геозоны, м", width_m])
     settings.append(["Максимальное время прохода", max_seconds / 86400.0])
     settings.cell(5, 2).number_format = "[h]:mm:ss"
