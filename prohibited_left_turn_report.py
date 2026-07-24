@@ -4,8 +4,11 @@
 """Excel-отчёт о запрещённом повороте налево.
 
 Нарушение фиксируется, когда автомобиль проходит линейную геозону шириной
-30 метров справа налево: от первой (восточной) точки полилинии к последней
-(западной) не более чем за 5 минут.
+20 метров справа налево: от первой (восточной) точки полилинии к последней
+(западной) не более чем за 3 минуты.
+
+После начала прохода кандидат сбрасывается, если автомобиль попадает в
+контрольную геозону радиусом 100 метров. Это исключает разрешённую траекторию.
 
 Поддерживаемые исходники: XLSX, XLSM, CSV — координатные выгрузки Arvento.
 """
@@ -31,8 +34,6 @@ from sqlite_store import import_source_to_sqlite
 
 
 # Полилиния задана справа налево (с востока на запад).
-# Первая точка расширяет коридор вправо и исключает транспорт,
-# который проходит только по расположенной рядом параллельной дороге.
 CORRIDOR_POINTS: tuple[tuple[float, float], ...] = (
     (36.31734251137277, 33.877479047073074),
     (36.3172538740116, 33.874474367432896),
@@ -41,8 +42,12 @@ CORRIDOR_POINTS: tuple[tuple[float, float], ...] = (
     (36.31720168033584, 33.87281614041499),
 )
 
-DEFAULT_WIDTH_M = 30.0
-DEFAULT_MAX_SEQUENCE_SECONDS = 5 * 60
+# Попадание сюда после начала прохода отменяет нарушение.
+EXCLUSION_ZONE_CENTER = (36.320004534239345, 33.880070121502186)
+DEFAULT_EXCLUSION_RADIUS_M = 100.0
+
+DEFAULT_WIDTH_M = 20.0
+DEFAULT_MAX_SEQUENCE_SECONDS = 3 * 60
 DEFAULT_COOLDOWN_SECONDS = 5 * 60
 START_PROGRESS_MAX = 0.25
 FINISH_PROGRESS_MIN = 0.75
@@ -107,6 +112,19 @@ def local_xy_m(lat: float, lon: float, origin_lat: float, origin_lon: float) -> 
     y = (lat - origin_lat) * 111_320.0
     x = (lon - origin_lon) * 111_320.0 * math.cos(math.radians(origin_lat))
     return x, y
+
+
+def haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    radius = 6_371_000.0
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    d_phi = math.radians(lat2 - lat1)
+    d_lambda = math.radians(lon2 - lon1)
+    value = (
+        math.sin(d_phi / 2.0) ** 2
+        + math.cos(phi1) * math.cos(phi2) * math.sin(d_lambda / 2.0) ** 2
+    )
+    return 2.0 * radius * math.atan2(math.sqrt(value), math.sqrt(1.0 - value))
 
 
 def build_polyline_xy() -> tuple[list[tuple[float, float]], list[float], float, float, float]:
@@ -180,11 +198,13 @@ def detect_violations(
     width_m: float,
     max_sequence_seconds: int,
     cooldown_seconds: int,
+    exclusion_radius_m: float,
 ) -> list[Violation]:
     half_width = width_m / 2.0
     violations: list[Violation] = []
     active: dict[str, object] | None = None
     last_violation_time: datetime | None = None
+    exclusion_lat, exclusion_lon = EXCLUSION_ZONE_CENTER
 
     for point in track:
         position = project_to_corridor(point.lat, point.lon)
@@ -199,6 +219,18 @@ def detect_violations(
             elapsed = (point.timestamp - start_point.timestamp).total_seconds()
             if elapsed <= 0 or elapsed > max_sequence_seconds:
                 active = None
+
+        # После начала прохода попадание в контрольную геозону отменяет кандидат.
+        if active is not None:
+            exclusion_distance = haversine_m(
+                point.lat,
+                point.lon,
+                exclusion_lat,
+                exclusion_lon,
+            )
+            if exclusion_distance <= exclusion_radius_m:
+                active = None
+                continue
 
         if not inside:
             continue
@@ -278,7 +310,14 @@ def style_sheet(sheet) -> None:
         sheet.column_dimensions[get_column_letter(column)].width = max(width, 12)
 
 
-def save_report(path: Path, violations: list[Violation], source: Path, width_m: float, max_seconds: int) -> None:
+def save_report(
+    path: Path,
+    violations: list[Violation],
+    source: Path,
+    width_m: float,
+    max_seconds: int,
+    exclusion_radius_m: float,
+) -> None:
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Нарушения"
@@ -329,6 +368,9 @@ def save_report(path: Path, violations: list[Violation], source: Path, width_m: 
     settings.append(["Ширина линейной геозоны, м", width_m])
     settings.append(["Максимальное время прохода", max_seconds / 86400.0])
     settings.cell(5, 2).number_format = "[h]:mm:ss"
+    settings.append(["Контрольная геозона", f"{EXCLUSION_ZONE_CENTER[0]}, {EXCLUSION_ZONE_CENTER[1]}"])
+    settings.append(["Радиус контрольной геозоны, м", exclusion_radius_m])
+    settings.append(["Правило контрольной геозоны", "попадание после старта отменяет нарушение"])
     settings.append(["Длина осевой линии, м", round(POLYLINE_LENGTH_M, 1)])
     settings.append(["Начальная часть коридора", f"0–{START_PROGRESS_MAX * 100:.0f}%"])
     settings.append(["Конечная часть коридора", f"{FINISH_PROGRESS_MIN * 100:.0f}–100%"])
@@ -346,6 +388,12 @@ def main() -> None:
     parser.add_argument("--width", type=float, default=DEFAULT_WIDTH_M, help="Ширина линейной геозоны, м")
     parser.add_argument("--max-minutes", type=float, default=DEFAULT_MAX_SEQUENCE_SECONDS / 60.0)
     parser.add_argument("--cooldown-minutes", type=float, default=DEFAULT_COOLDOWN_SECONDS / 60.0)
+    parser.add_argument(
+        "--exclusion-radius",
+        type=float,
+        default=DEFAULT_EXCLUSION_RADIUS_M,
+        help="Радиус контрольной геозоны, попадание в которую отменяет нарушение",
+    )
     args = parser.parse_args()
 
     source = Path(args.source).expanduser().resolve() if args.source else choose_source()
@@ -366,9 +414,17 @@ def main() -> None:
                 width_m=max(1.0, args.width),
                 max_sequence_seconds=max(1, int(args.max_minutes * 60)),
                 cooldown_seconds=max(0, int(args.cooldown_minutes * 60)),
+                exclusion_radius_m=max(0.0, args.exclusion_radius),
             ))
         violations.sort(key=lambda item: (item.start, item.plate))
-        save_report(output, violations, source, max(1.0, args.width), max(1, int(args.max_minutes * 60)))
+        save_report(
+            output,
+            violations,
+            source,
+            max(1.0, args.width),
+            max(1, int(args.max_minutes * 60)),
+            max(0.0, args.exclusion_radius),
+        )
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
         print(f"Найдено нарушений: {len(violations)}")
