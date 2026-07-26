@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-arvento}
+      POSTGRES_USER: ${POSTGRES_USER:-arvento}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      TZ: Europe/Istanbul
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arvento} -d ${POSTGRES_DB:-arvento}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks: [arvento]
+
+  sync:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento}
+      TZ: Europe/Istanbul
+    command: ["python", "arvento_postgres_sync.py", "daemon"]
+    volumes:
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+    networks: [arvento]
+
+volumes:
+  postgres_data:
+
+networks:
+  arvento:
