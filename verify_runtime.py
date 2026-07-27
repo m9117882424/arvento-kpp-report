@@ -1,17 +1,33 @@
 #!/usr/bin/env python3
-"""Small runtime smoke tests executed during the server image build."""
+"""Small runtime smoke tests executed during the server image build.
+
+Pure report-logic checks can also be run directly on the server host. The full
+portal import requires the application dependencies installed in the Docker
+image. During image build the check is strict and must not be skipped.
+"""
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import portal_table_ui
 from geozone_registry import find_site_boundary, load_registry, point_in_zone
 from map_links import google_maps_url, parse_coordinate_pair
 from site_boundary_speed import classify_site_state_by_polygon
 from speed_violation_report import _event_is_smooth, validate_speed_thresholds
+
+
+STRICT_ENV = "ARVENTO_RUNTIME_CHECK_STRICT"
+OPTIONAL_PORTAL_DEPENDENCIES = {
+    "fastapi",
+    "openpyxl",
+    "psycopg",
+    "pydantic",
+    "starlette",
+    "uvicorn",
+}
 
 
 @dataclass
@@ -30,6 +46,52 @@ def points(*speeds: float, seconds: int = 10) -> list[FakePoint]:
         FakePoint(start + timedelta(seconds=index * seconds), speed)
         for index, speed in enumerate(speeds)
     ]
+
+
+def strict_mode() -> bool:
+    return os.environ.get(STRICT_ENV, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def check_portal_runtime() -> bool:
+    """Import and inspect the final ASGI portal when runtime deps are available."""
+    try:
+        import portal_table_ui
+    except ModuleNotFoundError as exc:
+        missing = (exc.name or "").split(".", 1)[0]
+        if strict_mode() or missing not in OPTIONAL_PORTAL_DEPENDENCIES:
+            raise
+        print(
+            "ПРЕДУПРЕЖДЕНИЕ: проверка импорта веб-портала пропущена на хосте — "
+            f"не установлен пакет {missing!r}. Полная проверка будет выполнена "
+            "внутри Docker при сборке report-portal."
+        )
+        return False
+
+    html = portal_table_ui.implementation.HTML
+    for token in (
+        'value="violation">Нарушения',
+        'id="siteSpeedThreshold"',
+        'id="outsideSpeedThreshold"',
+        'id="plateFilter" type="text"',
+        'id="plateSuggestions"',
+        'class="sortable',
+        'class="sort-indicator"',
+        '.sort-indicator::before',
+        '.sort-indicator::after',
+        'cursor:pointer !important',
+        'data-sort-index',
+        "plateFilter.addEventListener('input'",
+        'id="dbStatus"',
+        '/api/database-status',
+        '/api/generate-v2',
+        'target="_blank"',
+    ):
+        assert token in html, f"В интерфейсе отсутствует обязательный элемент: {token}"
+
+    paths = {route.path for route in portal_table_ui.app.routes}
+    assert "/api/database-status" in paths
+    assert "/api/generate-v2" in paths
+    return True
 
 
 def main() -> None:
@@ -64,32 +126,17 @@ def main() -> None:
     assert parse_coordinate_pair("36.145, 33.55") == (36.145, 33.55)
     assert google_maps_url(36.145, 33.55).startswith("https://www.google.com/maps/search/")
 
-    html = portal_table_ui.implementation.HTML
-    for token in (
-        'value="violation">Нарушения',
-        'id="siteSpeedThreshold"',
-        'id="outsideSpeedThreshold"',
-        'id="plateFilter" type="text"',
-        'id="plateSuggestions"',
-        'class="sortable',
-        'class="sort-indicator"',
-        '.sort-indicator::before',
-        '.sort-indicator::after',
-        'cursor:pointer !important',
-        'data-sort-index',
-        "plateFilter.addEventListener('input'",
-        'id="dbStatus"',
-        '/api/database-status',
-        '/api/generate-v2',
-        'target="_blank"',
-    ):
-        assert token in html, f"В интерфейсе отсутствует обязательный элемент: {token}"
-
-    paths = {route.path for route in portal_table_ui.app.routes}
-    assert "/api/database-status" in paths
-    assert "/api/generate-v2" in paths
-
-    print("OK: runtime-проверки геозоны, нарушений, фильтра, значков сортировки, карты и статуса БД пройдены.")
+    portal_checked = check_portal_runtime()
+    if portal_checked:
+        print(
+            "OK: runtime-проверки геозоны, нарушений, фильтра, значков сортировки, "
+            "карты и статуса БД пройдены."
+        )
+    else:
+        print(
+            "OK: runtime-проверки расчётной логики пройдены; проверка веб-портала "
+            "будет выполнена при Docker-сборке."
+        )
 
 
 if __name__ == "__main__":
