@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import run_report_portal
+import portal_table_ui
 from geozone_registry import find_site_boundary, load_registry, point_in_zone
 from map_links import google_maps_url, parse_coordinate_pair
 from site_boundary_speed import classify_site_state_by_polygon
@@ -64,12 +64,16 @@ def main() -> None:
     assert parse_coordinate_pair("36.145, 33.55") == (36.145, 33.55)
     assert google_maps_url(36.145, 33.55).startswith("https://www.google.com/maps/search/")
 
-    html = run_report_portal.implementation.HTML
+    html = portal_table_ui.implementation.HTML
     for token in (
         'value="violation">Нарушения',
         'id="siteSpeedThreshold"',
         'id="outsideSpeedThreshold"',
-        'id="plateFilter"',
+        'id="plateFilter" type="text"',
+        'id="plateSuggestions"',
+        'class="sortable',
+        'data-sort-index',
+        "plateFilter.addEventListener('input'",
         'id="dbStatus"',
         '/api/database-status',
         '/api/generate-v2',
@@ -77,11 +81,11 @@ def main() -> None:
     ):
         assert token in html, f"В интерфейсе отсутствует обязательный элемент: {token}"
 
-    paths = {route.path for route in run_report_portal.app.routes}
+    paths = {route.path for route in portal_table_ui.app.routes}
     assert "/api/database-status" in paths
     assert "/api/generate-v2" in paths
 
-    print("OK: runtime-проверки геозоны, нарушений, карты и статуса БД пройдены.")
+    print("OK: runtime-проверки геозоны, нарушений, фильтра, сортировки, карты и статуса БД пройдены.")
 
 
 if __name__ == "__main__":
