@@ -72,6 +72,8 @@ def main() -> None:
         'id="plateFilter" type="text"',
         'id="plateSuggestions"',
         'class="sortable',
+        'class="sort-indicator"',
+        "'⇅'",
         'data-sort-index',
         "plateFilter.addEventListener('input'",
         'id="dbStatus"',
@@ -85,7 +87,7 @@ def main() -> None:
     assert "/api/database-status" in paths
     assert "/api/generate-v2" in paths
 
-    print("OK: runtime-проверки геозоны, нарушений, фильтра, сортировки, карты и статуса БД пройдены.")
+    print("OK: runtime-проверки геозоны, нарушений, фильтра, значков сортировки, карты и статуса БД пройдены.")
 
 
 if __name__ == "__main__":
