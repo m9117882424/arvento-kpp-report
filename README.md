@@ -7,14 +7,14 @@
 1. Получение `GeneralReportWithDistance` из Arvento API.
 2. Сохранение GPS-точек, скорости, расстояния, простоев, зажигания и справочной геозоны Arvento.
 3. Хранение собственных геозон и их версий в PostGIS.
-4. Формирование отчётов по КПП, первому въезду и запрещённому повороту.
+4. Формирование отчётов по КПП, первому въезду, эффективности легкового транспорта и запрещённому повороту.
 5. Подготовка расчётов пробега, простоев, нарушений и эффективности.
 
 ## Канонические имена исполняемых файлов
 
 - `sync_arvento_gps_to_postgres.py` — загрузка GPS из Arvento API в PostgreSQL/PostGIS;
 - `run_geofence_editor.py` — веб-редактор собственных геозон;
-- `generate_kpp_summary_report.py` — сводный отчёт по КПП;
+- `generate_kpp_summary_report.py` — сводный отчёт по КПП и эффективности легкового транспорта;
 - `generate_first_entry_report.py` — отчёт по первому въезду;
 - `generate_prohibited_left_turn_report.py` — отчёт о запрещённом повороте налево;
 - `generate_scheduled_reports.py` — пакетный запуск отчётов по расписанию.
@@ -24,13 +24,14 @@
 - `arvento_api_client.py` — клиент Arvento API;
 - `parse_arvento_general_report.py` — разбор XML `GeneralReportWithDistance`.
 
-Старые имена временно оставлены как совместимые внутренние реализации, чтобы не ломать ранее созданные команды. Новые команды, Docker Compose и документация используют только канонические имена.
+Старые имена временно оставлены как совместимые внутренние реализации, чтобы не ломать ранее созданные команды. Новые команды, Docker Compose, портал и документация используют только канонические имена.
 
 ## Docker-сервисы
 
 - `postgres` — PostgreSQL 16 + PostGIS;
 - `gps-sync` — регулярная синхронизация Arvento;
-- `geofence-editor` — веб-редактор геозон.
+- `geofence-editor` — веб-редактор геозон;
+- `report-portal` — временная веб-страница формирования отчётов.
 
 Имя Compose-проекта: `arvento_report`.
 
@@ -50,6 +51,8 @@ docker compose -f docker-compose.server.yml up -d --build
 docker compose -f docker-compose.server.yml ps
 docker compose -f docker-compose.server.yml logs -f gps-sync
 curl http://127.0.0.1:18083/health
+curl http://127.0.0.1:18084/health
+python verify_repository.py
 ```
 
 ## Ручная синхронизация
@@ -75,9 +78,21 @@ docker compose -f docker-compose.server.yml run --rm gps-sync \
   python sync_arvento_gps_to_postgres.py retention
 ```
 
+## Портал отчётов
+
+Портал слушает только localhost на порту `${REPORT_PORTAL_PORT:-18084}`. Для внешнего доступа используется Nginx с HTTPS и авторизацией.
+
+Доступные отчёты:
+
+- первый въезд через КПП;
+- эффективность легкового транспорта;
+- запрещённый поворот.
+
+GPS выгружается из PostgreSQL во временный CSV. Промежуточные CSV и Excel удаляются после формирования ответа браузеру.
+
 ## Отчёты на Windows
 
-Сводный отчёт по КПП:
+Сводный отчёт по КПП и эффективности:
 
 ```powershell
 python generate_kpp_summary_report.py "C:\Reports\Report.csv"
@@ -111,6 +126,19 @@ python generate_scheduled_reports.py
 
 Для локальных отчётов поддерживаются `.xlsx`, `.xlsm` и `.csv`. Крупные файлы импортируются во временную SQLite-базу и обрабатываются по автомобилям и датам.
 
+## Проверка согласованности репозитория
+
+```bash
+python verify_repository.py
+```
+
+Проверяются:
+
+- наличие канонических исполняемых файлов;
+- ссылки на них в Docker, портале и документации;
+- отсутствие лишних неканонических entrypoint-файлов;
+- синтаксис всех Python-файлов.
+
 ## Именование
 
 Правило для новых исполняемых файлов:
@@ -123,6 +151,7 @@ python generate_scheduled_reports.py
 
 ```text
 sync_arvento_gps_to_postgres.py
+generate_kpp_summary_report.py
 generate_first_entry_report.py
 generate_prohibited_left_turn_report.py
 ```
