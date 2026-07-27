@@ -23,16 +23,21 @@ CANONICAL_FILES = {
         "report_portal",
         "generate_report_with_thresholds",
         "violation_web_preview",
+        "database_status",
         "site_speed_threshold",
         "outside_speed_threshold",
         'id="plateFilter"',
+        'id="dbStatus"',
+        "/api/database-status",
+        "google_maps_url",
         '"Нарушения"',
     ),
     "generate_kpp_summary_report.py": ("arvento_kpp_report",),
     "generate_first_entry_report.py": ("arvento_first_entry_report_fixed",),
     "generate_prohibited_left_turn_report.py": (
         "prohibited_left_turn_report",
-        "speed_violation_report",
+        "site_boundary_speed",
+        "add_violation_map_links",
         "--site-speed-threshold",
         "--outside-speed-threshold",
     ),
@@ -48,9 +53,27 @@ REQUIRED_SUPPORT_MODULES = {
         "SUMMARY_SHEET_NAME",
         "MAX_VALID_GPS_SPEED_KMH",
     ),
+    "site_boundary_speed.py": (
+        "classify_site_state_by_polygon",
+        "detect_speed_violations_by_polygon",
+        "write_site_boundary_metadata",
+        "find_site_boundary",
+    ),
+    "map_links.py": (
+        "google_maps_url",
+        "parse_coordinate_pair",
+        "add_violation_map_links",
+    ),
+    "geozone_registry.py": (
+        'SITE_BOUNDARY_PURPOSE = "site_boundary"',
+        "find_site_boundary",
+        "point_in_zone",
+    ),
     "verify_runtime.py": (
         "_event_is_smooth",
         "plateFilter",
+        "dbStatus",
+        "Площадка АЭС АККУЮ",
         "runtime-проверки",
     ),
 }
@@ -73,6 +96,12 @@ OPERATIONAL_EXPECTATIONS = {
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
         '"efficiency": APP_DIR / "generate_kpp_summary_report.py"',
         '"violation": APP_DIR / "generate_prohibited_left_turn_report.py"',
+    ),
+    "geozones.json": (
+        '"name": "Площадка АЭС АККУЮ"',
+        '"purpose": "site_boundary"',
+        '"enabled": true',
+        '"type": "polygon"',
     ),
     "README.md": tuple(
         name for name in CANONICAL_FILES if name != "run_report_portal.py"
