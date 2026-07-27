@@ -24,6 +24,7 @@ APP_DIR = Path(__file__).resolve().parent
 TZ = ZoneInfo("Europe/Istanbul")
 MAX_ROSTER_BYTES = 25 * 1024 * 1024
 PREVIEW_ROWS = 300
+MAX_REPORT_DAYS = 31
 
 app = FastAPI(title="Arvento Report Portal")
 
@@ -33,7 +34,7 @@ HTML = r"""<!doctype html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Ежедневные отчёты Arvento</title>
+  <title>Отчёты Arvento</title>
   <style>
     :root { color-scheme: light; font-family: Inter, Segoe UI, Arial, sans-serif; }
     body { margin: 0; background: #f3f5f8; color: #172033; }
@@ -72,8 +73,8 @@ HTML = r"""<!doctype html>
 <body>
 <div class="wrap">
   <div class="card">
-    <h1>Ежедневные отчёты Arvento</h1>
-    <div class="muted">Данные берутся напрямую из PostgreSQL. CSV и Excel на сервере не сохраняются.</div>
+    <h1>Отчёты Arvento</h1>
+    <div class="muted">Данные берутся напрямую из PostgreSQL. Временные CSV и Excel после формирования удаляются.</div>
 
     <form id="reportForm">
       <div class="grid">
@@ -81,12 +82,17 @@ HTML = r"""<!doctype html>
           <label for="reportType">Отчёт</label>
           <select id="reportType" name="report_type">
             <option value="kpp">Первый въезд через КПП</option>
+            <option value="efficiency">Эффективность легкового транспорта</option>
             <option value="violation">Запрещённый поворот</option>
           </select>
         </div>
         <div>
-          <label for="reportDate">Дата</label>
+          <label id="dateLabel" for="reportDate">Дата</label>
           <input id="reportDate" name="report_date" type="date" required>
+        </div>
+        <div id="endDateBox" class="efficiency-only hidden">
+          <label for="reportEndDate">Дата до</label>
+          <input id="reportEndDate" name="report_end_date" type="date">
         </div>
         <div id="rosterBox" style="grid-column: span 2">
           <label for="roster">Разнарядка XLSX/XLSM</label>
@@ -133,6 +139,8 @@ HTML = r"""<!doctype html>
 const form = document.getElementById('reportForm');
 const typeSelect = document.getElementById('reportType');
 const dateInput = document.getElementById('reportDate');
+const endDateInput = document.getElementById('reportEndDate');
+const dateLabel = document.getElementById('dateLabel');
 const roster = document.getElementById('roster');
 const rosterBox = document.getElementById('rosterBox');
 const generateBtn = document.getElementById('generateBtn');
@@ -150,13 +158,26 @@ function esc(value) {
 }
 
 function toggleType() {
-  const isKpp = typeSelect.value === 'kpp';
-  rosterBox.classList.toggle('hidden', !isKpp);
+  const type = typeSelect.value;
+  const isKpp = type === 'kpp';
+  const isEfficiency = type === 'efficiency';
+  const needsRoster = isKpp || isEfficiency;
+
+  rosterBox.classList.toggle('hidden', !needsRoster);
+  roster.required = needsRoster;
   document.querySelectorAll('.kpp-only').forEach(x => x.classList.toggle('hidden', !isKpp));
-  roster.required = isKpp;
+  document.querySelectorAll('.efficiency-only').forEach(x => x.classList.toggle('hidden', !isEfficiency));
+  dateLabel.textContent = isEfficiency ? 'Дата от' : 'Дата';
+  endDateInput.required = isEfficiency;
+  if (isEfficiency && !endDateInput.value) endDateInput.value = dateInput.value;
 }
 
 typeSelect.addEventListener('change', toggleType);
+dateInput.addEventListener('change', () => {
+  if (typeSelect.value === 'efficiency' && (!endDateInput.value || endDateInput.value < dateInput.value)) {
+    endDateInput.value = dateInput.value;
+  }
+});
 toggleType();
 
 async function loadDates() {
@@ -164,9 +185,14 @@ async function loadDates() {
     const res = await fetch('/api/dates');
     const data = await res.json();
     if (data.dates && data.dates.length) {
-      dateInput.value = data.dates[0];
-      dateInput.min = data.dates[data.dates.length - 1];
-      dateInput.max = data.dates[0];
+      const latest = data.dates[0];
+      const earliest = data.dates[data.dates.length - 1];
+      dateInput.value = latest;
+      dateInput.min = earliest;
+      dateInput.max = latest;
+      endDateInput.value = latest;
+      endDateInput.min = earliest;
+      endDateInput.max = latest;
     }
   } catch (_) {}
 }
@@ -255,13 +281,14 @@ def parse_report_date(value: str) -> date:
         raise ValueError("Некорректная дата") from exc
 
 
-def day_bounds(day: date) -> tuple[datetime, datetime]:
-    start = datetime.combine(day, time.min, tzinfo=TZ)
-    return start, start + timedelta(days=1)
+def period_bounds(start_day: date, end_day: date) -> tuple[datetime, datetime]:
+    start = datetime.combine(start_day, time.min, tzinfo=TZ)
+    end = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=TZ)
+    return start, end
 
 
-def export_day_to_csv(day: date, path: Path) -> int:
-    start, end = day_bounds(day)
+def export_period_to_csv(start_day: date, end_day: date, path: Path) -> int:
+    start, end = period_bounds(start_day, end_day)
     query = """
         SELECT
             COALESCE(NULLIF(plate, ''), normalized_plate) AS plate,
@@ -316,7 +343,7 @@ def run_command(command: list[str]) -> str:
         cwd=APP_DIR,
         capture_output=True,
         text=True,
-        timeout=15 * 60,
+        timeout=30 * 60,
         check=False,
     )
     output = "\n".join(part for part in (completed.stdout, completed.stderr) if part).strip()
@@ -361,10 +388,19 @@ def workbook_preview(path: Path) -> tuple[list[str], list[list[Any]], int]:
         workbook.close()
 
 
+def safe_roster_name(filename: str | None, suffix: str) -> str:
+    name = Path(filename or f"roster{suffix}").name
+    if Path(name).suffix.lower() not in {".xlsx", ".xlsm"}:
+        return f"roster{suffix}"
+    return name
+
+
 def generate_report(
     report_type: str,
     report_day: date,
+    report_end_day: date | None,
     roster_bytes: bytes | None,
+    roster_filename: str,
     roster_suffix: str,
     grade_from: str,
     grade_to: str,
@@ -372,12 +408,18 @@ def generate_report(
     time_to: str,
     consider_previous_exits: bool,
 ) -> dict[str, Any]:
+    end_day = report_end_day if report_type == "efficiency" and report_end_day else report_day
+    if end_day < report_day:
+        raise ValueError("Дата окончания раньше даты начала")
+    if (end_day - report_day).days + 1 > MAX_REPORT_DAYS:
+        raise ValueError(f"Период отчёта не должен превышать {MAX_REPORT_DAYS} дней")
+
     with tempfile.TemporaryDirectory(prefix="arvento_report_portal_") as temp_name:
         temp_dir = Path(temp_name)
-        csv_path = temp_dir / f"gps_{report_day.isoformat()}.csv"
-        gps_count = export_day_to_csv(report_day, csv_path)
+        csv_path = temp_dir / f"gps_{report_day.isoformat()}_{end_day.isoformat()}.csv"
+        gps_count = export_period_to_csv(report_day, end_day, csv_path)
         if gps_count == 0:
-            raise ValueError("За выбранную дату GPS-точки отсутствуют")
+            raise ValueError("За выбранный период GPS-точки отсутствуют")
 
         if report_type == "violation":
             filename = f"Запрещенный_поворот_{report_day.isoformat()}.xlsx"
@@ -389,10 +431,11 @@ def generate_report(
                 str(output_path),
             ])
             report_label = "Запрещённый поворот"
+
         elif report_type == "kpp":
             if not roster_bytes:
                 raise ValueError("Для отчёта по КПП необходимо загрузить разнарядку")
-            roster_path = temp_dir / f"roster{roster_suffix}"
+            roster_path = temp_dir / safe_roster_name(roster_filename, roster_suffix)
             roster_path.write_bytes(roster_bytes)
             filename = f"Первый_въезд_{report_day.isoformat()}.xlsx"
             output_path = temp_dir / filename
@@ -412,9 +455,34 @@ def generate_report(
                 command += ["--time-from", time_from.strip()]
             if time_to.strip():
                 command += ["--time-to", time_to.strip()]
-            command.append("--consider-previous-exits" if consider_previous_exits else "--no-consider-previous-exits")
+            command.append(
+                "--consider-previous-exits"
+                if consider_previous_exits
+                else "--no-consider-previous-exits"
+            )
             log = run_command(command)
             report_label = "Первый въезд через КПП"
+
+        elif report_type == "efficiency":
+            if not roster_bytes:
+                raise ValueError("Для отчёта эффективности необходимо загрузить разнарядку")
+            roster_path = temp_dir / safe_roster_name(roster_filename, roster_suffix)
+            roster_path.write_bytes(roster_bytes)
+            log = run_command([
+                sys.executable,
+                str(APP_DIR / "generate_kpp_report.py"),
+                str(csv_path),
+            ])
+            generated = csv_path.with_name(csv_path.stem + "_итоговая_сводка.xlsx")
+            if not generated.exists():
+                raise RuntimeError("Построитель не создал итоговый отчёт эффективности")
+            output_path = generated
+            filename = (
+                f"Эффективность_легкового_транспорта_"
+                f"{report_day.isoformat()}_{end_day.isoformat()}.xlsx"
+            )
+            report_label = "Эффективность легкового транспорта"
+
         else:
             raise ValueError("Неизвестный тип отчёта")
 
@@ -423,6 +491,11 @@ def generate_report(
 
         columns, rows, total_rows = workbook_preview(output_path)
         excel_bytes = output_path.read_bytes()
+        period_text = (
+            report_day.strftime("%d.%m.%Y")
+            if report_day == end_day
+            else f"{report_day:%d.%m.%Y}–{end_day:%d.%m.%Y}"
+        )
         return {
             "filename": filename,
             "columns": columns,
@@ -431,7 +504,7 @@ def generate_report(
             "excel_base64": base64.b64encode(excel_bytes).decode("ascii"),
             "summary": {
                 "Отчёт": report_label,
-                "Дата": report_day.strftime("%d.%m.%Y"),
+                "Период": period_text,
                 "GPS-точек": gps_count,
                 "Строк результата": total_rows,
             },
@@ -466,6 +539,7 @@ def available_dates() -> dict[str, list[str]]:
 async def api_generate(
     report_type: str = Form(...),
     report_date: str = Form(...),
+    report_end_date: str = Form(default=""),
     roster: UploadFile | None = File(default=None),
     grade_from: str = Form(default=""),
     grade_to: str = Form(default=""),
@@ -475,10 +549,14 @@ async def api_generate(
 ) -> dict[str, Any]:
     try:
         day = parse_report_date(report_date)
+        end_day = parse_report_date(report_end_date) if report_end_date.strip() else None
+
         roster_bytes: bytes | None = None
         roster_suffix = ".xlsx"
+        roster_filename = "roster.xlsx"
         if roster is not None and roster.filename:
-            roster_suffix = Path(roster.filename).suffix.lower()
+            roster_filename = Path(roster.filename).name
+            roster_suffix = Path(roster_filename).suffix.lower()
             if roster_suffix not in {".xlsx", ".xlsm"}:
                 raise ValueError("Разнарядка должна быть в формате XLSX или XLSM")
             roster_bytes = await roster.read(MAX_ROSTER_BYTES + 1)
@@ -489,7 +567,9 @@ async def api_generate(
             generate_report,
             report_type,
             day,
+            end_day,
             roster_bytes,
+            roster_filename,
             roster_suffix,
             grade_from,
             grade_to,
