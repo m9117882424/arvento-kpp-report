@@ -15,4 +15,4 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 
-CMD ["python", "arvento_postgres_sync.py", "daemon"]
+CMD ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
