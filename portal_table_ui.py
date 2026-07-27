@@ -23,22 +23,31 @@ implementation.HTML = implementation.HTML.replace(
            <datalist id="plateSuggestions"></datalist>''',
 )
 
-# Add a restrained CSS sorting icon and an explicit link-style pointer cursor.
-implementation.HTML = implementation.HTML.replace(
-    "    .map-link:hover { text-decoration:underline; }",
-    "    .map-link:hover { text-decoration:underline; }\n"
-    "    th.sortable { cursor:pointer !important; user-select:none; transition:background-color .12s ease; }\n"
-    "    th.sortable:hover { background:#e7edf6; }\n"
-    "    .sort-indicator { display:inline-block; position:relative; width:8px; height:12px; margin-left:6px; vertical-align:-1px; opacity:.55; }\n"
-    "    .sort-indicator::before { content:''; position:absolute; left:1px; top:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-bottom:4px solid #667085; }\n"
-    "    .sort-indicator::after { content:''; position:absolute; left:1px; bottom:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-top:4px solid #667085; }\n"
-    "    th.sortable.sort-asc .sort-indicator, th.sortable.sort-desc .sort-indicator { opacity:1; }\n"
-    "    th.sortable.sort-asc .sort-indicator::after { display:none; }\n"
-    "    th.sortable.sort-desc .sort-indicator::before { display:none; }\n"
-    "    th.sortable.sort-asc .sort-indicator::before { border-bottom-color:#1663d6; }\n"
-    "    th.sortable.sort-desc .sort-indicator::after { border-top-color:#1663d6; }\n"
-    "    #plateFilter { text-transform:uppercase; }",
-)
+# Inject styles directly before </style>. This is deliberately independent of
+# CSS selectors added by other compatibility layers, so a missing anchor cannot
+# silently disable sorting icons or the pointer cursor.
+SORTING_STYLE_MARKER = ".sort-indicator::before"
+SORTING_STYLES = """
+    th.sortable { cursor:pointer !important; user-select:none; transition:background-color .12s ease; }
+    th.sortable:hover { background:#e7edf6; }
+    .sort-indicator { display:inline-block; position:relative; width:8px; height:12px; margin-left:6px; vertical-align:-1px; opacity:.55; }
+    .sort-indicator::before { content:''; position:absolute; left:1px; top:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-bottom:4px solid #667085; }
+    .sort-indicator::after { content:''; position:absolute; left:1px; bottom:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-top:4px solid #667085; }
+    th.sortable.sort-asc .sort-indicator, th.sortable.sort-desc .sort-indicator { opacity:1; }
+    th.sortable.sort-asc .sort-indicator::after { display:none; }
+    th.sortable.sort-desc .sort-indicator::before { display:none; }
+    th.sortable.sort-asc .sort-indicator::before { border-bottom-color:#1663d6; }
+    th.sortable.sort-desc .sort-indicator::after { border-top-color:#1663d6; }
+    #plateFilter { text-transform:uppercase; }
+"""
+if SORTING_STYLE_MARKER not in implementation.HTML:
+    if "</style>" not in implementation.HTML:
+        raise RuntimeError("Не найден закрывающий тег </style> для стилей таблицы")
+    implementation.HTML = implementation.HTML.replace(
+        "</style>",
+        SORTING_STYLES + "\n  </style>",
+        1,
+    )
 
 # Bind the datalist and sorting state.
 implementation.HTML = implementation.HTML.replace(
