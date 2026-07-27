@@ -4,7 +4,8 @@
 """Запуск отчёта по первому въезду с устойчивым определением стороны КПП.
 
 Исправляет пропуски пересечений, когда промежуточная GPS-точка попадает в
-пограничную зону менее MIN_SIDE_DISTANCE_M от линии ворот.
+пограничную зону менее MIN_SIDE_DISTANCE_M от линии ворот. Итоговый лист
+«Первый въезд» не содержит отдельного столбца со ссылкой на карту.
 """
 
 from __future__ import annotations
@@ -13,12 +14,16 @@ import csv
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
 
 import arvento_first_entry_report as base
 
 
 _original_load_coordinate_points = base.load_coordinate_points
+_original_create_report = base.create_report
 
 
 def detect_csv_encoding(path: Path) -> str:
@@ -181,8 +186,35 @@ def detect_coordinate_crossings(points: list[base.Point]) -> list[base.Crossing]
     return sorted(crossings, key=lambda item: (item.timestamp, item.plate, item.gate))
 
 
+def create_report_without_map_column(*args: Any, **kwargs: Any) -> None:
+    """Build the standard report and remove its dedicated map-link column."""
+    _original_create_report(*args, **kwargs)
+    output_path = Path(args[0] if args else kwargs["output_path"])
+
+    workbook = load_workbook(output_path)
+    try:
+        if "Первый въезд" not in workbook.sheetnames:
+            raise RuntimeError("В отчёте отсутствует лист «Первый въезд»")
+        sheet = workbook["Первый въезд"]
+
+        # Column E in the base report contains only «Показать на карте» links.
+        sheet.delete_cols(5, 1)
+        max_row = max(sheet.max_row, 1)
+        sheet.auto_filter.ref = f"A1:J{max_row}"
+
+        widths = [6, 15, 13, 13, 15, 24, 10, 38, 45, 55]
+        for index, width in enumerate(widths, 1):
+            sheet.column_dimensions[get_column_letter(index)].width = width
+        sheet.column_dimensions["K"].hidden = True
+
+        workbook.save(output_path)
+    finally:
+        workbook.close()
+
+
 base.load_coordinate_points = load_coordinate_points
 base.detect_coordinate_crossings = detect_coordinate_crossings
+base.create_report = create_report_without_map_column
 
 
 if __name__ == "__main__":
