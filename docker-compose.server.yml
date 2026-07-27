@@ -29,7 +29,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-arvento}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento}
       TZ: Europe/Istanbul
-    command: ["python", "arvento_postgres_sync.py", "daemon"]
+    command: ["python", "arvento_postgres_sync_v2.py", "daemon"]
     volumes:
       - ./logs:/app/logs
       - ./reports:/app/reports
