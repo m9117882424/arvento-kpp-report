@@ -16,7 +16,13 @@ from pathlib import Path
 
 import prohibited_left_turn_report as turn_report
 from geozone_registry import load_registry
-from speed_violation_report import append_speed_sheets, detect_speed_violations
+from speed_violation_report import (
+    DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+    DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+    append_speed_sheets,
+    detect_speed_violations,
+    validate_speed_thresholds,
+)
 from sqlite_store import import_source_to_sqlite
 
 
@@ -40,7 +46,27 @@ def main() -> None:
         type=float,
         default=turn_report.DEFAULT_COOLDOWN_SECONDS / 60.0,
     )
+    parser.add_argument(
+        "--site-speed-threshold",
+        type=float,
+        default=DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+        help="Порог фиксации скорости на площадке, км/ч",
+    )
+    parser.add_argument(
+        "--outside-speed-threshold",
+        type=float,
+        default=DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+        help="Порог фиксации скорости вне площадки, км/ч",
+    )
     args = parser.parse_args()
+
+    try:
+        site_threshold, outside_threshold = validate_speed_thresholds(
+            args.site_speed_threshold,
+            args.outside_speed_threshold,
+        )
+    except ValueError as exc:
+        raise SystemExit(f"Некорректные пороги скорости: {exc}") from exc
 
     source = Path(args.source).expanduser().resolve() if args.source else turn_report.choose_source()
     if not source.exists():
@@ -82,7 +108,12 @@ def main() -> None:
                     cooldown_seconds=cooldown_seconds,
                 )
             )
-            site_items, outside_items = detect_speed_violations(track, registry)
+            site_items, outside_items = detect_speed_violations(
+                track,
+                registry,
+                site_threshold_kmh=site_threshold,
+                outside_threshold_kmh=outside_threshold,
+            )
             site_speed_violations.extend(site_items)
             outside_speed_violations.extend(outside_items)
 
@@ -98,13 +129,21 @@ def main() -> None:
             max_seconds,
             control_seconds,
         )
-        append_speed_sheets(output, site_speed_violations, outside_speed_violations)
+        append_speed_sheets(
+            output,
+            site_speed_violations,
+            outside_speed_violations,
+            site_threshold_kmh=site_threshold,
+            outside_threshold_kmh=outside_threshold,
+        )
 
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
         print(f"Запрещённых поворотов: {len(turn_violations)}")
         print(f"Нарушений скорости на площадке: {len(site_speed_violations)}")
         print(f"Нарушений скорости вне площадки: {len(outside_speed_violations)}")
+        print(f"Порог на площадке: {site_threshold:g} км/ч")
+        print(f"Порог вне площадки: {outside_threshold:g} км/ч")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
