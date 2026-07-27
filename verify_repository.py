@@ -6,7 +6,7 @@ operational references, wrapper targets and Python syntax across the repository.
 """
 from __future__ import annotations
 
-import py_compile
+import ast
 import sys
 from pathlib import Path
 
@@ -38,9 +38,9 @@ OPERATIONAL_EXPECTATIONS = {
         "report_portal:app",
     ),
     "report_portal.py": (
-        "generate_kpp_summary_report.py",
-        "generate_first_entry_report.py",
-        "generate_prohibited_left_turn_report.py",
+        '"kpp": APP_DIR / "generate_first_entry_report.py"',
+        '"efficiency": APP_DIR / "generate_kpp_summary_report.py"',
+        '"violation": APP_DIR / "generate_prohibited_left_turn_report.py"',
     ),
     "README.md": tuple(CANONICAL_FILES),
     "SERVER_DEPLOY.md": tuple(CANONICAL_FILES),
@@ -48,10 +48,10 @@ OPERATIONAL_EXPECTATIONS = {
 
 FORBIDDEN_OPERATIONAL_REFERENCES = {
     "report_portal.py": (
-        "generate_kpp_report.py",
-        "arvento_kpp_report.py",
-        "arvento_first_entry_report_fixed.py",
-        "prohibited_left_turn_report.py",
+        'APP_DIR / "generate_kpp_report.py"',
+        'APP_DIR / "arvento_kpp_report.py"',
+        'APP_DIR / "arvento_first_entry_report_fixed.py"',
+        'APP_DIR / "prohibited_left_turn_report.py"',
     ),
     "docker-compose.server.yml": (
         "arvento_postgres_sync_v2.py",
@@ -111,15 +111,16 @@ def check_forbidden_files(errors: list[str]) -> None:
 
 
 def check_python_syntax(errors: list[str]) -> int:
+    """Parse every Python file without creating __pycache__ artifacts."""
     checked = 0
     for path in sorted(ROOT.rglob("*.py")):
         if any(part in {".git", ".venv", "venv", "__pycache__"} for part in path.parts):
             continue
         checked += 1
         try:
-            py_compile.compile(str(path), doraise=True)
-        except py_compile.PyCompileError as exc:
-            errors.append(f"Синтаксическая ошибка: {path.relative_to(ROOT)}: {exc.msg}")
+            ast.parse(read(path), filename=str(path))
+        except (SyntaxError, UnicodeError) as exc:
+            errors.append(f"Синтаксическая ошибка: {path.relative_to(ROOT)}: {exc}")
     return checked
 
 
