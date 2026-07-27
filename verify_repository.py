@@ -22,8 +22,10 @@ CANONICAL_FILES = {
     "run_report_portal.py": (
         "report_portal",
         "generate_report_with_thresholds",
+        "violation_web_preview",
         "site_speed_threshold",
         "outside_speed_threshold",
+        'id=\\"plateFilter\\"',
         '"Нарушения"',
     ),
     "generate_kpp_summary_report.py": ("arvento_kpp_report",),
@@ -40,8 +42,16 @@ CANONICAL_FILES = {
 REQUIRED_SUPPORT_MODULES = {
     "speed_violation_report.py": (
         "validate_speed_thresholds",
-        "MIN_SPEED_EVENT_POINTS",
+        "MIN_SPEED_EVENT_POINTS = 3",
+        "MIN_SPEED_EVENT_DURATION_SECONDS",
+        "_event_is_smooth",
+        "SUMMARY_SHEET_NAME",
         "MAX_VALID_GPS_SPEED_KMH",
+    ),
+    "verify_runtime.py": (
+        "_event_is_smooth",
+        "plateFilter",
+        "runtime-проверки",
     ),
 }
 
@@ -49,6 +59,7 @@ OPERATIONAL_EXPECTATIONS = {
     "Dockerfile.server": (
         "sync_arvento_gps_to_postgres.py",
         "verify_repository.py",
+        "verify_runtime.py",
     ),
     "docker-compose.server.yml": (
         "name: arvento_report",
