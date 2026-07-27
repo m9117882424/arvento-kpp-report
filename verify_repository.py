@@ -45,6 +45,19 @@ CANONICAL_FILES = {
 }
 
 REQUIRED_SUPPORT_MODULES = {
+    "portal_table_ui.py": (
+        "import run_report_portal as portal",
+        'id="plateFilter" type="text"',
+        'id="plateSuggestions"',
+        "sortColumnIndex",
+        "data-sort-index",
+        "plateFilter.addEventListener('input'",
+    ),
+    "arvento_first_entry_report_fixed.py": (
+        "create_report_without_map_column",
+        "sheet.delete_cols(5, 1)",
+        'sheet.auto_filter.ref = f"A1:J{max_row}"',
+    ),
     "speed_violation_report.py": (
         "validate_speed_thresholds",
         "MIN_SPEED_EVENT_POINTS = 3",
@@ -71,7 +84,9 @@ REQUIRED_SUPPORT_MODULES = {
     ),
     "verify_runtime.py": (
         "_event_is_smooth",
-        "plateFilter",
+        "portal_table_ui",
+        "plateSuggestions",
+        "data-sort-index",
         "dbStatus",
         "Площадка АЭС АККУЮ",
         "runtime-проверки",
@@ -90,7 +105,7 @@ OPERATIONAL_EXPECTATIONS = {
         "sync_arvento_gps_to_postgres.py",
         "run_geofence_editor:app",
         "report-portal:",
-        "run_report_portal:app",
+        "portal_table_ui:app",
     ),
     "report_portal.py": (
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
