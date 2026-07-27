@@ -83,6 +83,7 @@ def insert_rows(conn: psycopg.Connection, rows, group_name: str) -> tuple[int, s
         for row in rows:
             event_time = row.timestamp.replace(tzinfo=TZ) if row.timestamp.tzinfo is None else row.timestamp
             plate = normalize_plate(row.plate)
+            row_hash = source_hash(row)
             ensure_partition(conn, event_time.date())
             cur.execute(
                 """
@@ -96,22 +97,32 @@ def insert_rows(conn: psycopg.Connection, rows, group_name: str) -> tuple[int, s
                     ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,
                     %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                 )
-                ON CONFLICT (source_hash, event_time) DO UPDATE SET
-                    region_name = COALESCE(NULLIF(EXCLUDED.region_name, ''), gps_points.region_name)
-                RETURNING (xmax = 0)
+                ON CONFLICT (source_hash, event_time) DO NOTHING
+                RETURNING 1
                 """,
                 (
                     row.device_no or "", row.plate, plate, event_time,
                     row.latitude, row.longitude, row.longitude, row.latitude,
                     row.speed, row.distance, row.address, row.event_type,
                     row.driver, row.pause_duration, row.idling_duration,
-                    row.ignition_duration, row.region_name, source_hash(row),
+                    row.ignition_duration, row.region_name, row_hash,
                 ),
             )
             result = cur.fetchone()
-            if result and result[0]:
+            if result:
                 inserted += 1
                 affected.add((plate, event_time.date()))
+            elif row.region_name:
+                cur.execute(
+                    """
+                    UPDATE gps_points
+                    SET region_name = %s
+                    WHERE source_hash = %s
+                      AND event_time = %s
+                      AND COALESCE(region_name, '') = ''
+                    """,
+                    (row.region_name, row_hash, event_time),
+                )
 
             cur.execute(
                 """
