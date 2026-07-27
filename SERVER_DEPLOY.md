@@ -20,13 +20,21 @@ ARVENTO_PIN2
 ARVENTO_GROUP
 ```
 
-Для Google Satellite дополнительно указывается `GOOGLE_MAPS_API_KEY`. При пустом или нерабочем ключе редактор автоматически использует OpenStreetMap.
+Дополнительные параметры:
 
-Файл `.env` не добавлять в Git.
+```text
+GOOGLE_MAPS_API_KEY
+GEOFENCE_EDITOR_PORT=18083
+REPORT_PORTAL_PORT=18084
+ARVENTO_RETENTION_DAYS
+```
 
-## 2. Проверка конфигурации
+При пустом или нерабочем `GOOGLE_MAPS_API_KEY` редактор геозон использует OpenStreetMap. Файл `.env` не добавлять в Git.
+
+## 2. Проверка репозитория и конфигурации
 
 ```bash
+python verify_repository.py
 docker compose -f docker-compose.server.yml config
 ```
 
@@ -36,6 +44,7 @@ Compose-проект имеет имя `arvento_report`. Сервисы:
 postgres
 gps-sync
 geofence-editor
+report-portal
 ```
 
 ## 3. Запуск
@@ -48,9 +57,11 @@ docker compose -f docker-compose.server.yml up -d --build
 
 ```bash
 docker compose -f docker-compose.server.yml ps
-docker compose -f docker-compose.server.yml logs -f gps-sync
-docker compose -f docker-compose.server.yml logs -f geofence-editor
+docker compose -f docker-compose.server.yml logs --tail=100 gps-sync
+docker compose -f docker-compose.server.yml logs --tail=100 geofence-editor
+docker compose -f docker-compose.server.yml logs --tail=100 report-portal
 curl http://127.0.0.1:18083/health
+curl http://127.0.0.1:18084/health
 ```
 
 ## 4. Ручная синхронизация
@@ -76,31 +87,9 @@ docker compose -f docker-compose.server.yml run --rm gps-sync \
   python sync_arvento_gps_to_postgres.py retention
 ```
 
-## 5. Первичная загрузка истории
+Массовая загрузка истории по умолчанию не выполняется. Дополнительные сутки загружаются только при реальной необходимости. Срок хранения задаётся через `ARVENTO_RETENTION_DAYS`.
 
-Сначала загрузить 3–7 дней и измерить размер базы:
-
-```bash
-for i in $(seq 7 -1 1); do
-  D=$(date -d "$i days ago" +%F)
-  docker compose -f docker-compose.server.yml run --rm gps-sync \
-    python sync_arvento_gps_to_postgres.py day "$D" || break
-  sleep 10
-done
-```
-
-После проверки диска загрузить полный период хранения:
-
-```bash
-for i in $(seq 60 -1 1); do
-  D=$(date -d "$i days ago" +%F)
-  docker compose -f docker-compose.server.yml run --rm gps-sync \
-    python sync_arvento_gps_to_postgres.py day "$D" || break
-  sleep 10
-done
-```
-
-## 6. Редактор геозон
+## 5. Редактор геозон
 
 Сервис слушает только localhost:
 
@@ -114,31 +103,69 @@ SSH-туннель:
 ssh -L 18083:127.0.0.1:18083 root@SERVER_IP
 ```
 
-После этого открыть локально:
-
-```text
-http://127.0.0.1:18083
-```
-
 Возможности:
 
 - Google Satellite при наличии рабочего ключа;
 - OpenStreetMap как обязательный fallback;
-- точки, линии, полигоны;
+- точки, линии и полигоны;
 - редактирование вершин;
 - сохранение в PostGIS;
 - версионирование геометрии;
 - отключение зоны без удаления истории.
 
-## 7. Хранение
+## 6. Портал отчётов
 
-- GPS-точки: 60 дней, суточные партиции PostgreSQL;
+Сервис слушает только localhost:
+
+```text
+http://127.0.0.1:18084
+```
+
+Для временного доступа через SSH:
+
+```bash
+ssh -L 18084:127.0.0.1:18084 root@SERVER_IP
+```
+
+Для постоянного доступа используется Nginx, HTTPS и Basic Auth. Порт `18084` в UFW открывать не требуется.
+
+Портал формирует:
+
+- первый въезд через КПП;
+- эффективность легкового транспорта;
+- запрещённый поворот.
+
+CSV и Excel создаются в системной временной папке контейнера и после ответа браузеру удаляются.
+
+## 7. Обновление
+
+```bash
+cd /opt/arvento_report
+git pull origin main
+python verify_repository.py
+docker compose -f docker-compose.server.yml build gps-sync geofence-editor report-portal
+docker compose -f docker-compose.server.yml up -d --force-recreate gps-sync geofence-editor report-portal
+```
+
+Для изменения только портала:
+
+```bash
+cd /opt/arvento_report
+git pull origin main
+python verify_repository.py
+docker compose -f docker-compose.server.yml build report-portal
+docker compose -f docker-compose.server.yml up -d --force-recreate report-portal
+```
+
+## 8. Хранение
+
+- GPS-точки: срок определяется `ARVENTO_RETENTION_DAYS`, используются суточные партиции PostgreSQL;
 - геозоны и их версии: долгосрочно;
-- въезды, нарушения и суточные показатели: долгосрочно;
 - повторные сообщения не дублируются;
-- новые точки добавляют автомобиль и дату в `recalculation_queue`.
+- новые точки добавляют автомобиль и дату в `recalculation_queue`;
+- временные файлы веб-портала не сохраняются в `reports`.
 
-## 8. Резервное копирование
+## 9. Резервное копирование
 
 ```bash
 mkdir -p backups
@@ -155,7 +182,7 @@ docker compose -f docker-compose.server.yml exec -T postgres \
   < backup.dump
 ```
 
-## 9. Канонические исполняемые файлы
+## 10. Канонические исполняемые файлы
 
 ```text
 sync_arvento_gps_to_postgres.py
@@ -166,4 +193,4 @@ generate_prohibited_left_turn_report.py
 generate_scheduled_reports.py
 ```
 
-Старые имена оставлены только как совместимые внутренние реализации. В новых командах и инструкциях они не используются.
+Старые имена оставлены только как совместимые внутренние реализации. В Docker, портале, новых командах и инструкциях они не используются.
