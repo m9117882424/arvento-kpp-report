@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Synchronize Arvento GPS data into PostgreSQL/PostGIS.
 
-This is the canonical server entrypoint. The current implementation remains in
-``arvento_postgres_sync_v2`` for backward compatibility, while deployment fixes
-are applied here until the legacy module is fully retired.
+This is the canonical server entrypoint. Legacy implementation modules remain
+available for backward compatibility, but production dependencies are wired to
+the canonical task-oriented API client and parser here.
 """
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ from datetime import datetime, timedelta
 import psycopg
 from psycopg import sql
 
+from arvento_api_client import (
+    HEADERS,
+    build_general_report_params,
+    fetch_general_report_chunk,
+)
+from parse_arvento_general_report import parse_general_report_rows
 import arvento_postgres_sync_v2 as implementation
 
 
@@ -56,6 +62,11 @@ def ensure_partition(conn: psycopg.Connection, day) -> None:
         )
 
 
+# Canonical dependencies are injected into the backward-compatible implementation.
+implementation.HEADERS = HEADERS
+implementation.build_params = build_general_report_params
+implementation.fetch_chunk = fetch_general_report_chunk
+implementation.parse_rows = parse_general_report_rows
 implementation.ensure_partition = ensure_partition
 
 
