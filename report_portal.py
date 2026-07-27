@@ -23,11 +23,16 @@ from openpyxl import load_workbook
 APP_DIR = Path(__file__).resolve().parent
 TZ = ZoneInfo("Europe/Istanbul")
 MAX_ROSTER_BYTES = 25 * 1024 * 1024
-PREVIEW_ROWS = 300
 MAX_REPORT_DAYS = 31
+PREVIEW_ROWS = 300
+
+CANONICAL_REPORT_SCRIPTS = {
+    "kpp": APP_DIR / "generate_first_entry_report.py",
+    "efficiency": APP_DIR / "generate_kpp_summary_report.py",
+    "violation": APP_DIR / "generate_prohibited_left_turn_report.py",
+}
 
 app = FastAPI(title="Arvento Report Portal")
-
 
 HTML = r"""<!doctype html>
 <html lang="ru">
@@ -41,7 +46,7 @@ HTML = r"""<!doctype html>
     .wrap { max-width: 1500px; margin: 0 auto; padding: 24px; }
     .card { background: #fff; border: 1px solid #dfe4ec; border-radius: 14px; box-shadow: 0 4px 18px rgba(31,45,61,.06); padding: 20px; margin-bottom: 18px; }
     h1 { margin: 0 0 6px; font-size: 26px; }
-    .muted { color: #667085; font-size: 14px; }
+    .muted, .note { color: #667085; font-size: 14px; }
     .grid { display: grid; grid-template-columns: repeat(4, minmax(180px, 1fr)); gap: 14px; margin-top: 18px; }
     label { display: block; font-size: 13px; font-weight: 650; margin-bottom: 6px; }
     input, select, button { width: 100%; box-sizing: border-box; border-radius: 9px; border: 1px solid #cfd6e1; padding: 10px 11px; font: inherit; background: #fff; }
@@ -63,9 +68,8 @@ HTML = r"""<!doctype html>
     table { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 13px; }
     th, td { padding: 8px 10px; border-right: 1px solid #e5e9f0; border-bottom: 1px solid #e5e9f0; white-space: nowrap; text-align: left; }
     th { position: sticky; top: 0; z-index: 1; background: #eef3f9; font-weight: 750; }
-    tr:last-child td { border-bottom: 0; }
     .hidden { display: none !important; }
-    .note { margin-top: 10px; font-size: 13px; color: #667085; }
+    .note { margin-top: 10px; }
     @media (max-width: 900px) { .grid, .stats { grid-template-columns: 1fr 1fr; } }
     @media (max-width: 560px) { .grid, .stats { grid-template-columns: 1fr; } .actions { flex-direction: column; } .primary, .secondary { max-width: none; } }
   </style>
@@ -75,7 +79,6 @@ HTML = r"""<!doctype html>
   <div class="card">
     <h1>Отчёты Arvento</h1>
     <div class="muted">Данные берутся напрямую из PostgreSQL. Временные CSV и Excel после формирования удаляются.</div>
-
     <form id="reportForm">
       <div class="grid">
         <div>
@@ -90,7 +93,7 @@ HTML = r"""<!doctype html>
           <label id="dateLabel" for="reportDate">Дата</label>
           <input id="reportDate" name="report_date" type="date" required>
         </div>
-        <div id="endDateBox" class="efficiency-only hidden">
+        <div class="efficiency-only hidden">
           <label for="reportEndDate">Дата до</label>
           <input id="reportEndDate" name="report_end_date" type="date">
         </div>
@@ -98,28 +101,14 @@ HTML = r"""<!doctype html>
           <label for="roster">Разнарядка XLSX/XLSM</label>
           <input id="roster" name="roster" type="file" accept=".xlsx,.xlsm">
         </div>
-
-        <div class="kpp-only">
-          <label for="gradeFrom">Грейд от</label>
-          <input id="gradeFrom" name="grade_from" value="7" placeholder="без фильтра">
-        </div>
-        <div class="kpp-only">
-          <label for="gradeTo">Грейд до</label>
-          <input id="gradeTo" name="grade_to" value="14" placeholder="без фильтра">
-        </div>
-        <div class="kpp-only">
-          <label for="timeFrom">Время от</label>
-          <input id="timeFrom" name="time_from" type="time" value="07:00">
-        </div>
-        <div class="kpp-only">
-          <label for="timeTo">Время до</label>
-          <input id="timeTo" name="time_to" type="time" value="09:00">
-        </div>
+        <div class="kpp-only"><label for="gradeFrom">Грейд от</label><input id="gradeFrom" name="grade_from" value="7" placeholder="без фильтра"></div>
+        <div class="kpp-only"><label for="gradeTo">Грейд до</label><input id="gradeTo" name="grade_to" value="14" placeholder="без фильтра"></div>
+        <div class="kpp-only"><label for="timeFrom">Время от</label><input id="timeFrom" name="time_from" type="time" value="07:00"></div>
+        <div class="kpp-only"><label for="timeTo">Время до</label><input id="timeTo" name="time_to" type="time" value="09:00"></div>
         <div class="kpp-only" style="grid-column: span 2">
           <label class="check"><input name="consider_previous_exits" type="checkbox" value="true" checked>Учитывать предыдущие выезды</label>
         </div>
       </div>
-
       <div class="actions">
         <button id="generateBtn" class="primary" type="submit">Сформировать отчёт</button>
         <button id="downloadBtn" class="secondary hidden" type="button">Выгрузить Excel</button>
@@ -127,14 +116,12 @@ HTML = r"""<!doctype html>
       <div id="status" class="status"></div>
     </form>
   </div>
-
   <div id="resultCard" class="card hidden">
     <div id="stats" class="stats"></div>
     <div class="table-wrap"><table id="resultTable"></table></div>
     <div id="previewNote" class="note"></div>
   </div>
 </div>
-
 <script>
 const form = document.getElementById('reportForm');
 const typeSelect = document.getElementById('reportType');
@@ -156,13 +143,11 @@ let excelFilename = '';
 function esc(value) {
   return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
 }
-
 function toggleType() {
   const type = typeSelect.value;
   const isKpp = type === 'kpp';
   const isEfficiency = type === 'efficiency';
   const needsRoster = isKpp || isEfficiency;
-
   rosterBox.classList.toggle('hidden', !needsRoster);
   roster.required = needsRoster;
   document.querySelectorAll('.kpp-only').forEach(x => x.classList.toggle('hidden', !isKpp));
@@ -171,46 +156,38 @@ function toggleType() {
   endDateInput.required = isEfficiency;
   if (isEfficiency && !endDateInput.value) endDateInput.value = dateInput.value;
 }
-
 typeSelect.addEventListener('change', toggleType);
 dateInput.addEventListener('change', () => {
-  if (typeSelect.value === 'efficiency' && (!endDateInput.value || endDateInput.value < dateInput.value)) {
-    endDateInput.value = dateInput.value;
-  }
+  if (typeSelect.value === 'efficiency' && (!endDateInput.value || endDateInput.value < dateInput.value)) endDateInput.value = dateInput.value;
 });
 toggleType();
 
 async function loadDates() {
   try {
-    const res = await fetch('/api/dates');
-    const data = await res.json();
+    const response = await fetch('/api/dates');
+    const data = await response.json();
     if (data.dates && data.dates.length) {
       const latest = data.dates[0];
       const earliest = data.dates[data.dates.length - 1];
-      dateInput.value = latest;
-      dateInput.min = earliest;
-      dateInput.max = latest;
-      endDateInput.value = latest;
-      endDateInput.min = earliest;
-      endDateInput.max = latest;
+      for (const input of [dateInput, endDateInput]) {
+        input.min = earliest;
+        input.max = latest;
+        input.value = latest;
+      }
     }
   } catch (_) {}
 }
 loadDates();
 
 function renderStats(summary) {
-  statsBox.innerHTML = Object.entries(summary).map(([k, v]) =>
-    `<div class="stat"><div class="k">${esc(k)}</div><div class="v">${esc(v)}</div></div>`
-  ).join('');
+  statsBox.innerHTML = Object.entries(summary).map(([key, value]) => `<div class="stat"><div class="k">${esc(key)}</div><div class="v">${esc(value)}</div></div>`).join('');
 }
-
 function renderTable(columns, rows) {
-  const head = `<thead><tr>${columns.map(c => `<th>${esc(c)}</th>`).join('')}</tr></thead>`;
-  const body = `<tbody>${rows.map(row => `<tr>${row.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody>`;
+  const head = `<thead><tr>${columns.map(value => `<th>${esc(value)}</th>`).join('')}</tr></thead>`;
+  const body = `<tbody>${rows.map(row => `<tr>${row.map(value => `<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody>`;
   table.innerHTML = head + body;
 }
-
-form.addEventListener('submit', async (event) => {
+form.addEventListener('submit', async event => {
   event.preventDefault();
   excelBase64 = '';
   excelFilename = '';
@@ -219,22 +196,17 @@ form.addEventListener('submit', async (event) => {
   statusBox.className = 'status';
   statusBox.textContent = 'Формирование отчёта. Это может занять несколько минут…';
   generateBtn.disabled = true;
-
   const data = new FormData(form);
   if (!data.has('consider_previous_exits')) data.append('consider_previous_exits', 'false');
-
   try {
-    const res = await fetch('/api/generate', { method: 'POST', body: data });
-    const payload = await res.json();
-    if (!res.ok) throw new Error(payload.detail || 'Ошибка формирования отчёта');
-
+    const response = await fetch('/api/generate', {method: 'POST', body: data});
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.detail || 'Ошибка формирования отчёта');
     excelBase64 = payload.excel_base64;
     excelFilename = payload.filename;
     renderStats(payload.summary);
     renderTable(payload.columns, payload.rows);
-    previewNote.textContent = payload.preview_truncated
-      ? `Показаны первые ${payload.rows.length} строк. Полный результат находится в Excel.`
-      : `Показано строк: ${payload.rows.length}.`;
+    previewNote.textContent = payload.preview_truncated ? `Показаны первые ${payload.rows.length} строк. Полный результат находится в Excel.` : `Показано строк: ${payload.rows.length}.`;
     resultCard.classList.remove('hidden');
     downloadBtn.classList.remove('hidden');
     statusBox.className = 'status ok';
@@ -246,13 +218,12 @@ form.addEventListener('submit', async (event) => {
     generateBtn.disabled = false;
   }
 });
-
 downloadBtn.addEventListener('click', () => {
   if (!excelBase64) return;
   const raw = atob(excelBase64);
   const bytes = new Uint8Array(raw.length);
-  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
-  const blob = new Blob([bytes], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  for (let index = 0; index < raw.length; index++) bytes[index] = raw.charCodeAt(index);
+  const blob = new Blob([bytes], {type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -281,18 +252,13 @@ def parse_report_date(value: str) -> date:
         raise ValueError("Некорректная дата") from exc
 
 
-def period_bounds(start_day: date, end_day: date) -> tuple[datetime, datetime]:
+def export_period_to_csv(start_day: date, end_day: date, path: Path) -> int:
     start = datetime.combine(start_day, time.min, tzinfo=TZ)
     end = datetime.combine(end_day + timedelta(days=1), time.min, tzinfo=TZ)
-    return start, end
-
-
-def export_period_to_csv(start_day: date, end_day: date, path: Path) -> int:
-    start, end = period_bounds(start_day, end_day)
     query = """
         SELECT
-            COALESCE(NULLIF(plate, ''), normalized_plate) AS plate,
-            event_time AT TIME ZONE 'Europe/Istanbul' AS local_time,
+            COALESCE(NULLIF(plate, ''), normalized_plate),
+            event_time AT TIME ZONE 'Europe/Istanbul',
             latitude,
             longitude,
             speed_kmh,
@@ -300,8 +266,7 @@ def export_period_to_csv(start_day: date, end_day: date, path: Path) -> int:
             COALESCE(region_name, ''),
             COALESCE(address, '')
         FROM gps_points
-        WHERE event_time >= %s
-          AND event_time < %s
+        WHERE event_time >= %s AND event_time < %s
         ORDER BY normalized_plate, event_time
     """
     count = 0
@@ -311,27 +276,13 @@ def export_period_to_csv(start_day: date, end_day: date, path: Path) -> int:
             cursor.execute(query, (start, end))
             with path.open("w", encoding="utf-8-sig", newline="") as stream:
                 writer = csv.writer(stream, delimiter=";")
-                writer.writerow([
-                    "Номерной знак",
-                    "Дата / время",
-                    "Latitudine",
-                    "Долгота",
-                    "Скорость",
-                    "Расстояние (км)",
-                    "Область",
-                    "Адрес",
-                ])
+                writer.writerow(["Номерной знак", "Дата / время", "Latitudine", "Долгота", "Скорость", "Расстояние (км)", "Область", "Адрес"])
                 for row in cursor:
                     local_time = row[1]
                     writer.writerow([
                         row[0] or "",
                         local_time.strftime("%Y-%m-%d %H:%M:%S") if local_time else "",
-                        row[2],
-                        row[3],
-                        row[4],
-                        row[5],
-                        row[6],
-                        row[7],
+                        row[2], row[3], row[4], row[5], row[6], row[7],
                     ])
                     count += 1
     return count
@@ -373,8 +324,7 @@ def workbook_preview(path: Path) -> tuple[list[str], list[list[Any]], int]:
     try:
         sheet = workbook.worksheets[0]
         iterator = sheet.iter_rows(values_only=True)
-        first = next(iterator, tuple())
-        columns = [str(value or "") for value in first]
+        columns = [str(value or "") for value in next(iterator, tuple())]
         rows: list[list[Any]] = []
         total = 0
         for row in iterator:
@@ -388,11 +338,17 @@ def workbook_preview(path: Path) -> tuple[list[str], list[list[Any]], int]:
         workbook.close()
 
 
-def safe_roster_name(filename: str | None, suffix: str) -> str:
-    name = Path(filename or f"roster{suffix}").name
-    if Path(name).suffix.lower() not in {".xlsx", ".xlsm"}:
-        return f"roster{suffix}"
-    return name
+def validate_canonical_scripts() -> None:
+    missing = [path.name for path in CANONICAL_REPORT_SCRIPTS.values() if not path.is_file()]
+    if missing:
+        raise RuntimeError("Не найдены канонические скрипты отчётов: " + ", ".join(missing))
+
+
+def roster_target(temp_dir: Path, filename: str, suffix: str) -> Path:
+    safe_name = Path(filename or f"roster{suffix}").name
+    if Path(safe_name).suffix.lower() not in {".xlsx", ".xlsm"}:
+        safe_name = f"roster{suffix}"
+    return temp_dir / safe_name
 
 
 def generate_report(
@@ -408,11 +364,17 @@ def generate_report(
     time_to: str,
     consider_previous_exits: bool,
 ) -> dict[str, Any]:
+    validate_canonical_scripts()
+    if report_type not in CANONICAL_REPORT_SCRIPTS:
+        raise ValueError("Неизвестный тип отчёта")
+
     end_day = report_end_day if report_type == "efficiency" and report_end_day else report_day
     if end_day < report_day:
         raise ValueError("Дата окончания раньше даты начала")
     if (end_day - report_day).days + 1 > MAX_REPORT_DAYS:
         raise ValueError(f"Период отчёта не должен превышать {MAX_REPORT_DAYS} дней")
+    if report_type != "efficiency" and end_day != report_day:
+        end_day = report_day
 
     with tempfile.TemporaryDirectory(prefix="arvento_report_portal_") as temp_name:
         temp_dir = Path(temp_name)
@@ -424,84 +386,53 @@ def generate_report(
         if report_type == "violation":
             filename = f"Запрещенный_поворот_{report_day.isoformat()}.xlsx"
             output_path = temp_dir / filename
-            log = run_command([
-                sys.executable,
-                str(APP_DIR / "generate_prohibited_left_turn_report.py"),
-                str(csv_path),
-                str(output_path),
-            ])
+            log = run_command([sys.executable, str(CANONICAL_REPORT_SCRIPTS[report_type]), str(csv_path), str(output_path)])
             report_label = "Запрещённый поворот"
 
         elif report_type == "kpp":
             if not roster_bytes:
                 raise ValueError("Для отчёта по КПП необходимо загрузить разнарядку")
-            roster_path = temp_dir / safe_roster_name(roster_filename, roster_suffix)
+            roster_path = roster_target(temp_dir, roster_filename, roster_suffix)
             roster_path.write_bytes(roster_bytes)
             filename = f"Первый_въезд_{report_day.isoformat()}.xlsx"
             output_path = temp_dir / filename
             command = [
-                sys.executable,
-                str(APP_DIR / "generate_first_entry_report.py"),
-                str(csv_path),
-                str(roster_path),
-                str(output_path),
-                "--no-filter-dialog",
+                sys.executable, str(CANONICAL_REPORT_SCRIPTS[report_type]),
+                str(csv_path), str(roster_path), str(output_path), "--no-filter-dialog",
             ]
-            if grade_from.strip():
-                command += ["--grade-from", grade_from.strip()]
-            if grade_to.strip():
-                command += ["--grade-to", grade_to.strip()]
-            if time_from.strip():
-                command += ["--time-from", time_from.strip()]
-            if time_to.strip():
-                command += ["--time-to", time_to.strip()]
-            command.append(
-                "--consider-previous-exits"
-                if consider_previous_exits
-                else "--no-consider-previous-exits"
-            )
+            for option, value in (
+                ("--grade-from", grade_from),
+                ("--grade-to", grade_to),
+                ("--time-from", time_from),
+                ("--time-to", time_to),
+            ):
+                if value.strip():
+                    command += [option, value.strip()]
+            command.append("--consider-previous-exits" if consider_previous_exits else "--no-consider-previous-exits")
             log = run_command(command)
             report_label = "Первый въезд через КПП"
 
-        elif report_type == "efficiency":
+        else:
             if not roster_bytes:
                 raise ValueError("Для отчёта эффективности необходимо загрузить разнарядку")
-            roster_path = temp_dir / safe_roster_name(roster_filename, roster_suffix)
+            roster_path = roster_target(temp_dir, roster_filename, roster_suffix)
             roster_path.write_bytes(roster_bytes)
-            log = run_command([
-                sys.executable,
-                str(APP_DIR / "generate_kpp_report.py"),
-                str(csv_path),
-            ])
-            generated = csv_path.with_name(csv_path.stem + "_итоговая_сводка.xlsx")
-            if not generated.exists():
-                raise RuntimeError("Построитель не создал итоговый отчёт эффективности")
-            output_path = generated
-            filename = (
-                f"Эффективность_легкового_транспорта_"
-                f"{report_day.isoformat()}_{end_day.isoformat()}.xlsx"
-            )
+            log = run_command([sys.executable, str(CANONICAL_REPORT_SCRIPTS[report_type]), str(csv_path)])
+            output_path = csv_path.with_name(csv_path.stem + "_итоговая_сводка.xlsx")
+            filename = f"Эффективность_легкового_транспорта_{report_day.isoformat()}_{end_day.isoformat()}.xlsx"
             report_label = "Эффективность легкового транспорта"
-
-        else:
-            raise ValueError("Неизвестный тип отчёта")
 
         if not output_path.exists():
             raise RuntimeError("Построитель не создал Excel-файл")
 
         columns, rows, total_rows = workbook_preview(output_path)
-        excel_bytes = output_path.read_bytes()
-        period_text = (
-            report_day.strftime("%d.%m.%Y")
-            if report_day == end_day
-            else f"{report_day:%d.%m.%Y}–{end_day:%d.%m.%Y}"
-        )
+        period_text = report_day.strftime("%d.%m.%Y") if report_day == end_day else f"{report_day:%d.%m.%Y}–{end_day:%d.%m.%Y}"
         return {
             "filename": filename,
             "columns": columns,
             "rows": rows,
             "preview_truncated": total_rows > len(rows),
-            "excel_base64": base64.b64encode(excel_bytes).decode("ascii"),
+            "excel_base64": base64.b64encode(output_path.read_bytes()).decode("ascii"),
             "summary": {
                 "Отчёт": report_label,
                 "Период": period_text,
@@ -519,6 +450,10 @@ def index() -> str:
 
 @app.get("/health")
 def health() -> dict[str, str]:
+    try:
+        validate_canonical_scripts()
+    except RuntimeError as exc:
+        return {"status": "error", "detail": str(exc)}
     return {"status": "ok"}
 
 
@@ -550,10 +485,9 @@ async def api_generate(
     try:
         day = parse_report_date(report_date)
         end_day = parse_report_date(report_end_date) if report_end_date.strip() else None
-
         roster_bytes: bytes | None = None
-        roster_suffix = ".xlsx"
         roster_filename = "roster.xlsx"
+        roster_suffix = ".xlsx"
         if roster is not None and roster.filename:
             roster_filename = Path(roster.filename).name
             roster_suffix = Path(roster_filename).suffix.lower()
