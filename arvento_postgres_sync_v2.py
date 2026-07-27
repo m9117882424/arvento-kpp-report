@@ -8,7 +8,6 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import psycopg
-from psycopg.rows import dict_row
 import requests
 
 from arvento_api_sync import HEADERS, build_params, fetch_chunk
@@ -176,7 +175,7 @@ def sync_range(start: datetime, end: datetime) -> None:
     retries = env_int("ARVENTO_HTTP_RETRIES", 3)
 
     totals = {'chunks': 0, 'success': 0, 'received': 0, 'inserted': 0}
-    with psycopg.connect(database_url, row_factory=dict_row) as conn, requests.Session() as session:
+    with psycopg.connect(database_url) as conn, requests.Session() as session:
         ensure_schema(conn)
         session.headers.update(HEADERS)
         run_id = create_run(conn, start, end, group)
