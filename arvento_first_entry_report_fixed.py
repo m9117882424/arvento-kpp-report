@@ -9,11 +9,87 @@
 
 from __future__ import annotations
 
+import csv
 from collections import defaultdict
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 import arvento_first_entry_report as base
+
+
+_original_load_coordinate_points = base.load_coordinate_points
+
+
+def detect_csv_encoding(path: Path) -> str:
+    for encoding in ("utf-8-sig", "utf-8", "cp1251", "cp1254"):
+        try:
+            with path.open("r", encoding=encoding, newline="") as stream:
+                stream.read(256 * 1024)
+            return encoding
+        except UnicodeDecodeError:
+            continue
+    raise ValueError("Не удалось определить кодировку CSV")
+
+
+def detect_csv_delimiter(path: Path, encoding: str) -> str:
+    with path.open("r", encoding=encoding, newline="") as stream:
+        sample = stream.read(64 * 1024)
+    try:
+        return csv.Sniffer().sniff(sample, delimiters=";,\t|").delimiter
+    except csv.Error:
+        return ","
+
+
+def load_coordinate_points(path: Path) -> list[base.Point]:
+    """Загружает координатные точки из XLSX/XLSM или CSV."""
+    if path.suffix.lower() != ".csv":
+        return _original_load_coordinate_points(path)
+
+    encoding = detect_csv_encoding(path)
+    delimiter = detect_csv_delimiter(path, encoding)
+    points: list[base.Point] = []
+    columns: dict[str, int | None] | None = None
+    epoch = datetime(1899, 12, 30)
+
+    with path.open("r", encoding=encoding, newline="") as stream:
+        reader = csv.reader(stream, delimiter=delimiter)
+        for row in reader:
+            if columns is None:
+                headers = [base.clean(value) for value in row]
+                candidate = {
+                    key: base.find_column(headers, aliases)
+                    for key, aliases in base.COORD_ALIASES.items()
+                }
+                if all(candidate.get(key) is not None for key in ("plate", "timestamp", "lat", "lon")):
+                    columns = candidate
+                continue
+
+            plate = base.normalize_plate(base.get_value(row, columns["plate"]))
+            timestamp = base.parse_datetime(base.get_value(row, columns["timestamp"]), epoch)
+            lat = base.as_float(base.get_value(row, columns["lat"]))
+            lon = base.as_float(base.get_value(row, columns["lon"]))
+            if not plate or timestamp is None or lat is None or lon is None:
+                continue
+
+            points.append(
+                base.Point(
+                    plate=plate,
+                    timestamp=timestamp,
+                    lat=lat,
+                    lon=lon,
+                    region=base.clean(base.get_value(row, columns.get("region"))),
+                )
+            )
+
+    if columns is None:
+        raise ValueError(
+            "В координатной CSV-выгрузке не найдены колонки: "
+            "госномер, дата/время, широта, долгота"
+        )
+    if not points:
+        raise ValueError("В координатной CSV-выгрузке нет пригодных GPS-точек")
+    return points
 
 
 def stable_side(distance_m: float) -> int:
@@ -105,6 +181,7 @@ def detect_coordinate_crossings(points: list[base.Point]) -> list[base.Crossing]
     return sorted(crossings, key=lambda item: (item.timestamp, item.plate, item.gate))
 
 
+base.load_coordinate_points = load_coordinate_points
 base.detect_coordinate_crossings = detect_coordinate_crossings
 
 
