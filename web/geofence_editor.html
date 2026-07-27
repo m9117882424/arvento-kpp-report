@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Редактор геозон Arvento</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.css">
+  <style>
+    html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; }
+    body { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; background: #f3f4f6; }
+    aside { padding: 16px; overflow-y: auto; background: white; border-right: 1px solid #d1d5db; }
+    #map { height: 100vh; min-height: 520px; }
+    h1 { margin: 0 0 14px; font-size: 20px; }
+    label { display: block; margin-top: 10px; font-size: 13px; color: #374151; }
+    input, select, textarea, button { box-sizing: border-box; width: 100%; margin-top: 5px; padding: 9px; font-size: 14px; }
+    textarea { min-height: 72px; resize: vertical; }
+    button { cursor: pointer; border: 0; border-radius: 6px; background: #1f2937; color: white; }
+    button.secondary { background: #6b7280; }
+    button.danger { background: #991b1b; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .status { margin: 12px 0; padding: 9px; border-radius: 6px; background: #eef2ff; font-size: 13px; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .zone-list { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
+    .zone-item { padding: 8px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 7px; cursor: pointer; }
+    .zone-item:hover { background: #f9fafb; }
+    @media (max-width: 800px) {
+      body { display: block; }
+      aside { border-right: 0; border-bottom: 1px solid #d1d5db; }
+      #map { height: 65vh; }
+    }
+  </style>
+</head>
+<body>
+<aside>
+  <h1>Редактор геозон</h1>
+  <div id="status" class="status">Загрузка карты…</div>
+
+  <div class="row">
+    <button id="useGoogle" type="button" class="secondary">Google спутник</button>
+    <button id="useOsm" type="button" class="secondary">OpenStreetMap</button>
+  </div>
+
+  <label for="code">Код</label>
+  <input id="code" placeholder="SITE_MAIN">
+
+  <label for="name">Название</label>
+  <input id="name" placeholder="Основная территория">
+
+  <label for="type">Тип</label>
+  <select id="type">
+    <option value="SITE">Территория</option>
+    <option value="GATE">КПП / линия</option>
+    <option value="PARKING">Парковка</option>
+    <option value="FORBIDDEN_AREA">Запрещённая зона</option>
+    <option value="ROAD_CORRIDOR">Дорожный коридор</option>
+    <option value="WORK_ZONE">Рабочая зона</option>
+    <option value="CONTROL_POINT">Контрольная точка</option>
+  </select>
+
+  <label for="comment">Комментарий</label>
+  <textarea id="comment"></textarea>
+
+  <label><input id="active" type="checkbox" checked style="width:auto"> Активна</label>
+
+  <button id="save" type="button">Сохранить</button>
+  <div class="row">
+    <button id="newZone" type="button" class="secondary">Новая</button>
+    <button id="deleteZone" type="button" class="danger">Отключить</button>
+  </div>
+
+  <p class="muted">Нарисуйте точку, линию или полигон инструментами слева на карте. При изменении существующей зоны создаётся новая версия.</p>
+
+  <div class="zone-list">
+    <strong>Существующие зоны</strong>
+    <div id="zones"></div>
+  </div>
+</aside>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-draw@1.0.4/dist/leaflet.draw.js"></script>
+<script>
+  const statusEl = document.getElementById('status');
+  const zonesEl = document.getElementById('zones');
+  const drawnItems = new L.FeatureGroup();
+  let map;
+  let osmLayer;
+  let googleLayer = null;
+  let currentLayer = null;
+  let currentId = null;
+  let config = null;
+
+  function setStatus(text) { statusEl.textContent = text; }
+
+  async function loadScript(src, timeoutMs = 8000) {
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const timer = setTimeout(() => {
+        script.remove();
+        reject(new Error('Тайм-аут загрузки Google Maps'));
+      }, timeoutMs);
+      script.src = src;
+      script.async = true;
+      script.defer = true;
+      script.onload = () => { clearTimeout(timer); resolve(); };
+      script.onerror = () => { clearTimeout(timer); reject(new Error('Google Maps не загрузился')); };
+      document.head.appendChild(script);
+    });
+  }
+
+  function showOsm(reason = '') {
+    if (googleLayer && map.hasLayer(googleLayer)) map.removeLayer(googleLayer);
+    if (!map.hasLayer(osmLayer)) osmLayer.addTo(map);
+    setStatus(reason ? `${reason}. Используется OpenStreetMap.` : 'Используется OpenStreetMap.');
+  }
+
+  async function enableGoogle() {
+    if (!config.googleMapsApiKey) {
+      showOsm('Ключ Google Maps не задан');
+      return;
+    }
+    try {
+      if (!window.google || !window.google.maps) {
+        await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(config.googleMapsApiKey)}&v=weekly`);
+      }
+      if (!googleLayer) {
+        googleLayer = L.gridLayer({ tileSize: 256, attribution: 'Google' });
+        googleLayer.createTile = function(coords) {
+          const tile = document.createElement('div');
+          tile.style.width = '256px';
+          tile.style.height = '256px';
+          const point = map.unproject(L.point(coords.x * 256 + 128, coords.y * 256 + 128), coords.z);
+          const mini = new google.maps.Map(tile, {
+            center: {lat: point.lat, lng: point.lng}, zoom: coords.z,
+            mapTypeId: 'satellite', disableDefaultUI: true,
+            gestureHandling: 'none', keyboardShortcuts: false
+          });
+          return tile;
+        };
+      }
+      if (map.hasLayer(osmLayer)) map.removeLayer(osmLayer);
+      googleLayer.addTo(map);
+      setStatus('Используется Google Satellite.');
+    } catch (error) {
+      if (config.osmFallbackEnabled) showOsm(error.message);
+      else setStatus(error.message);
+    }
+  }
+
+  function clearForm() {
+    currentId = null;
+    currentLayer = null;
+    drawnItems.clearLayers();
+    document.getElementById('code').value = '';
+    document.getElementById('name').value = '';
+    document.getElementById('type').value = 'SITE';
+    document.getElementById('comment').value = '';
+    document.getElementById('active').checked = true;
+  }
+
+  function featureToForm(feature) {
+    const p = feature.properties || {};
+    currentId = p.id || feature.id;
+    document.getElementById('code').value = p.code || '';
+    document.getElementById('name').value = p.name || '';
+    document.getElementById('type').value = p.geofence_type || 'SITE';
+    document.getElementById('comment').value = p.comment || '';
+    document.getElementById('active').checked = p.is_active !== false;
+  }
+
+  function loadFeature(feature) {
+    drawnItems.clearLayers();
+    const layer = L.geoJSON(feature).getLayers()[0];
+    currentLayer = layer;
+    drawnItems.addLayer(layer);
+    featureToForm(feature);
+    if (layer.getBounds && layer.getBounds().isValid()) map.fitBounds(layer.getBounds(), {padding: [30, 30]});
+    else if (layer.getLatLng) map.setView(layer.getLatLng(), 18);
+  }
+
+  async function loadZones() {
+    const response = await fetch('/api/geofences');
+    if (!response.ok) throw new Error('Не удалось загрузить геозоны');
+    const data = await response.json();
+    zonesEl.innerHTML = '';
+    data.features.forEach(feature => {
+      const item = document.createElement('div');
+      item.className = 'zone-item';
+      item.innerHTML = `<strong>${feature.properties.name}</strong><br><span class="muted">${feature.properties.code} · ${feature.properties.geofence_type} · v${feature.properties.version}</span>`;
+      item.addEventListener('click', () => loadFeature(feature));
+      zonesEl.appendChild(item);
+    });
+  }
+
+  async function saveZone() {
+    const layers = drawnItems.getLayers();
+    if (layers.length !== 1) {
+      setStatus('Нужно оставить на карте ровно один объект.');
+      return;
+    }
+    const geometry = layers[0].toGeoJSON().geometry;
+    const payload = {
+      code: document.getElementById('code').value.trim(),
+      name: document.getElementById('name').value.trim(),
+      geofence_type: document.getElementById('type').value,
+      comment: document.getElementById('comment').value.trim() || null,
+      is_active: document.getElementById('active').checked,
+      geometry
+    };
+    if (!payload.code || !payload.name) {
+      setStatus('Укажите код и название.');
+      return;
+    }
+    const url = currentId ? `/api/geofences/${currentId}` : '/api/geofences';
+    const method = currentId ? 'PUT' : 'POST';
+    const response = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
+    const result = response.status === 204 ? {} : await response.json();
+    if (!response.ok) {
+      setStatus(result.detail || 'Ошибка сохранения');
+      return;
+    }
+    currentId = result.id || currentId;
+    setStatus(`Сохранено. Версия ${result.version || ''}`);
+    await loadZones();
+  }
+
+  async function disableZone() {
+    if (!currentId) return setStatus('Сначала выберите существующую геозону.');
+    const response = await fetch(`/api/geofences/${currentId}`, {method: 'DELETE'});
+    if (!response.ok) return setStatus('Не удалось отключить геозону.');
+    clearForm();
+    await loadZones();
+    setStatus('Геозона отключена.');
+  }
+
+  async function init() {
+    config = await (await fetch('/api/config')).json();
+    map = L.map('map').setView(config.center, config.zoom);
+    osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+    drawnItems.addTo(map);
+    map.addControl(new L.Control.Draw({
+      edit: {featureGroup: drawnItems, remove: true},
+      draw: {rectangle: false, circle: false, circlemarker: false}
+    }));
+
+    map.on(L.Draw.Event.CREATED, event => {
+      drawnItems.clearLayers();
+      currentLayer = event.layer;
+      drawnItems.addLayer(event.layer);
+      if (currentId) setStatus('Геометрия изменена. Сохранение создаст новую версию.');
+    });
+
+    document.getElementById('useGoogle').addEventListener('click', enableGoogle);
+    document.getElementById('useOsm').addEventListener('click', () => showOsm());
+    document.getElementById('save').addEventListener('click', saveZone);
+    document.getElementById('newZone').addEventListener('click', clearForm);
+    document.getElementById('deleteZone').addEventListener('click', disableZone);
+
+    await loadZones();
+    if (config.defaultMapProvider === 'google') await enableGoogle();
+    else showOsm();
+  }
+
+  init().catch(error => {
+    setStatus(`Ошибка запуска: ${error.message}`);
+    if (map && osmLayer && !map.hasLayer(osmLayer)) osmLayer.addTo(map);
+  });
+</script>
+</body>
+</html>
