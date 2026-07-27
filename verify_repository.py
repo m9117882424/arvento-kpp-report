@@ -19,22 +19,36 @@ CANONICAL_FILES = {
         "parse_arvento_general_report",
     ),
     "run_geofence_editor.py": ("geofence_editor_api",),
+    "run_report_portal.py": (
+        "report_portal",
+        "generate_report_with_thresholds",
+        "site_speed_threshold",
+        "outside_speed_threshold",
+        '"Нарушения"',
+    ),
     "generate_kpp_summary_report.py": ("arvento_kpp_report",),
     "generate_first_entry_report.py": ("arvento_first_entry_report_fixed",),
     "generate_prohibited_left_turn_report.py": (
         "prohibited_left_turn_report",
         "speed_violation_report",
+        "--site-speed-threshold",
+        "--outside-speed-threshold",
     ),
     "generate_scheduled_reports.py": ("run_automated_reports",),
 }
 
-REQUIRED_SUPPORT_MODULES = (
-    "speed_violation_report.py",
-)
+REQUIRED_SUPPORT_MODULES = {
+    "speed_violation_report.py": (
+        "validate_speed_thresholds",
+        "MIN_SPEED_EVENT_POINTS",
+        "MAX_VALID_GPS_SPEED_KMH",
+    ),
+}
 
 OPERATIONAL_EXPECTATIONS = {
     "Dockerfile.server": (
         "sync_arvento_gps_to_postgres.py",
+        "verify_repository.py",
     ),
     "docker-compose.server.yml": (
         "name: arvento_report",
@@ -42,15 +56,19 @@ OPERATIONAL_EXPECTATIONS = {
         "sync_arvento_gps_to_postgres.py",
         "run_geofence_editor:app",
         "report-portal:",
-        "report_portal:app",
+        "run_report_portal:app",
     ),
     "report_portal.py": (
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
         '"efficiency": APP_DIR / "generate_kpp_summary_report.py"',
         '"violation": APP_DIR / "generate_prohibited_left_turn_report.py"',
     ),
-    "README.md": tuple(CANONICAL_FILES),
-    "SERVER_DEPLOY.md": tuple(CANONICAL_FILES),
+    "README.md": tuple(
+        name for name in CANONICAL_FILES if name != "run_report_portal.py"
+    ),
+    "SERVER_DEPLOY.md": tuple(
+        name for name in CANONICAL_FILES if name != "run_report_portal.py"
+    ),
 }
 
 FORBIDDEN_OPERATIONAL_REFERENCES = {
@@ -63,6 +81,7 @@ FORBIDDEN_OPERATIONAL_REFERENCES = {
     "docker-compose.server.yml": (
         "arvento_postgres_sync_v2.py",
         "geofence_editor_api:app",
+        '"report_portal:app"',
     ),
     "Dockerfile.server": (
         "arvento_postgres_sync_v2.py",
@@ -89,9 +108,15 @@ def check_canonical_files(errors: list[str]) -> None:
             if token not in content:
                 errors.append(f"{name}: не найдена ожидаемая связь с {token}")
 
-    for name in REQUIRED_SUPPORT_MODULES:
-        if not (ROOT / name).is_file():
+    for name, required_tokens in REQUIRED_SUPPORT_MODULES.items():
+        path = ROOT / name
+        if not path.is_file():
             errors.append(f"Отсутствует обязательный модуль: {name}")
+            continue
+        content = read(path)
+        for token in required_tokens:
+            if token not in content:
+                errors.append(f"{name}: отсутствует обязательный элемент {token}")
 
 
 def check_operational_references(errors: list[str]) -> None:
