@@ -1,23 +1,25 @@
+name: arvento_report
+
 services:
   postgres:
     image: postgis/postgis:16-3.4
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB:-arvento}
-      POSTGRES_USER: ${POSTGRES_USER:-arvento}
+      POSTGRES_DB: ${POSTGRES_DB:-arvento_report}
+      POSTGRES_USER: ${POSTGRES_USER:-arvento_report}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       TZ: Europe/Istanbul
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arvento} -d ${POSTGRES_DB:-arvento}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arvento_report} -d ${POSTGRES_DB:-arvento_report}"]
       interval: 10s
       timeout: 5s
       retries: 10
-    networks: [arvento]
+    networks: [arvento_report]
 
-  sync:
+  gps-sync:
     build:
       context: .
       dockerfile: Dockerfile.server
@@ -27,13 +29,13 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
       TZ: Europe/Istanbul
-    command: ["python", "arvento_postgres_sync_v2.py", "daemon"]
+    command: ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
     volumes:
       - ./logs:/app/logs
       - ./reports:/app/reports
-    networks: [arvento]
+    networks: [arvento_report]
 
   geofence-editor:
     build:
@@ -45,15 +47,15 @@ services:
         condition: service_healthy
     env_file: .env
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
       TZ: Europe/Istanbul
-    command: ["uvicorn", "geofence_editor_api:app", "--host", "0.0.0.0", "--port", "8080"]
+    command: ["uvicorn", "run_geofence_editor:app", "--host", "0.0.0.0", "--port", "8080"]
     ports:
       - "127.0.0.1:${GEOFENCE_EDITOR_PORT:-18083}:8080"
-    networks: [arvento]
+    networks: [arvento_report]
 
 volumes:
   postgres_data:
 
 networks:
-  arvento:
+  arvento_report:
