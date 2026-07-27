@@ -3,8 +3,9 @@
 
 """Generate the consolidated violations report.
 
-The workbook contains a per-plate summary, prohibited-left-turn details and two
-validated speed-violation sheets: on the site and outside the site.
+The workbook contains a per-plate summary, prohibited-turn details and two
+validated speed-violation sheets. Site classification uses the authoritative
+Akkuyu polygon marked with ``purpose=site_boundary`` in geozones.json.
 """
 
 from __future__ import annotations
@@ -16,11 +17,14 @@ from pathlib import Path
 
 import prohibited_left_turn_report as turn_report
 from geozone_registry import load_registry
+from site_boundary_speed import (
+    detect_speed_violations_by_polygon,
+    write_site_boundary_metadata,
+)
 from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     append_speed_sheets,
-    detect_speed_violations,
     validate_speed_thresholds,
 )
 from sqlite_store import import_source_to_sqlite
@@ -108,7 +112,7 @@ def main() -> None:
                     cooldown_seconds=cooldown_seconds,
                 )
             )
-            site_items, outside_items = detect_speed_violations(
+            site_items, outside_items = detect_speed_violations_by_polygon(
                 track,
                 registry,
                 site_threshold_kmh=site_threshold,
@@ -117,7 +121,6 @@ def main() -> None:
             site_speed_violations.extend(site_items)
             outside_speed_violations.extend(outside_items)
 
-        # Grouped output requires contiguous rows per plate.
         turn_violations.sort(key=lambda item: (item.plate, item.start))
         site_speed_violations.sort(key=lambda item: (item.plate, item.start))
         outside_speed_violations.sort(key=lambda item: (item.plate, item.start))
@@ -137,6 +140,7 @@ def main() -> None:
             site_threshold_kmh=site_threshold,
             outside_threshold_kmh=outside_threshold,
         )
+        write_site_boundary_metadata(output, registry)
 
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
@@ -145,6 +149,7 @@ def main() -> None:
         print(f"Валидных нарушений скорости вне площадки: {len(outside_speed_violations)}")
         print(f"Порог на площадке: {site_threshold:g} км/ч")
         print(f"Порог вне площадки: {outside_threshold:g} км/ч")
+        print("Граница площадки: полигон «Площадка АЭС АККУЮ»")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
