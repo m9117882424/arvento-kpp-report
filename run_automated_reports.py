@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Единый запуск: загрузка Arvento API и построение отчётов.
+"""Backward-compatible implementation of the scheduled report workflow.
 
-Примеры:
-    python run_automated_reports.py --date 2026-07-24 --left-turn
+Use the canonical entrypoint ``generate_scheduled_reports.py``.
 
-    python run_automated_reports.py --date 2026-07-24 --first-entry \
+Examples:
+    python generate_scheduled_reports.py --date 2026-07-24 --left-turn
+
+    python generate_scheduled_reports.py --date 2026-07-24 --first-entry \
         --roster "20.07.2026 SON GÜNCEL KİRALIK ARAÇ LİSTESİ.xlsx" \
         --grade-from 7 --grade-to 14 --time-from 07:00 --time-to 09:00
 
-Учётные данные берутся из ARVENTO_USER / ARVENTO_PIN1 / ARVENTO_PIN2
-или запрашиваются один раз в консоли.
+The legacy CSV synchronizer remains here only for backward compatibility.
+Report generation itself always uses canonical task-oriented entrypoints.
 """
 
 from __future__ import annotations
@@ -82,6 +84,7 @@ def main() -> None:
     script_dir = Path(__file__).resolve().parent
     env = os.environ.copy()
 
+    # Legacy CSV producer retained only for this compatibility workflow.
     sync_command = [
         sys.executable,
         str(script_dir / "arvento_api_sync.py"),
@@ -114,7 +117,7 @@ def main() -> None:
         run(
             [
                 sys.executable,
-                str(script_dir / "prohibited_left_turn_report.py"),
+                str(script_dir / "generate_prohibited_left_turn_report.py"),
                 str(csv_path),
                 str(output),
                 "--width", str(args.width),
@@ -134,7 +137,7 @@ def main() -> None:
         output = reports_day_dir / f"Первый_въезд_{target_day.isoformat()}.xlsx"
         command = [
             sys.executable,
-            str(script_dir / "arvento_first_entry_report_fixed.py"),
+            str(script_dir / "generate_first_entry_report.py"),
             str(csv_path),
             str(roster),
             str(output),
