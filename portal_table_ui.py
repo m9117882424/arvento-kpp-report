@@ -23,14 +23,20 @@ implementation.HTML = implementation.HTML.replace(
            <datalist id="plateSuggestions"></datalist>''',
 )
 
-# Add a permanent, clearly visible sorting symbol to every sortable header.
+# Add a restrained CSS sorting icon and an explicit link-style pointer cursor.
 implementation.HTML = implementation.HTML.replace(
     "    .map-link:hover { text-decoration:underline; }",
     "    .map-link:hover { text-decoration:underline; }\n"
-    "    th.sortable { cursor:pointer; user-select:none; }\n"
-    "    th.sortable:hover { background:#e2eaf5; }\n"
-    "    .sort-indicator { display:inline-flex; align-items:center; justify-content:center; min-width:18px; height:18px; margin-left:7px; padding:0 3px; border:1px solid #b8c2d1; border-radius:5px; background:#fff; color:#667085; font-size:12px; line-height:1; vertical-align:middle; }\n"
-    "    th.sortable.sort-asc .sort-indicator, th.sortable.sort-desc .sort-indicator { border-color:#1663d6; background:#eaf2ff; color:#1663d6; font-weight:800; }\n"
+    "    th.sortable { cursor:pointer !important; user-select:none; transition:background-color .12s ease; }\n"
+    "    th.sortable:hover { background:#e7edf6; }\n"
+    "    .sort-indicator { display:inline-block; position:relative; width:8px; height:12px; margin-left:6px; vertical-align:-1px; opacity:.55; }\n"
+    "    .sort-indicator::before { content:''; position:absolute; left:1px; top:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-bottom:4px solid #667085; }\n"
+    "    .sort-indicator::after { content:''; position:absolute; left:1px; bottom:1px; border-left:3px solid transparent; border-right:3px solid transparent; border-top:4px solid #667085; }\n"
+    "    th.sortable.sort-asc .sort-indicator, th.sortable.sort-desc .sort-indicator { opacity:1; }\n"
+    "    th.sortable.sort-asc .sort-indicator::after { display:none; }\n"
+    "    th.sortable.sort-desc .sort-indicator::before { display:none; }\n"
+    "    th.sortable.sort-asc .sort-indicator::before { border-bottom-color:#1663d6; }\n"
+    "    th.sortable.sort-desc .sort-indicator::after { border-top-color:#1663d6; }\n"
     "    #plateFilter { text-transform:uppercase; }",
 )
 
@@ -132,8 +138,7 @@ function drawFilteredTable() {
   }
   const head = `<thead><tr>${visibleIndexes.map(index => {
     const directionClass = sortColumnIndex === index ? (sortDirection === 1 ? ' sort-asc' : ' sort-desc') : '';
-    const symbol = sortColumnIndex === index ? (sortDirection === 1 ? '↑' : '↓') : '⇅';
-    return `<th class="sortable${directionClass}" data-sort-index="${index}" title="Нажмите для сортировки">${esc(tableColumns[index])}<span class="sort-indicator" aria-hidden="true">${symbol}</span></th>`;
+    return `<th class="sortable${directionClass}" data-sort-index="${index}" title="Нажмите для сортировки">${esc(tableColumns[index])}<span class="sort-indicator" aria-hidden="true"></span></th>`;
   }).join('')}</tr></thead>`;
   let previousPlate = null;
   const bodyRows = rows.map(row => {
