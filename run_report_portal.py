@@ -4,25 +4,29 @@
 """Canonical ASGI entrypoint for the report portal.
 
 The compatibility implementation remains in ``report_portal.py``. This module
-adds current user-facing names and validated speed-threshold controls without
-changing the stable implementation entrypoints.
+adds current user-facing names, validated speed controls, grouped violation
+preview and a client-side plate filter.
 """
 
 from __future__ import annotations
 
 import base64
 import tempfile
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from fastapi import File, Form, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from openpyxl import load_workbook
 
 import report_portal as implementation
 from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+    OUTSIDE_SHEET_NAME,
+    SITE_SHEET_NAME,
+    TURN_SHEET_NAME,
     validate_speed_thresholds,
 )
 
@@ -30,7 +34,7 @@ from speed_violation_report import (
 _original_generate_report = implementation.generate_report
 
 
-# User-facing name and speed-threshold controls.
+# User-facing report name and configurable speed thresholds.
 implementation.HTML = implementation.HTML.replace(
     '<option value="violation">Запрещённый поворот</option>',
     '<option value="violation">Нарушения</option>',
@@ -48,9 +52,24 @@ implementation.HTML = implementation.HTML.replace(
                  min="20" max="250" step="0.1" value="{DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH:g}">
         </div>
         <div class="violation-only hidden" style="grid-column: span 2">
-          <div class="note">По умолчанию: 33 км/ч на площадке и 104,5 км/ч вне площадки. Один случай считается валидным при наличии минимум двух последовательных GPS-точек.</div>
+          <div class="note">Нарушение засчитывается только по плавной последовательности минимум из трёх GPS-точек продолжительностью не менее 10 секунд. Одиночные скачки скорости исключаются.</div>
         </div>
         <div class="kpp-only"><label for="gradeFrom">Грейд от</label>''',
+)
+implementation.HTML = implementation.HTML.replace(
+    '    <div class="table-wrap"><table id="resultTable"></table></div>',
+    '''    <div id="plateFilterBox" class="hidden" style="display:flex; gap:12px; align-items:end; margin-bottom:14px; max-width:520px">
+      <div style="flex:1">
+        <label for="plateFilter">Фильтр по госномеру</label>
+        <select id="plateFilter"><option value="">Все госномера</option></select>
+      </div>
+      <div id="plateFilterCount" class="muted" style="padding-bottom:10px"></div>
+    </div>
+    <div class="table-wrap"><table id="resultTable"></table></div>''',
+)
+implementation.HTML = implementation.HTML.replace(
+    "    tr:last-child td { border-bottom: 0; }",
+    "    tr:last-child td { border-bottom: 0; }\n    tr.plate-start td { border-top: 2px solid #98a2b3; }",
 )
 implementation.HTML = implementation.HTML.replace(
     "  const isEfficiency = type === 'efficiency';\n  const needsRoster = isKpp || isEfficiency;",
@@ -62,6 +81,50 @@ implementation.HTML = implementation.HTML.replace(
     "  document.querySelectorAll('.violation-only').forEach(x => x.classList.toggle('hidden', !isViolation));\n"
     "  document.getElementById('siteSpeedThreshold').required = isViolation;\n"
     "  document.getElementById('outsideSpeedThreshold').required = isViolation;",
+)
+implementation.HTML = implementation.HTML.replace(
+    "const previewNote = document.getElementById('previewNote');\nlet excelBase64 = '';",
+    "const previewNote = document.getElementById('previewNote');\n"
+    "const plateFilterBox = document.getElementById('plateFilterBox');\n"
+    "const plateFilter = document.getElementById('plateFilter');\n"
+    "const plateFilterCount = document.getElementById('plateFilterCount');\n"
+    "let tableColumns = [];\nlet tableRows = [];\nlet excelBase64 = '';",
+)
+implementation.HTML = implementation.HTML.replace(
+    "function renderTable(columns, rows) {\n"
+    "  const head = `<thead><tr>${columns.map(value => `<th>${esc(value)}</th>`).join('')}</tr></thead>`;\n"
+    "  const body = `<tbody>${rows.map(row => `<tr>${row.map(value => `<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody>`;\n"
+    "  table.innerHTML = head + body;\n"
+    "}",
+    "function drawFilteredTable() {\n"
+    "  const plateIndex = tableColumns.indexOf('Госномер');\n"
+    "  const selected = plateFilter.value;\n"
+    "  const rows = selected && plateIndex >= 0 ? tableRows.filter(row => String(row[plateIndex] ?? '') === selected) : tableRows;\n"
+    "  const head = `<thead><tr>${tableColumns.map(value => `<th>${esc(value)}</th>`).join('')}</tr></thead>`;\n"
+    "  let previousPlate = null;\n"
+    "  const bodyRows = rows.map(row => {\n"
+    "    const plate = plateIndex >= 0 ? String(row[plateIndex] ?? '') : '';\n"
+    "    const className = plate && plate !== previousPlate ? ' class=\"plate-start\"' : '';\n"
+    "    previousPlate = plate;\n"
+    "    return `<tr${className}>${row.map(value => `<td>${esc(value)}</td>`).join('')}</tr>`;\n"
+    "  }).join('');\n"
+    "  table.innerHTML = head + `<tbody>${bodyRows}</tbody>`;\n"
+    "  plateFilterCount.textContent = `Показано: ${rows.length} из ${tableRows.length}`;\n"
+    "}\n"
+    "function renderTable(columns, rows) {\n"
+    "  tableColumns = columns;\n"
+    "  tableRows = rows;\n"
+    "  const plateIndex = columns.indexOf('Госномер');\n"
+    "  if (plateIndex >= 0) {\n"
+    "    const plates = [...new Set(rows.map(row => String(row[plateIndex] ?? '')).filter(Boolean))].sort();\n"
+    "    plateFilter.innerHTML = '<option value=\"\">Все госномера</option>' + plates.map(value => `<option value=\"${esc(value)}\">${esc(value)}</option>`).join('');\n"
+    "    plateFilterBox.classList.remove('hidden');\n"
+    "  } else {\n"
+    "    plateFilterBox.classList.add('hidden');\n"
+    "  }\n"
+    "  drawFilteredTable();\n"
+    "}\n"
+    "plateFilter.addEventListener('change', drawFilteredTable);",
 )
 implementation.HTML = implementation.HTML.replace(
     "  const data = new FormData(form);",
@@ -103,6 +166,92 @@ def parse_threshold(value: str, label: str) -> float:
         return float(text)
     except ValueError as exc:
         raise ValueError(f"Поле «{label}» должно содержать число") from exc
+
+
+def _header_map(sheet) -> dict[str, int]:
+    first = next(sheet.iter_rows(min_row=1, max_row=1, values_only=True), tuple())
+    return {str(value or "").strip(): index for index, value in enumerate(first)}
+
+
+def _value(row: tuple[Any, ...], headers: dict[str, int], name: str) -> Any:
+    index = headers.get(name)
+    if index is None or index >= len(row):
+        return None
+    return row[index]
+
+
+def _as_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def violation_web_preview(path: Path) -> tuple[list[str], list[list[Any]], int]:
+    """Build one detailed, plate-grouped table from all violation sheets."""
+    columns = [
+        "Госномер",
+        "Тип нарушения",
+        "Дата",
+        "Начало",
+        "Окончание",
+        "Максимальная скорость, км/ч",
+        "Порог, км/ч",
+        "Адрес",
+    ]
+    records: list[tuple[str, datetime | None, list[Any]]] = []
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    try:
+        for sheet_name in (TURN_SHEET_NAME, SITE_SHEET_NAME, OUTSIDE_SHEET_NAME):
+            if sheet_name not in workbook.sheetnames:
+                continue
+            sheet = workbook[sheet_name]
+            headers = _header_map(sheet)
+            for row in sheet.iter_rows(min_row=2, values_only=True):
+                plate = str(_value(row, headers, "Госномер") or "").strip()
+                if not plate:
+                    continue
+
+                if sheet_name == TURN_SHEET_NAME:
+                    start = _value(row, headers, "Начало прохода")
+                    finish = _value(row, headers, "Окончание прохода")
+                    start_speed = _as_number(_value(row, headers, "Скорость в начале"))
+                    finish_speed = _as_number(_value(row, headers, "Скорость в конце"))
+                    speeds = [value for value in (start_speed, finish_speed) if value is not None]
+                    max_speed = max(speeds) if speeds else None
+                    address_parts = [
+                        str(_value(row, headers, "Адрес начала") or "").strip(),
+                        str(_value(row, headers, "Адрес окончания") or "").strip(),
+                    ]
+                    address = " → ".join(part for part in address_parts if part)
+                    threshold = None
+                else:
+                    start = _value(row, headers, "Начало нарушения")
+                    finish = _value(row, headers, "Окончание нарушения")
+                    max_speed = _as_number(_value(row, headers, "Максимальная скорость, км/ч"))
+                    threshold = _as_number(_value(row, headers, "Порог фиксации, км/ч"))
+                    address = str(_value(row, headers, "Адрес максимума") or "").strip()
+
+                event_date = start.date() if isinstance(start, datetime) else _value(row, headers, "Дата")
+                display = [
+                    plate,
+                    sheet_name,
+                    implementation.json_cell(event_date),
+                    implementation.json_cell(start),
+                    implementation.json_cell(finish),
+                    implementation.json_cell(max_speed),
+                    implementation.json_cell(threshold),
+                    address,
+                ]
+                records.append((plate, start if isinstance(start, datetime) else None, display))
+    finally:
+        workbook.close()
+
+    records.sort(key=lambda item: (item[0], item[1] or datetime.min, item[2][1]))
+    rows = [item[2] for item in records]
+    return columns, rows, len(rows)
 
 
 def generate_report_with_thresholds(
@@ -163,20 +312,22 @@ def generate_report_with_thresholds(
         if not output_path.exists():
             raise RuntimeError("Построитель не создал Excel-файл")
 
-        columns, rows, total_rows = implementation.workbook_preview(output_path)
+        columns, rows, total_rows = violation_web_preview(output_path)
+        plate_count = len({str(row[0]) for row in rows if row and row[0]})
         return {
             "filename": filename,
             "columns": columns,
             "rows": rows,
-            "preview_truncated": total_rows > len(rows),
+            "preview_truncated": False,
             "excel_base64": base64.b64encode(output_path.read_bytes()).decode("ascii"),
             "summary": {
                 "Отчёт": "Нарушения",
                 "Период": report_day.strftime("%d.%m.%Y"),
                 "Порог на площадке": f"{site_threshold:g} км/ч",
                 "Порог вне площадки": f"{outside_threshold:g} км/ч",
+                "Госномеров": plate_count,
+                "Нарушений": total_rows,
                 "GPS-точек": gps_count,
-                "Строк первого листа": total_rows,
             },
             "log": log,
         }
