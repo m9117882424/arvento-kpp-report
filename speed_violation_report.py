@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-"""Speed-violation detection and Excel sheets for the consolidated report.
+"""Validated speed-violation detection and Excel sheets.
 
 The site/outside state uses the same KPP crossing logic as the passenger-vehicle
-utilisation report. A speed event is accepted only when at least two consecutive
-valid GPS points exceed the configured threshold. This rejects isolated speed
-spikes and physically invalid values.
+utilisation report. A speed event is accepted only when it contains a sustained,
+physically plausible sequence of GPS speeds. Isolated spikes are rejected.
 """
 
 from __future__ import annotations
 
 import math
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -34,9 +34,16 @@ MAX_SITE_THRESHOLD_KMH = 200.0
 MIN_OUTSIDE_THRESHOLD_KMH = 20.0
 MAX_OUTSIDE_THRESHOLD_KMH = 250.0
 MAX_VALID_GPS_SPEED_KMH = 250.0
-MIN_SPEED_EVENT_POINTS = 2
-MAX_SPEED_EVENT_GAP_SECONDS = 5 * 60
 
+# Anti-spike validation. A valid event must be sustained and smooth.
+MIN_SPEED_EVENT_POINTS = 3
+MIN_SPEED_EVENT_DURATION_SECONDS = 10
+MAX_SPEED_EVENT_GAP_SECONDS = 5 * 60
+MAX_ACCELERATION_MPS2 = 5.0
+MAX_LOCAL_SPEED_DEVIATION_KMH = 25.0
+
+TURN_SHEET_NAME = "Запрещённый поворот"
+SUMMARY_SHEET_NAME = "Сводка по госномерам"
 SITE_SHEET_NAME = "Скорость на площадке"
 OUTSIDE_SHEET_NAME = "Скорость вне площадки"
 
@@ -75,7 +82,10 @@ class SpeedViolation:
         return max(0.0, self.threshold_kmh / self.speed_limit_kmh - 1.0)
 
 
-def validate_speed_thresholds(site_threshold_kmh: float, outside_threshold_kmh: float) -> tuple[float, float]:
+def validate_speed_thresholds(
+    site_threshold_kmh: float,
+    outside_threshold_kmh: float,
+) -> tuple[float, float]:
     """Validate user-configured thresholds and return normalized floats."""
     site = float(site_threshold_kmh)
     outside = float(outside_threshold_kmh)
@@ -183,13 +193,51 @@ def _valid_speed(value: Any) -> float | None:
     return speed
 
 
+def _event_is_smooth(points: Sequence[Any]) -> bool:
+    """Reject isolated spikes and physically implausible speed sequences."""
+    if len(points) < MIN_SPEED_EVENT_POINTS:
+        return False
+    duration = (points[-1].timestamp - points[0].timestamp).total_seconds()
+    if duration < MIN_SPEED_EVENT_DURATION_SECONDS:
+        return False
+
+    speeds = [_valid_speed(point.speed) for point in points]
+    if any(speed is None for speed in speeds):
+        return False
+    numeric = [float(speed) for speed in speeds if speed is not None]
+
+    for index in range(1, len(points)):
+        seconds = (points[index].timestamp - points[index - 1].timestamp).total_seconds()
+        if seconds <= 0 or seconds > MAX_SPEED_EVENT_GAP_SECONDS:
+            return False
+        acceleration = abs(numeric[index] - numeric[index - 1]) / 3.6 / seconds
+        if acceleration > MAX_ACCELERATION_MPS2:
+            return False
+
+    # A single point that sharply rises above or falls below both neighbours is
+    # treated as a GPS outlier. Smooth monotonic acceleration/deceleration passes.
+    for index in range(1, len(points) - 1):
+        before = numeric[index - 1]
+        current = numeric[index]
+        after = numeric[index + 1]
+        dt_before = (points[index].timestamp - points[index - 1].timestamp).total_seconds()
+        dt_after = (points[index + 1].timestamp - points[index].timestamp).total_seconds()
+        total = dt_before + dt_after
+        expected = before + (after - before) * (dt_before / total)
+        is_local_extreme = current > max(before, after) or current < min(before, after)
+        if is_local_extreme and abs(current - expected) > MAX_LOCAL_SPEED_DEVIATION_KMH:
+            return False
+
+    return True
+
+
 def detect_speed_violations(
     track: Sequence[Any],
     registry: Registry,
     site_threshold_kmh: float = DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     outside_threshold_kmh: float = DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
 ) -> tuple[list[SpeedViolation], list[SpeedViolation]]:
-    """Detect grouped and validated speed violations."""
+    """Detect grouped, sustained and smooth speed violations."""
     site_threshold, outside_threshold = validate_speed_thresholds(
         site_threshold_kmh,
         outside_threshold_kmh,
@@ -202,13 +250,15 @@ def detect_speed_violations(
         nonlocal active
         if active is None:
             return
-        if active["point_count"] >= MIN_SPEED_EVENT_POINTS:
+        points = active["points"]
+        if _event_is_smooth(points):
+            max_point = max(points, key=lambda point: float(point.speed))
             violation = SpeedViolation(
-                plate=active["start"].plate,
-                start_point=active["start"],
-                finish_point=active["finish"],
-                max_point=active["max_point"],
-                point_count=active["point_count"],
+                plate=points[0].plate,
+                start_point=points[0],
+                finish_point=points[-1],
+                max_point=max_point,
+                point_count=len(points),
                 speed_limit_kmh=active["limit"],
                 threshold_kmh=active["threshold"],
                 on_site=active["on_site"],
@@ -223,7 +273,8 @@ def detect_speed_violations(
         exceeds = speed is not None and speed > threshold
 
         if active is not None:
-            gap = (point.timestamp - active["finish"].timestamp).total_seconds()
+            previous = active["points"][-1]
+            gap = (point.timestamp - previous.timestamp).total_seconds()
             if (
                 active["on_site"] != on_site
                 or gap <= 0
@@ -237,20 +288,13 @@ def detect_speed_violations(
 
         if active is None:
             active = {
-                "start": point,
-                "finish": point,
-                "max_point": point,
-                "point_count": 1,
+                "points": [point],
                 "limit": limit,
                 "threshold": threshold,
                 "on_site": on_site,
             }
-            continue
-
-        active["finish"] = point
-        active["point_count"] += 1
-        if speed > float(active["max_point"].speed):
-            active["max_point"] = point
+        else:
+            active["points"].append(point)
 
     close_active()
     return site_violations, outside_violations
@@ -276,7 +320,33 @@ def _style_sheet(sheet) -> None:
         sheet.column_dimensions[get_column_letter(column)].width = max(width, 12)
 
 
-def _write_speed_sheet(workbook, title: str, violations: Sequence[SpeedViolation], index: int) -> None:
+def _group_rows_by_plate(sheet, plate_column: int = 2) -> None:
+    """Create visible Excel outline groups for contiguous plate rows."""
+    if sheet.max_row < 2:
+        return
+    sheet.sheet_properties.outlinePr.summaryBelow = False
+    start = 2
+    current = str(sheet.cell(start, plate_column).value or "")
+    for row in range(3, sheet.max_row + 2):
+        value = str(sheet.cell(row, plate_column).value or "") if row <= sheet.max_row else None
+        if value == current:
+            continue
+        end = row - 1
+        if current:
+            sheet.cell(start, plate_column).font = Font(bold=True)
+            sheet.cell(start, plate_column).fill = PatternFill("solid", fgColor="D9EAF7")
+            if end > start:
+                sheet.row_dimensions.group(start + 1, end, outline_level=1, hidden=False)
+        start = row
+        current = value or ""
+
+
+def _write_speed_sheet(
+    workbook,
+    title: str,
+    violations: Sequence[SpeedViolation],
+    index: int,
+) -> None:
     if title in workbook.sheetnames:
         del workbook[title]
     sheet = workbook.create_sheet(title, index)
@@ -297,7 +367,8 @@ def _write_speed_sheet(workbook, title: str, violations: Sequence[SpeedViolation
         "Адрес максимума",
     ])
 
-    for number, item in enumerate(violations, start=1):
+    ordered = sorted(violations, key=lambda item: (item.plate, item.start))
+    for number, item in enumerate(ordered, start=1):
         max_point = item.max_point
         sheet.append([
             number,
@@ -327,6 +398,70 @@ def _write_speed_sheet(workbook, title: str, violations: Sequence[SpeedViolation
         row[9].number_format = "0.0"
         row[10].number_format = "0.0"
     _style_sheet(sheet)
+    _group_rows_by_plate(sheet)
+
+
+def _write_plate_summary(
+    workbook,
+    site_violations: Sequence[SpeedViolation],
+    outside_violations: Sequence[SpeedViolation],
+) -> None:
+    if SUMMARY_SHEET_NAME in workbook.sheetnames:
+        del workbook[SUMMARY_SHEET_NAME]
+
+    turn_counts: dict[str, int] = defaultdict(int)
+    if TURN_SHEET_NAME in workbook.sheetnames:
+        turn_sheet = workbook[TURN_SHEET_NAME]
+        for row in turn_sheet.iter_rows(min_row=2, values_only=True):
+            plate = str(row[1] or "").strip() if len(row) > 1 else ""
+            if plate:
+                turn_counts[plate] += 1
+
+    stats: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "site_count": 0,
+            "site_max": None,
+            "outside_count": 0,
+            "outside_max": None,
+        }
+    )
+    for item in site_violations:
+        entry = stats[item.plate]
+        entry["site_count"] += 1
+        entry["site_max"] = max(entry["site_max"] or 0.0, item.max_speed_kmh)
+    for item in outside_violations:
+        entry = stats[item.plate]
+        entry["outside_count"] += 1
+        entry["outside_max"] = max(entry["outside_max"] or 0.0, item.max_speed_kmh)
+
+    plates = sorted(set(turn_counts) | set(stats))
+    sheet = workbook.create_sheet(SUMMARY_SHEET_NAME, 0)
+    sheet.append([
+        "Госномер",
+        "Запрещённых поворотов",
+        "Нарушений скорости на площадке",
+        "Макс. скорость на площадке, км/ч",
+        "Нарушений скорости вне площадки",
+        "Макс. скорость вне площадки, км/ч",
+        "Всего нарушений",
+    ])
+    for plate in plates:
+        entry = stats[plate]
+        turn_count = turn_counts.get(plate, 0)
+        total = turn_count + entry["site_count"] + entry["outside_count"]
+        sheet.append([
+            plate,
+            turn_count,
+            entry["site_count"],
+            entry["site_max"],
+            entry["outside_count"],
+            entry["outside_max"],
+            total,
+        ])
+    for row in sheet.iter_rows(min_row=2):
+        row[3].number_format = "0.0"
+        row[5].number_format = "0.0"
+    _style_sheet(sheet)
 
 
 def append_speed_sheets(
@@ -336,14 +471,25 @@ def append_speed_sheets(
     site_threshold_kmh: float = DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     outside_threshold_kmh: float = DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
 ) -> None:
-    """Append or replace both speed sheets in an existing violations workbook."""
+    """Append speed sheets, grouped details and a per-plate summary."""
     site_threshold, outside_threshold = validate_speed_thresholds(
         site_threshold_kmh,
         outside_threshold_kmh,
     )
     workbook = load_workbook(workbook_path)
+
+    # The report itself is called "Нарушения"; keep the specific turn type as a
+    # dedicated sheet name.
+    if "Нарушения" in workbook.sheetnames and TURN_SHEET_NAME not in workbook.sheetnames:
+        workbook["Нарушения"].title = TURN_SHEET_NAME
+
     _write_speed_sheet(workbook, SITE_SHEET_NAME, site_violations, 1)
     _write_speed_sheet(workbook, OUTSIDE_SHEET_NAME, outside_violations, 2)
+
+    if TURN_SHEET_NAME in workbook.sheetnames:
+        _group_rows_by_plate(workbook[TURN_SHEET_NAME])
+
+    _write_plate_summary(workbook, site_violations, outside_violations)
 
     if "Параметры" in workbook.sheetnames:
         settings = workbook["Параметры"]
@@ -353,7 +499,10 @@ def append_speed_sheets(
         settings.append(["Порог фиксации вне площадки, км/ч", outside_threshold])
         settings.append(["Разделение площадка/вне площадки", "по въездам и выездам через КПП 4 и КПП 5"])
         settings.append(["Минимум GPS-точек для валидного нарушения", MIN_SPEED_EVENT_POINTS])
+        settings.append(["Минимальная длительность нарушения, секунд", MIN_SPEED_EVENT_DURATION_SECONDS])
         settings.append(["Максимально допустимая GPS-скорость, км/ч", MAX_VALID_GPS_SPEED_KMH])
+        settings.append(["Максимальное ускорение/замедление, м/с²", MAX_ACCELERATION_MPS2])
+        settings.append(["Максимальное локальное отклонение скорости, км/ч", MAX_LOCAL_SPEED_DEVIATION_KMH])
         settings.append(["Максимальный разрыв одного нарушения", MAX_SPEED_EVENT_GAP_SECONDS / 86400.0])
         settings.cell(settings.max_row, 2).number_format = "[h]:mm:ss"
         settings.append(["Нарушений скорости на площадке", len(site_violations)])
