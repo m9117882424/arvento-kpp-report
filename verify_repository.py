@@ -25,7 +25,7 @@ CANONICAL_FILES = {
         "violation_web_preview",
         "site_speed_threshold",
         "outside_speed_threshold",
-        'id=\\"plateFilter\\"',
+        'id="plateFilter"',
         '"Нарушения"',
     ),
     "generate_kpp_summary_report.py": ("arvento_kpp_report",),
