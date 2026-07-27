@@ -8,6 +8,8 @@ from typing import Optional
 
 from arvento_io import Point
 
+SITE_BOUNDARY_PURPOSE = "site_boundary"
+
 
 @dataclass
 class Gate:
@@ -20,6 +22,7 @@ class Gate:
 class Geozone:
     name: str
     zone_type: str
+    purpose: str = ""
     center: Optional[tuple[float, float]] = None
     radius_m: Optional[float] = None
     points: Optional[list[tuple[float, float]]] = None
@@ -52,11 +55,13 @@ def load_registry(path: Path) -> Registry:
         if not item.get("enabled", True):
             continue
         zone_type = str(item.get("type", "")).lower()
+        purpose = str(item.get("purpose", "")).strip().lower()
         if zone_type == "circle":
             zones.append(
                 Geozone(
                     name=str(item.get("name", "Без названия")),
                     zone_type="circle",
+                    purpose=purpose,
                     center=tuple(item["center"]),
                     radius_m=float(item["radius_m"]),
                 )
@@ -68,6 +73,7 @@ def load_registry(path: Path) -> Registry:
                     Geozone(
                         name=str(item.get("name", "Без названия")),
                         zone_type="polygon",
+                        purpose=purpose,
                         points=points,
                     )
                 )
@@ -101,12 +107,38 @@ def point_in_polygon(lat: float, lon: float, polygon: list[tuple[float, float]])
     return inside
 
 
+def point_in_zone(lat: float, lon: float, zone: Geozone) -> bool:
+    if zone.zone_type == "circle" and zone.center and zone.radius_m is not None:
+        return haversine_m(lat, lon, zone.center[0], zone.center[1]) <= zone.radius_m
+    if zone.zone_type == "polygon" and zone.points:
+        return point_in_polygon(lat, lon, zone.points)
+    return False
+
+
+def find_site_boundary(registry: Registry) -> Geozone:
+    matches = [zone for zone in registry.zones if zone.purpose == SITE_BOUNDARY_PURPOSE]
+    if not matches:
+        raise ValueError(
+            "В geozones.json не задана включённая геозона площадки с purpose=site_boundary"
+        )
+    if len(matches) > 1:
+        names = ", ".join(zone.name for zone in matches)
+        raise ValueError(f"Найдено несколько границ площадки: {names}")
+    zone = matches[0]
+    if zone.zone_type != "polygon" or not zone.points or len(zone.points) < 3:
+        raise ValueError("Граница площадки должна быть полигоном минимум из трёх точек")
+    return zone
+
+
+def is_inside_site(point: Point, registry: Registry) -> bool:
+    return point_in_zone(point.lat, point.lon, find_site_boundary(registry))
+
+
 def locate_zone(point: Point, zones: list[Geozone]) -> Optional[str]:
+    """Locate a business/parking zone, excluding the overall site boundary."""
     for zone in zones:
-        if zone.zone_type == "circle" and zone.center and zone.radius_m is not None:
-            if haversine_m(point.lat, point.lon, zone.center[0], zone.center[1]) <= zone.radius_m:
-                return zone.name
-        elif zone.zone_type == "polygon" and zone.points:
-            if point_in_polygon(point.lat, point.lon, zone.points):
-                return zone.name
+        if zone.purpose == SITE_BOUNDARY_PURPOSE:
+            continue
+        if point_in_zone(point.lat, point.lon, zone):
+            return zone.name
     return None
