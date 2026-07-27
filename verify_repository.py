@@ -21,9 +21,16 @@ CANONICAL_FILES = {
     "run_geofence_editor.py": ("geofence_editor_api",),
     "generate_kpp_summary_report.py": ("arvento_kpp_report",),
     "generate_first_entry_report.py": ("arvento_first_entry_report_fixed",),
-    "generate_prohibited_left_turn_report.py": ("prohibited_left_turn_report",),
+    "generate_prohibited_left_turn_report.py": (
+        "prohibited_left_turn_report",
+        "speed_violation_report",
+    ),
     "generate_scheduled_reports.py": ("run_automated_reports",),
 }
+
+REQUIRED_SUPPORT_MODULES = (
+    "speed_violation_report.py",
+)
 
 OPERATIONAL_EXPECTATIONS = {
     "Dockerfile.server": (
@@ -81,6 +88,10 @@ def check_canonical_files(errors: list[str]) -> None:
         for token in required_tokens:
             if token not in content:
                 errors.append(f"{name}: не найдена ожидаемая связь с {token}")
+
+    for name in REQUIRED_SUPPORT_MODULES:
+        if not (ROOT / name).is_file():
+            errors.append(f"Отсутствует обязательный модуль: {name}")
 
 
 def check_operational_references(errors: list[str]) -> None:
