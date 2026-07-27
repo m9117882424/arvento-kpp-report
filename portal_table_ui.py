@@ -171,7 +171,19 @@ function renderTable(columns, rows) {
   }
   drawFilteredTable();
 }
-plateFilter.addEventListener('input', drawFilteredTable);
+function applyPlateFilter() {
+  if (!plateFilter.value.trim()) plateFilter.value = '';
+  drawFilteredTable();
+}
+plateFilter.addEventListener('input', applyPlateFilter);
+plateFilter.addEventListener('change', applyPlateFilter);
+plateFilter.addEventListener('search', applyPlateFilter);
+plateFilter.addEventListener('keyup', event => {
+  if (event.key === 'Escape') {
+    plateFilter.value = '';
+    applyPlateFilter();
+  }
+});
 table.addEventListener('click', event => {
   const header = event.target.closest('th[data-sort-index]');
   if (!header) return;
