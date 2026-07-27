@@ -49,9 +49,12 @@ def ensure_partition(conn: psycopg.Connection, day) -> None:
     with conn.cursor() as cur:
         cur.execute(
             psycopg.sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points FOR VALUES FROM (%s) TO (%s)"
-            ).format(psycopg.sql.Identifier(name)),
-            (start, end),
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points FOR VALUES FROM ({}) TO ({})"
+            ).format(
+                psycopg.sql.Identifier(name),
+                psycopg.sql.Literal(start),
+                psycopg.sql.Literal(end),
+            )
         )
         cur.execute(
             psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (normalized_plate, event_time)").format(
@@ -91,7 +94,7 @@ def insert_rows(conn: psycopg.Connection, rows, group_name: str) -> tuple[int, s
                 ) VALUES (
                     %s,%s,%s,%s,%s,%s,
                     ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
                 )
                 ON CONFLICT (source_hash, event_time) DO UPDATE SET
                     region_name = COALESCE(NULLIF(EXCLUDED.region_name, ''), gps_points.region_name)
