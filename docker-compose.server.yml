@@ -55,6 +55,23 @@ services:
       - "127.0.0.1:${GEOFENCE_EDITOR_PORT:-18083}:8080"
     networks: [arvento_report]
 
+  report-portal:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
+      TZ: Europe/Istanbul
+    command: ["uvicorn", "report_portal:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "127.0.0.1:${REPORT_PORTAL_PORT:-18084}:8080"
+    networks: [arvento_report]
+
 volumes:
   postgres_data:
 
