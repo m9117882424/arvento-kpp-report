@@ -1,8 +1,113 @@
 #!/usr/bin/env python3
-"""Generate the prohibited-left-turn violation report."""
+# -*- coding: utf-8 -*-
 
-import runpy
+"""Generate the consolidated violations report.
+
+The workbook contains the prohibited-left-turn sheet plus two grouped speed
+violation sheets: on the site and outside the site.
+"""
+
+from __future__ import annotations
+
+import argparse
+import shutil
+import tempfile
+from pathlib import Path
+
+import prohibited_left_turn_report as turn_report
+from geozone_registry import load_registry
+from speed_violation_report import append_speed_sheets, detect_speed_violations
+from sqlite_store import import_source_to_sqlite
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Сводный отчёт по нарушениям")
+    parser.add_argument("source", nargs="?", help="XLSX, XLSM или CSV выгрузка Arvento")
+    parser.add_argument("output", nargs="?", help="Путь итогового XLSX")
+    parser.add_argument("--width", type=float, default=turn_report.DEFAULT_WIDTH_M)
+    parser.add_argument(
+        "--max-minutes",
+        type=float,
+        default=turn_report.DEFAULT_MAX_SEQUENCE_SECONDS / 60.0,
+    )
+    parser.add_argument(
+        "--control-minutes",
+        type=float,
+        default=turn_report.DEFAULT_CONTROL_WINDOW_SECONDS / 60.0,
+    )
+    parser.add_argument(
+        "--cooldown-minutes",
+        type=float,
+        default=turn_report.DEFAULT_COOLDOWN_SECONDS / 60.0,
+    )
+    args = parser.parse_args()
+
+    source = Path(args.source).expanduser().resolve() if args.source else turn_report.choose_source()
+    if not source.exists():
+        raise SystemExit(f"Файл не найден: {source}")
+    output = (
+        Path(args.output).expanduser().resolve()
+        if args.output
+        else source.with_name(source.stem + "_нарушения.xlsx")
+    )
+
+    config = source.parent / "geozones.json"
+    if not config.exists():
+        config = Path(__file__).resolve().parent / "geozones.json"
+    registry = load_registry(config)
+
+    width_m = max(1.0, args.width)
+    max_seconds = max(1, int(args.max_minutes * 60))
+    control_seconds = max(0, int(args.control_minutes * 60))
+    cooldown_seconds = max(0, int(args.cooldown_minutes * 60))
+
+    temp_dir = Path(tempfile.mkdtemp(prefix="arvento_violations_"))
+    db_path = temp_dir / "points.sqlite3"
+    try:
+        print(f"Исходный файл: {source}")
+        print("Импорт данных во временную SQLite-базу...")
+        stats = import_source_to_sqlite(source, db_path)
+
+        turn_violations = []
+        site_speed_violations = []
+        outside_speed_violations = []
+
+        for _, track in turn_report.iter_vehicle_tracks(db_path):
+            turn_violations.extend(
+                turn_report.detect_violations(
+                    track,
+                    width_m=width_m,
+                    max_sequence_seconds=max_seconds,
+                    control_window_seconds=control_seconds,
+                    cooldown_seconds=cooldown_seconds,
+                )
+            )
+            site_items, outside_items = detect_speed_violations(track, registry)
+            site_speed_violations.extend(site_items)
+            outside_speed_violations.extend(outside_items)
+
+        turn_violations.sort(key=lambda item: (item.start, item.plate))
+        site_speed_violations.sort(key=lambda item: (item.start, item.plate))
+        outside_speed_violations.sort(key=lambda item: (item.start, item.plate))
+
+        turn_report.save_report(
+            output,
+            turn_violations,
+            source,
+            width_m,
+            max_seconds,
+            control_seconds,
+        )
+        append_speed_sheets(output, site_speed_violations, outside_speed_violations)
+
+        print(f"Готово: {output}")
+        print(f"Загружено GPS-точек: {stats['loaded']}")
+        print(f"Запрещённых поворотов: {len(turn_violations)}")
+        print(f"Нарушений скорости на площадке: {len(site_speed_violations)}")
+        print(f"Нарушений скорости вне площадки: {len(outside_speed_violations)}")
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
-    runpy.run_module("prohibited_left_turn_report", run_name="__main__")
+    main()
