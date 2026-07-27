@@ -17,6 +17,7 @@ from pathlib import Path
 
 import prohibited_left_turn_report as turn_report
 from geozone_registry import load_registry
+from map_links import add_violation_map_links
 from site_boundary_speed import (
     detect_speed_violations_by_polygon,
     write_site_boundary_metadata,
@@ -141,6 +142,7 @@ def main() -> None:
             outside_threshold_kmh=outside_threshold,
         )
         write_site_boundary_metadata(output, registry)
+        map_link_count = add_violation_map_links(output)
 
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
@@ -150,6 +152,7 @@ def main() -> None:
         print(f"Порог на площадке: {site_threshold:g} км/ч")
         print(f"Порог вне площадки: {outside_threshold:g} км/ч")
         print("Граница площадки: полигон «Площадка АЭС АККУЮ»")
+        print(f"Ссылок на карту добавлено: {map_link_count}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
