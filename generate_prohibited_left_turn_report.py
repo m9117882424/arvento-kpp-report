@@ -3,8 +3,8 @@
 
 """Generate the consolidated violations report.
 
-The workbook contains the prohibited-left-turn sheet plus two grouped speed
-violation sheets: on the site and outside the site.
+The workbook contains a per-plate summary, prohibited-left-turn details and two
+validated speed-violation sheets: on the site and outside the site.
 """
 
 from __future__ import annotations
@@ -117,9 +117,10 @@ def main() -> None:
             site_speed_violations.extend(site_items)
             outside_speed_violations.extend(outside_items)
 
-        turn_violations.sort(key=lambda item: (item.start, item.plate))
-        site_speed_violations.sort(key=lambda item: (item.start, item.plate))
-        outside_speed_violations.sort(key=lambda item: (item.start, item.plate))
+        # Grouped output requires contiguous rows per plate.
+        turn_violations.sort(key=lambda item: (item.plate, item.start))
+        site_speed_violations.sort(key=lambda item: (item.plate, item.start))
+        outside_speed_violations.sort(key=lambda item: (item.plate, item.start))
 
         turn_report.save_report(
             output,
@@ -140,8 +141,8 @@ def main() -> None:
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
         print(f"Запрещённых поворотов: {len(turn_violations)}")
-        print(f"Нарушений скорости на площадке: {len(site_speed_violations)}")
-        print(f"Нарушений скорости вне площадки: {len(outside_speed_violations)}")
+        print(f"Валидных нарушений скорости на площадке: {len(site_speed_violations)}")
+        print(f"Валидных нарушений скорости вне площадки: {len(outside_speed_violations)}")
         print(f"Порог на площадке: {site_threshold:g} км/ч")
         print(f"Порог вне площадки: {outside_threshold:g} км/ч")
     finally:
