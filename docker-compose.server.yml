@@ -35,6 +35,7 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./reports:/app/reports
+      - ./input:/app/input:ro
     networks: [arvento_report]
 
   geofence-editor:
