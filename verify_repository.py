@@ -68,15 +68,16 @@ REQUIRED_SUPPORT_MODULES = {
         "report_end_date",
     ),
     "portal_runtime_patch.py": (
-        "patch_portal",
+        "json_cell_one_decimal",
         "Скорость Ташуджу - Аккую",
         "Скорость вне региона",
-        "round(float(value), 1)",
+        'f"{value:.1f}"',
+        "current.violation_web_preview = violation_web_preview",
     ),
     "portal_entrypoint.py": (
-        "import consolidated_portal as portal",
-        "patch_portal(portal)",
-        "app = portal.app",
+        "import consolidated_portal as base",
+        "import portal_runtime_patch",
+        "app = base.app",
     ),
     "regional_speed_report.py": (
         "detect_regional_speed_violations",
