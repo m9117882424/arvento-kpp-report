@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """Runtime regression checks for prohibited-left-turn detection."""
 from __future__ import annotations
 
@@ -124,6 +123,50 @@ def check_valid_left_exit() -> None:
     assert violation.finish_position.distance_m > legacy.DEFAULT_WIDTH_M / 2.0
 
 
+def check_slow_left_exit_after_start_timeout() -> None:
+    """Regression for 34MPM501 from the 28.07.2026 distance export.
+
+    The vehicle enters the right/start section, remains there longer than the
+    three-minute candidate limit, then continues through the corridor and exits
+    physically through the left side. The timeout must not permanently disarm
+    detection while the vehicle is still in the start section.
+    """
+    raw = [
+        ("2026-07-28 07:15:08", 36.317429, 33.877834, 26),
+        ("2026-07-28 07:15:17", 36.317329, 33.877167, 26),
+        ("2026-07-28 07:15:19", 36.317352, 33.877090, 10),
+        ("2026-07-28 07:20:24", 36.317337, 33.876514, 5),
+        ("2026-07-28 07:20:28", 36.317390, 33.876347, 19),
+        ("2026-07-28 07:20:34", 36.317406, 33.875828, 30),
+        ("2026-07-28 07:20:38", 36.317352, 33.875347, 43),
+        ("2026-07-28 07:20:45", 36.317234, 33.874718, 30),
+        ("2026-07-28 07:20:56", 36.317032, 33.873722, 22),
+        ("2026-07-28 07:20:59", 36.317123, 33.873615, 11),
+        ("2026-07-28 07:21:11", 36.317219, 33.873253, 30),
+        ("2026-07-28 07:21:13", 36.317181, 33.872971, 43),
+        ("2026-07-28 07:21:16", 36.317131, 33.872505, 56),
+    ]
+    track = [
+        point(datetime.fromisoformat(value), lat, lon, speed, "34MPM501")
+        for value, lat, lon, speed in raw
+    ]
+    violations = detect_confirmed_violations(
+        track,
+        width_m=legacy.DEFAULT_WIDTH_M,
+        max_sequence_seconds=legacy.DEFAULT_MAX_SEQUENCE_SECONDS,
+        control_window_seconds=legacy.DEFAULT_CONTROL_WINDOW_SECONDS,
+        cooldown_seconds=legacy.DEFAULT_COOLDOWN_SECONDS,
+    )
+    assert len(violations) == 1, (
+        "34MPM501: подтверждённый выход слева после остановки в начале не найден"
+    )
+    violation = violations[0]
+    assert violation.plate == "34MPM501"
+    assert violation.start == datetime(2026, 7, 28, 7, 20, 24)
+    assert violation.finish == datetime(2026, 7, 28, 7, 21, 16)
+    assert violation.finish_position.progress >= EXIT_PROGRESS_MIN
+
+
 def check_control_zone_cancellation() -> None:
     track = build_valid_left_exit()
     track.append(
@@ -147,10 +190,11 @@ def check_control_zone_cancellation() -> None:
 def main() -> None:
     check_right_side_return()
     check_valid_left_exit()
+    check_slow_left_exit_after_start_timeout()
     check_control_zone_cancellation()
     print(
-        "OK: запрещённый поворот подтверждается только фактическим выходом слева; "
-        "возврат вправо и разрешающая геозона проверены."
+        "OK: запрещённый поворот требует фактического выхода слева; "
+        "возврат вправо, остановка в начале и разрешающая геозона проверены."
     )
 
 
