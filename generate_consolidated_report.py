@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Standalone entrypoint for the consolidated vehicle report."""
+"""Canonical entrypoint for the consolidated multi-roster vehicle report."""
 
-from consolidated_report import main
+from consolidated_multi_report import main
 
 
 if __name__ == "__main__":
