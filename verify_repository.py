@@ -52,11 +52,17 @@ REQUIRED_SUPPORT_MODULES = {
         "sortColumnIndex",
         "data-sort-index",
         "plateFilter.addEventListener('input'",
+        "workbook_preview_with_title_rows",
+        '"Номерной знак" in values',
     ),
     "arvento_first_entry_report_fixed.py": (
         "create_report_without_map_column",
         "sheet.delete_cols(5, 1)",
-        'sheet.auto_filter.ref = f"A1:J{max_row}"',
+        "build_report_titles",
+        "detect_roster_date",
+        "sheet.insert_rows(1, amount=2)",
+        'sheet.auto_filter.ref = f"A3:J{max_row}"',
+        'sheet.freeze_panes = "A4"',
     ),
     "speed_violation_report.py": (
         "validate_speed_thresholds",
