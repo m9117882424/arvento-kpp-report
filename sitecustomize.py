@@ -143,6 +143,7 @@ def _install_excel_rounding() -> None:
     )
 
     def detect_header_row(sheet) -> int:
+        """Return the earliest row with the highest populated-cell count."""
         upper = min(max(sheet.max_row, 1), 10)
         candidates: list[tuple[int, int]] = []
         for row_number in range(1, upper + 1):
@@ -152,7 +153,14 @@ def _install_excel_rounding() -> None:
                 if cell.value not in (None, "")
             )
             candidates.append((populated, row_number))
-        return max(candidates, default=(0, 1))[1]
+        if not candidates:
+            return 1
+        maximum = max(populated for populated, _ in candidates)
+        return min(
+            row_number
+            for populated, row_number in candidates
+            if populated == maximum
+        )
 
     def apply_rounding(workbook: Workbook) -> None:
         for sheet in workbook.worksheets:
