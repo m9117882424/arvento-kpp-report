@@ -2,7 +2,20 @@
 """Runtime regression checks for prohibited-left-turn detection."""
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
+from types import ModuleType, SimpleNamespace
+
+# The report module offers an optional desktop file picker. The detector tests do
+# not use it, so a server host without the Tk package must still be able to import
+# and verify the calculation code.
+try:
+    import tkinter  # noqa: F401
+except ModuleNotFoundError:
+    tkinter_stub = ModuleType("tkinter")
+    tkinter_stub.Tk = object
+    tkinter_stub.filedialog = SimpleNamespace()
+    sys.modules["tkinter"] = tkinter_stub
 
 import prohibited_left_turn_report as legacy
 from confirmed_left_turn_detector import (
