@@ -17,6 +17,7 @@ from arvento_first_entry_report import ReportFilters
 from arvento_first_entry_report_fixed import build_report_titles, extract_date_from_text
 from arvento_io import Point
 from arvento_reports import round_metric, round_ratio
+from consolidated_multi_report import DatedRoster, select_roster
 from consolidated_report import (
     HEADERS as CONSOLIDATED_HEADERS,
     allowed_entry_exit_time,
@@ -79,7 +80,7 @@ def strict_mode() -> bool:
 def check_portal_runtime() -> bool:
     """Import and inspect the final ASGI portal when runtime deps are available."""
     try:
-        import portal_table_ui
+        import consolidated_portal
     except ModuleNotFoundError as exc:
         missing = (exc.name or "").split(".", 1)[0]
         if strict_mode() or missing not in OPTIONAL_PORTAL_DEPENDENCIES:
@@ -91,13 +92,20 @@ def check_portal_runtime() -> bool:
         )
         return False
 
-    html = portal_table_ui.implementation.HTML
+    html = consolidated_portal.implementation.HTML
     for token in (
+        'value="consolidated">Сводный отчёт',
+        'id="consolidatedRosters"',
+        'name="rosters"',
+        'multiple',
+        "type === 'consolidated'",
+        '/api/generate-v3',
         'value="violation">Нарушения',
         'id="siteSpeedThreshold"',
         'id="outsideSpeedThreshold"',
         'id="plateFilter" type="text"',
         'id="plateSuggestions"',
+        'Госномер / Plaka',
         'class="sortable',
         'class="sort-indicator"',
         '.sort-indicator::before',
@@ -107,27 +115,34 @@ def check_portal_runtime() -> bool:
         "plateFilter.addEventListener('input'",
         'id="dbStatus"',
         '/api/database-status',
-        '/api/generate-v2',
         'target="_blank"',
     ):
         assert token in html, f"В интерфейсе отсутствует обязательный элемент: {token}"
 
     duration = timedelta(hours=3, minutes=4, seconds=56, microseconds=176000)
-    assert portal_table_ui.implementation.json_cell(duration) == "3:04:56", (
+    assert consolidated_portal.implementation.json_cell(duration) == "3:04:56", (
         "В интерфейсе времени остались доли секунды"
     )
     long_duration = timedelta(hours=27, minutes=2, seconds=3, microseconds=900000)
-    assert portal_table_ui.implementation.json_cell(long_duration) == "27:02:04", (
+    assert consolidated_portal.implementation.json_cell(long_duration) == "27:02:04", (
         "Продолжительность более суток отображается неверно"
     )
 
-    paths = {route.path for route in portal_table_ui.app.routes}
+    paths = {route.path for route in consolidated_portal.app.routes}
     assert "/api/database-status" in paths
     assert "/api/generate-v2" in paths
+    assert "/api/generate-v3" in paths
     return True
 
 
 def main() -> None:
+    roster_22 = DatedRoster(Path("22.07.2026.xlsx"), date(2026, 7, 22), {})
+    roster_24 = DatedRoster(Path("24.07.2026.xlsx"), date(2026, 7, 24), {})
+    rosters = [roster_22, roster_24]
+    assert select_roster(rosters, date(2026, 7, 24)) is roster_24
+    assert select_roster(rosters, date(2026, 7, 23)) is roster_22
+    assert select_roster(rosters, date(2026, 7, 20)) is roster_22
+
     route_polygon = load_kml_polygon(Path(__file__).resolve().parent / "route_akkuyu_tasucu.kml")
     assert len(route_polygon) == 49, "Полигон маршрута Аккую–Ташуджу загружен не полностью"
     assert len(CONSOLIDATED_HEADERS) == 25, "Неверное количество колонок сводного отчёта"
@@ -192,12 +207,12 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки сводного отчёта, заголовка КПП, округления, "
-            "времени, геозоны, нарушений, фильтра, сортировки, карты и статуса БД пройдены."
+            "OK: runtime-проверки сводного отчёта, нескольких разнарядок, портала, "
+            "заголовка КПП, округления, времени, геозоны и нарушений пройдены."
         )
     else:
         print(
-            "OK: runtime-проверки сводного отчёта, заголовка КПП, округления и "
+            "OK: runtime-проверки сводного отчёта, нескольких разнарядок и "
             "расчётной логики пройдены; проверка веб-портала будет выполнена при Docker-сборке."
         )
 
