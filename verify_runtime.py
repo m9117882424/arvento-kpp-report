@@ -17,7 +17,7 @@ from arvento_first_entry_report import ReportFilters
 from arvento_first_entry_report_fixed import build_report_titles, extract_date_from_text
 from arvento_io import Point
 from arvento_reports import round_metric, round_ratio
-from consolidated_multi_report import DatedRoster, select_roster
+from consolidated_multi_report import DatedRoster, has_night_site_mileage, select_roster
 from consolidated_report import (
     HEADERS as CONSOLIDATED_HEADERS,
     allowed_entry_exit_time,
@@ -70,6 +70,25 @@ def consolidated_points(*speeds: float, seconds: int = 10) -> list[Point]:
             speed=speed,
         )
         for index, speed in enumerate(speeds)
+    ]
+
+
+def movement_track(start: datetime, seconds: int = 60) -> list[Point]:
+    return [
+        Point(
+            plate="TEST",
+            time=start,
+            lat=36.145000,
+            lon=33.550000,
+            speed=15,
+        ),
+        Point(
+            plate="TEST",
+            time=start + timedelta(seconds=seconds),
+            lat=36.145500,
+            lon=33.550500,
+            speed=18,
+        ),
     ]
 
 
@@ -154,6 +173,36 @@ def main() -> None:
     assert allowed_entry_exit_time(datetime(2026, 1, 1, 4, 59)) is None
     assert allowed_entry_exit_time(datetime(2026, 1, 1, 23, 1)) is None
 
+    registry = load_registry(Path(__file__).resolve().parent / "geozones.json")
+    boundary = find_site_boundary(registry)
+    site_polygon = list(boundary.points or [])
+    report_day = date(2026, 1, 1)
+    assert has_night_site_mileage(
+        report_day,
+        movement_track(datetime(2026, 1, 1, 0, 30)),
+        site_polygon,
+    ), "Пробег на площадке с 00:00 до 05:00 не отмечен как ночной"
+    assert has_night_site_mileage(
+        report_day,
+        movement_track(datetime(2026, 1, 1, 22, 30)),
+        site_polygon,
+    ), "Пробег на площадке с 22:00 до 23:59 не отмечен как ночной"
+    assert has_night_site_mileage(
+        report_day,
+        movement_track(datetime(2026, 1, 1, 4, 59), seconds=60),
+        site_polygon,
+    ), "Пробег до границы 05:00 не отмечен как ночной"
+    assert not has_night_site_mileage(
+        report_day,
+        movement_track(datetime(2026, 1, 1, 5, 0)),
+        site_polygon,
+    ), "Пробег после 05:00 ошибочно отмечен как ночной"
+    assert not has_night_site_mileage(
+        report_day,
+        movement_track(datetime(2026, 1, 1, 12, 0)),
+        site_polygon,
+    ), "Дневной пробег ошибочно отмечен как ночной"
+
     assert extract_date_from_text("23.07.2026 SON GUNCEL.xlsx") == date(2026, 7, 23)
     assert extract_date_from_text("gps_2026-07-24.csv") == date(2026, 7, 24)
     title, subtitle = build_report_titles(
@@ -186,8 +235,6 @@ def main() -> None:
     else:
         raise AssertionError("Некорректное соотношение порогов не отклонено")
 
-    registry = load_registry(Path(__file__).resolve().parent / "geozones.json")
-    boundary = find_site_boundary(registry)
     assert boundary.name == "Площадка АЭС АККУЮ"
     assert len(boundary.points or []) == 12
     assert point_in_zone(36.145, 33.55, boundary), "Центральная точка площадки не распознана"
@@ -207,13 +254,14 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки сводного отчёта, нескольких разнарядок, портала, "
-            "заголовка КПП, округления, времени, геозоны и нарушений пройдены."
+            "OK: runtime-проверки ночного пробега, сводного отчёта, нескольких "
+            "разнарядок, портала, КПП, округления, геозоны и нарушений пройдены."
         )
     else:
         print(
-            "OK: runtime-проверки сводного отчёта, нескольких разнарядок и "
-            "расчётной логики пройдены; проверка веб-портала будет выполнена при Docker-сборке."
+            "OK: runtime-проверки ночного пробега, сводного отчёта, нескольких "
+            "разнарядок и расчётной логики пройдены; проверка веб-портала будет "
+            "выполнена при Docker-сборке."
         )
 
 
