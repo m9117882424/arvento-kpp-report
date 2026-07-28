@@ -15,7 +15,14 @@ from pathlib import Path
 
 from arvento_first_entry_report import ReportFilters
 from arvento_first_entry_report_fixed import build_report_titles, extract_date_from_text
+from arvento_io import Point
 from arvento_reports import round_metric, round_ratio
+from consolidated_report import (
+    HEADERS as CONSOLIDATED_HEADERS,
+    allowed_entry_exit_time,
+    load_kml_polygon,
+    validated_speed_indices,
+)
 from geozone_registry import find_site_boundary, load_registry, point_in_zone
 from map_links import google_maps_url, parse_coordinate_pair
 from site_boundary_speed import classify_site_state_by_polygon
@@ -47,6 +54,20 @@ def points(*speeds: float, seconds: int = 10) -> list[FakePoint]:
     start = datetime(2026, 1, 1, 8, 0, 0)
     return [
         FakePoint(start + timedelta(seconds=index * seconds), speed)
+        for index, speed in enumerate(speeds)
+    ]
+
+
+def consolidated_points(*speeds: float, seconds: int = 10) -> list[Point]:
+    start = datetime(2026, 1, 1, 8, 0, 0)
+    return [
+        Point(
+            plate="TEST",
+            time=start + timedelta(seconds=index * seconds),
+            lat=36.145 + index * 0.00001,
+            lon=33.55 + index * 0.00001,
+            speed=speed,
+        )
         for index, speed in enumerate(speeds)
     ]
 
@@ -107,6 +128,17 @@ def check_portal_runtime() -> bool:
 
 
 def main() -> None:
+    route_polygon = load_kml_polygon(Path(__file__).resolve().parent / "route_akkuyu_tasucu.kml")
+    assert len(route_polygon) == 49, "Полигон маршрута Аккую–Ташуджу загружен не полностью"
+    assert len(CONSOLIDATED_HEADERS) == 25, "Неверное количество колонок сводного отчёта"
+    assert validated_speed_indices(consolidated_points(40, 45, 50)) == {0, 1, 2}
+    assert not validated_speed_indices(consolidated_points(40, 120, 42)), (
+        "Сводный отчёт не исключил одиночный выброс скорости"
+    )
+    assert allowed_entry_exit_time(datetime(2026, 1, 1, 5, 0)) == time(5, 0)
+    assert allowed_entry_exit_time(datetime(2026, 1, 1, 4, 59)) is None
+    assert allowed_entry_exit_time(datetime(2026, 1, 1, 23, 1)) is None
+
     assert extract_date_from_text("23.07.2026 SON GUNCEL.xlsx") == date(2026, 7, 23)
     assert extract_date_from_text("gps_2026-07-24.csv") == date(2026, 7, 24)
     title, subtitle = build_report_titles(
@@ -160,13 +192,13 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки заголовка КПП, округления, времени, геозоны, "
-            "нарушений, фильтра, сортировки, карты и статуса БД пройдены."
+            "OK: runtime-проверки сводного отчёта, заголовка КПП, округления, "
+            "времени, геозоны, нарушений, фильтра, сортировки, карты и статуса БД пройдены."
         )
     else:
         print(
-            "OK: runtime-проверки заголовка КПП, округления и расчётной логики "
-            "пройдены; проверка веб-портала будет выполнена при Docker-сборке."
+            "OK: runtime-проверки сводного отчёта, заголовка КПП, округления и "
+            "расчётной логики пройдены; проверка веб-портала будет выполнена при Docker-сборке."
         )
 
 
