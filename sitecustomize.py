@@ -1,14 +1,18 @@
 from __future__ import annotations
 
-"""Runtime-wide report rules.
+"""Process-wide report rules loaded by Python during interpreter startup.
 
-- speeds inside ``purpose=speed_exclusion`` geozones are ignored;
-- the violations portal exposes site, Tasucu–Akkuyu route and out-of-region tabs;
-- measurable numeric indicators are displayed with one decimal in every XLSX.
+Only calculation-neutral infrastructure is installed here:
+
+* tunnel speeds are hidden from legacy speed engines and the consolidated
+  report without removing GPS points from mileage/time calculations;
+* measurable Excel indicators are stored and displayed with one decimal.
+
+Portal behaviour is deliberately handled by ``portal_entrypoint.py`` instead
+of importing the web application from ``sitecustomize``.
 """
 
 from copy import copy
-from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Sequence
@@ -75,6 +79,7 @@ def _install_speed_exclusions() -> None:
                 site_threshold_kmh=site_threshold_kmh,
                 outside_threshold_kmh=outside_threshold_kmh,
             )
+
         detect_speed_violations._speed_exclusion_installed = True
         speed_violation_report.detect_speed_violations = detect_speed_violations
 
@@ -89,6 +94,7 @@ def _install_speed_exclusions() -> None:
                 site_polygon,
                 route_polygon,
             )
+
         analyze_track._speed_exclusion_installed = True
         consolidated_report.analyze_track = analyze_track
 
@@ -105,16 +111,36 @@ def _install_excel_rounding() -> None:
         return
 
     coordinate_tokens = (
-        "координат", "latitude", "longitude", "широт", "долгот", "lat", "lon"
+        "координат",
+        "latitude",
+        "longitude",
+        "широт",
+        "долгот",
+        "latitudine",
+        "enlem",
+        "boylam",
     )
+
+    def detect_header_row(sheet) -> int:
+        upper = min(max(sheet.max_row, 1), 10)
+        candidates: list[tuple[int, int]] = []
+        for row_number in range(1, upper + 1):
+            populated = sum(
+                1
+                for cell in sheet[row_number]
+                if cell.value not in (None, "")
+            )
+            candidates.append((populated, row_number))
+        return max(candidates, default=(0, 1))[1]
 
     def apply_rounding(workbook: Workbook) -> None:
         for sheet in workbook.worksheets:
+            header_row = detect_header_row(sheet)
             headers = {
-                column: str(sheet.cell(1, column).value or "").strip().casefold()
+                column: str(sheet.cell(header_row, column).value or "").strip().casefold()
                 for column in range(1, sheet.max_column + 1)
             }
-            for row in sheet.iter_rows(min_row=2):
+            for row in sheet.iter_rows(min_row=header_row + 1):
                 for cell in row:
                     value = cell.value
                     if not isinstance(value, float):
@@ -123,7 +149,11 @@ def _install_excel_rounding() -> None:
                     if any(token in header for token in coordinate_tokens):
                         continue
                     number_format = str(cell.number_format or "General")
-                    if is_date_format(number_format):
+                    lowered_format = number_format.casefold()
+                    if is_date_format(number_format) or any(
+                        token in lowered_format
+                        for token in ("yy", "dd", "hh", "ss", "[h]")
+                    ):
                         continue
                     if "%" in number_format:
                         cell.number_format = "0.0%"
@@ -139,126 +169,5 @@ def _install_excel_rounding() -> None:
     Workbook.save = save_with_rounding
 
 
-def _install_portal_region_view() -> None:
-    try:
-        import run_report_portal as portal
-        from regional_speed_report import (
-            REGION_SHEET_NAME,
-            ROUTE_SHEET_NAME,
-            SITE_SHEET_NAME,
-        )
-        from speed_violation_report import TURN_SHEET_NAME
-        from openpyxl import load_workbook
-    except Exception:
-        return
-
-    portal.SITE_SHEET_NAME = SITE_SHEET_NAME
-    portal.OUTSIDE_SHEET_NAME = ROUTE_SHEET_NAME
-    portal.REGION_SHEET_NAME = REGION_SHEET_NAME
-    portal.implementation.HTML = portal.implementation.HTML.replace(
-        "Порог вне площадки, км/ч", "Порог маршрута и вне региона, км/ч"
-    )
-    portal.implementation.HTML = portal.implementation.HTML.replace(
-        "Порог вне площадки", "Порог маршрута и вне региона"
-    )
-
-    def violation_web_preview(path: Path):
-        columns = [
-            "Госномер", "Тип нарушения", "Дата", "Начало", "Окончание",
-            "Максимальная скорость, км/ч", "Порог, км/ч", "Адрес", "Карта",
-        ]
-        records: list[tuple[str, datetime | None, list[Any]]] = []
-        workbook = load_workbook(path, read_only=True, data_only=True)
-        try:
-            for sheet_name in (
-                TURN_SHEET_NAME,
-                SITE_SHEET_NAME,
-                ROUTE_SHEET_NAME,
-                REGION_SHEET_NAME,
-            ):
-                if sheet_name not in workbook.sheetnames:
-                    continue
-                sheet = workbook[sheet_name]
-                headers = portal._header_map(sheet)
-                for row in sheet.iter_rows(min_row=2, values_only=True):
-                    plate = str(portal._value(row, headers, "Госномер") or "").strip()
-                    if not plate:
-                        continue
-                    if sheet_name == TURN_SHEET_NAME:
-                        start = portal._value(row, headers, "Начало прохода")
-                        finish = portal._value(row, headers, "Окончание прохода")
-                        speeds = [
-                            portal._as_number(portal._value(row, headers, name))
-                            for name in ("Скорость в начале", "Скорость в конце")
-                        ]
-                        speeds = [value for value in speeds if value is not None]
-                        max_speed = max(speeds) if speeds else None
-                        address = " → ".join(
-                            value for value in (
-                                str(portal._value(row, headers, "Адрес начала") or "").strip(),
-                                str(portal._value(row, headers, "Адрес окончания") or "").strip(),
-                            ) if value
-                        )
-                        map_url = portal._map_url(
-                            portal._value(row, headers, "Координаты начала")
-                            or portal._value(row, headers, "Координаты окончания")
-                        )
-                        threshold = None
-                    else:
-                        start = portal._value(row, headers, "Начало нарушения")
-                        finish = portal._value(row, headers, "Окончание нарушения")
-                        max_speed = portal._as_number(
-                            portal._value(row, headers, "Максимальная скорость, км/ч")
-                        )
-                        threshold = portal._as_number(
-                            portal._value(row, headers, "Порог фиксации, км/ч")
-                        )
-                        address = str(
-                            portal._value(row, headers, "Адрес максимума") or ""
-                        ).strip()
-                        map_url = portal._map_url(
-                            portal._value(row, headers, "Координаты максимума")
-                        )
-                    event_date = (
-                        start.date() if isinstance(start, datetime)
-                        else portal._value(row, headers, "Дата")
-                    )
-                    display = [
-                        plate, sheet_name,
-                        portal.implementation.json_cell(event_date),
-                        portal.implementation.json_cell(start),
-                        portal.implementation.json_cell(finish),
-                        portal.implementation.json_cell(max_speed),
-                        portal.implementation.json_cell(threshold),
-                        address, map_url,
-                    ]
-                    records.append((
-                        plate,
-                        start if isinstance(start, datetime) else None,
-                        display,
-                    ))
-        finally:
-            workbook.close()
-        records.sort(key=lambda item: (item[0], item[1] or datetime.min, item[2][1]))
-        rows = [item[2] for item in records]
-        return columns, rows, len(rows)
-
-    portal.violation_web_preview = violation_web_preview
-    original_generate = portal.generate_report_with_thresholds
-    if not getattr(original_generate, "_regional_summary_installed", False):
-        def generate_report_with_thresholds(*args, **kwargs):
-            result = original_generate(*args, **kwargs)
-            report_type = args[0] if args else kwargs.get("report_type")
-            if report_type == "violation":
-                summary = result.get("summary", {})
-                value = summary.pop("Порог вне площадки", None)
-                if value is not None:
-                    summary["Порог маршрута и вне региона"] = value
-            return result
-        generate_report_with_thresholds._regional_summary_installed = True
-        portal.generate_report_with_thresholds = generate_report_with_thresholds
-
-
 _install_speed_exclusions()
 _install_excel_rounding()
-_install_portal_region_view()

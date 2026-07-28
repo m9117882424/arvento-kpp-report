@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-"""Production ASGI entrypoint with explicit portal runtime fixes."""
+"""Production ASGI entrypoint with explicit, testable portal integration."""
 
-import consolidated_portal as base
-import portal_runtime_patch  # noqa: F401
+import consolidated_portal as portal
+from portal_runtime_patch import apply_runtime_patch
 
-app = base.app
+apply_runtime_patch()
+app = portal.app
 
 __all__ = ["app"]
