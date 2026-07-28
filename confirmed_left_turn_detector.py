@@ -12,8 +12,8 @@ A violation is confirmed only when a vehicle:
 Merely reaching 75% of the corridor is not enough. A vehicle that turns around
 inside the corridor and exits through the same right side is not a violation.
 A long stop or sparse GPS data near the start does not permanently disarm a
-later genuine traversal: after a timeout, detection is re-armed when the next
-point is still in the start section.
+later genuine traversal, and the original entry time remains attached to the
+confirmed event.
 """
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ def _new_active(point: legacy.TrackPoint, position: legacy.CorridorPosition) -> 
     return {
         "start_point": point,
         "start_position": position,
+        "sequence_start_time": point.timestamp,
         "last_along": position.along_m,
         "max_progress": position.progress,
         "min_distance": position.distance_m,
@@ -52,10 +53,11 @@ def detect_confirmed_violations(
     active traversal. The traversal is cancelled when the vehicle substantially
     backtracks or exits through the right/start side.
 
-    ``max_sequence_seconds`` limits one continuously tracked candidate. If that
-    candidate expires while the current point is still in the start section, a
-    fresh candidate may begin from that point. This handles stops and sparse GPS
-    intervals without linking unrelated movements across the whole corridor.
+    ``max_sequence_seconds`` limits one continuously observed movement segment.
+    When the limit expires while the vehicle is still inside the start section,
+    the timing window is refreshed but the original corridor-entry point is
+    preserved. This handles stops and sparse GPS intervals without joining an
+    unrelated movement that has already progressed farther along the corridor.
     """
     half_width = width_m / 2.0
     violations: list[legacy.Violation] = []
@@ -64,8 +66,7 @@ def detect_confirmed_violations(
     last_violation_time: datetime | None = None
 
     # After a reversal, a new traversal may start only after the vehicle has
-    # actually left the right/start side and enters again. A timeout in the start
-    # section is the exception: the same physical traversal may resume there.
+    # actually left the right/start side and enters again.
     entry_armed = True
 
     for point in track:
@@ -98,19 +99,21 @@ def detect_confirmed_violations(
             continue
 
         if active is not None:
-            start_point = active["start_point"]
-            assert isinstance(start_point, legacy.TrackPoint)
-            elapsed = (point.timestamp - start_point.timestamp).total_seconds()
+            sequence_start_time = active["sequence_start_time"]
+            assert isinstance(sequence_start_time, datetime)
+            elapsed = (point.timestamp - sequence_start_time).total_seconds()
             if elapsed <= 0:
                 active = None
                 entry_armed = False
                 continue
             if elapsed > max_sequence_seconds:
-                active = None
-                # A stopped vehicle can remain in the first quarter longer than
-                # the candidate timeout. Re-arm only there; farther along the
-                # corridor a timeout cannot be joined to a new traversal.
-                entry_armed = position.progress <= legacy.START_PROGRESS_MAX
+                if inside and position.progress <= legacy.START_PROGRESS_MAX:
+                    # The vehicle is still near the original entrance. Refresh
+                    # only the observation window; preserve the true entry point.
+                    active["sequence_start_time"] = point.timestamp
+                else:
+                    active = None
+                    entry_armed = position.progress <= legacy.START_PROGRESS_MAX
 
         # The allowing zone cancels a traversal even before its geometric exit.
         if active is not None and legacy.in_control_zone(point):
