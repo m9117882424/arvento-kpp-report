@@ -41,6 +41,7 @@ CANONICAL_FILES = {
         "--site-speed-threshold",
         "--outside-speed-threshold",
     ),
+    "generate_consolidated_report.py": ("consolidated_multi_report",),
     "generate_scheduled_reports.py": ("run_automated_reports",),
 }
 
@@ -55,6 +56,36 @@ REQUIRED_SUPPORT_MODULES = {
         "workbook_preview_with_title_rows",
         '"Номерной знак" in values',
     ),
+    "consolidated_portal.py": (
+        "import portal_table_ui as ui",
+        'value="consolidated">Сводный отчёт',
+        'id="consolidatedRosters"',
+        'name="rosters"',
+        "multiple",
+        "/api/generate-v3",
+        "generate_multi_roster_report",
+        "MAX_ROSTER_FILES",
+        "report_end_date",
+    ),
+    "consolidated_multi_report.py": (
+        "class DatedRoster",
+        "load_rosters",
+        "select_roster",
+        "generate_multi_roster_report",
+        "latest roster dated before",
+        "Использованная разнарядка",
+    ),
+    "consolidated_report.py": (
+        "HEADERS = [",
+        "load_kml_polygon",
+        "validated_speed_indices",
+        "analyze_track",
+        "Сводный отчет",
+    ),
+    "route_akkuyu_tasucu.kml": (
+        "<Polygon>",
+        "<coordinates>",
+    ),
     "arvento_first_entry_report_fixed.py": (
         "create_report_without_map_column",
         "sheet.delete_cols(5, 1)",
@@ -63,22 +94,6 @@ REQUIRED_SUPPORT_MODULES = {
         "sheet.insert_rows(1, amount=2)",
         'sheet.auto_filter.ref = f"A3:J{max_row}"',
         'sheet.freeze_panes = "A4"',
-    ),
-    "generate_consolidated_report.py": (
-        "from consolidated_report import main",
-    ),
-    "consolidated_report.py": (
-        "HEADERS = [",
-        "load_kml_polygon",
-        "validated_speed_indices",
-        "sanitize_position_outliers",
-        "GEOFENCE_VIOLATION_KM = 80.0",
-        "PERSONAL_USE_DISTANCE_DIFF_KM = 10.0",
-        "PERSONAL_USE_PERCENT_DIFF = 0.10",
-        "iter_database_tracks",
-        'sheet.title = "Сводный отчет"',
-        'diagnostics = workbook.create_sheet("Диагностика")',
-        'parameters = workbook.create_sheet("Параметры")',
     ),
     "speed_violation_report.py": (
         "validate_speed_thresholds",
@@ -106,7 +121,7 @@ REQUIRED_SUPPORT_MODULES = {
     ),
     "verify_runtime.py": (
         "_event_is_smooth",
-        "portal_table_ui",
+        "consolidated_portal",
         "plateSuggestions",
         "data-sort-index",
         "dbStatus",
@@ -127,7 +142,7 @@ OPERATIONAL_EXPECTATIONS = {
         "sync_arvento_gps_to_postgres.py",
         "run_geofence_editor:app",
         "report-portal:",
-        "portal_table_ui:app",
+        "consolidated_portal:app",
     ),
     "report_portal.py": (
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
@@ -140,17 +155,13 @@ OPERATIONAL_EXPECTATIONS = {
         '"enabled": true',
         '"type": "polygon"',
     ),
-    "route_akkuyu_tasucu.kml": (
-        "Маршрут Аккую - Ташуджу",
-        "<Polygon>",
-        "33.5538269255,36.1668270505",
-        "33.9640445069,36.3779262863",
-    ),
     "README.md": tuple(
-        name for name in CANONICAL_FILES if name != "run_report_portal.py"
+        name for name in CANONICAL_FILES
+        if name not in {"run_report_portal.py", "generate_consolidated_report.py"}
     ),
     "SERVER_DEPLOY.md": tuple(
-        name for name in CANONICAL_FILES if name != "run_report_portal.py"
+        name for name in CANONICAL_FILES
+        if name not in {"run_report_portal.py", "generate_consolidated_report.py"}
     ),
 }
 
@@ -160,12 +171,12 @@ FORBIDDEN_OPERATIONAL_REFERENCES = {
         'APP_DIR / "arvento_kpp_report.py"',
         'APP_DIR / "arvento_first_entry_report_fixed.py"',
         'APP_DIR / "prohibited_left_turn_report.py"',
-        'APP_DIR / "generate_consolidated_report.py"',
     ),
     "docker-compose.server.yml": (
         "arvento_postgres_sync_v2.py",
         "geofence_editor_api:app",
         '"report_portal:app"',
+        '"portal_table_ui:app"',
     ),
     "Dockerfile.server": (
         "arvento_postgres_sync_v2.py",
