@@ -129,7 +129,8 @@ def check_slow_left_exit_after_start_timeout() -> None:
     The vehicle enters the right/start section, remains there longer than the
     three-minute candidate limit, then continues through the corridor and exits
     physically through the left side. The timeout must not permanently disarm
-    detection while the vehicle is still in the start section.
+    detection while the vehicle is still in the start section, and the original
+    entry time must remain in the report.
     """
     raw = [
         ("2026-07-28 07:15:08", 36.317429, 33.877834, 26),
@@ -162,7 +163,7 @@ def check_slow_left_exit_after_start_timeout() -> None:
     )
     violation = violations[0]
     assert violation.plate == "34MPM501"
-    assert violation.start == datetime(2026, 7, 28, 7, 20, 24)
+    assert violation.start == datetime(2026, 7, 28, 7, 15, 17)
     assert violation.finish == datetime(2026, 7, 28, 7, 21, 16)
     assert violation.finish_position.progress >= EXIT_PROGRESS_MIN
 
