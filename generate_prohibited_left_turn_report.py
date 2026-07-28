@@ -13,6 +13,7 @@ import tempfile
 from pathlib import Path
 
 import prohibited_left_turn_report as turn_report
+from confirmed_left_turn_detector import detect_confirmed_violations
 from geozone_registry import load_registry
 from map_links import add_violation_map_links
 from regional_speed_report import (
@@ -96,7 +97,7 @@ def main() -> None:
 
         for _, track in turn_report.iter_vehicle_tracks(db_path):
             turn_violations.extend(
-                turn_report.detect_violations(
+                detect_confirmed_violations(
                     track,
                     width_m=width_m,
                     max_sequence_seconds=max_seconds,
