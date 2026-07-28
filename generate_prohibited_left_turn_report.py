@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """Generate the consolidated violations report.
 
-The workbook contains a per-plate summary, prohibited-turn details and two
-validated speed-violation sheets. Site classification uses the authoritative
-Akkuyu polygon marked with ``purpose=site_boundary`` in geozones.json.
+The workbook contains prohibited turns and three validated speed categories:
+Akkuyu site, Tasucu–Akkuyu route and outside every configured geozone.
 """
-
 from __future__ import annotations
 
 import argparse
@@ -18,14 +15,14 @@ from pathlib import Path
 import prohibited_left_turn_report as turn_report
 from geozone_registry import load_registry
 from map_links import add_violation_map_links
-from site_boundary_speed import (
-    detect_speed_violations_by_polygon,
-    write_site_boundary_metadata,
+from regional_speed_report import (
+    append_regional_speed_sheets,
+    detect_regional_speed_violations,
 )
+from site_boundary_speed import write_site_boundary_metadata
 from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
-    append_speed_sheets,
     validate_speed_thresholds,
 )
 from sqlite_store import import_source_to_sqlite
@@ -37,38 +34,32 @@ def main() -> None:
     parser.add_argument("output", nargs="?", help="Путь итогового XLSX")
     parser.add_argument("--width", type=float, default=turn_report.DEFAULT_WIDTH_M)
     parser.add_argument(
-        "--max-minutes",
-        type=float,
+        "--max-minutes", type=float,
         default=turn_report.DEFAULT_MAX_SEQUENCE_SECONDS / 60.0,
     )
     parser.add_argument(
-        "--control-minutes",
-        type=float,
+        "--control-minutes", type=float,
         default=turn_report.DEFAULT_CONTROL_WINDOW_SECONDS / 60.0,
     )
     parser.add_argument(
-        "--cooldown-minutes",
-        type=float,
+        "--cooldown-minutes", type=float,
         default=turn_report.DEFAULT_COOLDOWN_SECONDS / 60.0,
     )
     parser.add_argument(
-        "--site-speed-threshold",
-        type=float,
+        "--site-speed-threshold", type=float,
         default=DEFAULT_SITE_SPEED_THRESHOLD_KMH,
         help="Порог фиксации скорости на площадке, км/ч",
     )
     parser.add_argument(
-        "--outside-speed-threshold",
-        type=float,
+        "--outside-speed-threshold", type=float,
         default=DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
-        help="Порог фиксации скорости вне площадки, км/ч",
+        help="Порог фиксации скорости на маршруте и вне региона, км/ч",
     )
     args = parser.parse_args()
 
     try:
         site_threshold, outside_threshold = validate_speed_thresholds(
-            args.site_speed_threshold,
-            args.outside_speed_threshold,
+            args.site_speed_threshold, args.outside_speed_threshold
         )
     except ValueError as exc:
         raise SystemExit(f"Некорректные пороги скорости: {exc}") from exc
@@ -78,8 +69,7 @@ def main() -> None:
         raise SystemExit(f"Файл не найден: {source}")
     output = (
         Path(args.output).expanduser().resolve()
-        if args.output
-        else source.with_name(source.stem + "_нарушения.xlsx")
+        if args.output else source.with_name(source.stem + "_нарушения.xlsx")
     )
 
     config = source.parent / "geozones.json"
@@ -101,7 +91,8 @@ def main() -> None:
 
         turn_violations = []
         site_speed_violations = []
-        outside_speed_violations = []
+        route_speed_violations = []
+        region_speed_violations = []
 
         for _, track in turn_report.iter_vehicle_tracks(db_path):
             turn_violations.extend(
@@ -113,18 +104,23 @@ def main() -> None:
                     cooldown_seconds=cooldown_seconds,
                 )
             )
-            site_items, outside_items = detect_speed_violations_by_polygon(
+            site_items, route_items, region_items = detect_regional_speed_violations(
                 track,
                 registry,
                 site_threshold_kmh=site_threshold,
                 outside_threshold_kmh=outside_threshold,
             )
             site_speed_violations.extend(site_items)
-            outside_speed_violations.extend(outside_items)
+            route_speed_violations.extend(route_items)
+            region_speed_violations.extend(region_items)
 
-        turn_violations.sort(key=lambda item: (item.plate, item.start))
-        site_speed_violations.sort(key=lambda item: (item.plate, item.start))
-        outside_speed_violations.sort(key=lambda item: (item.plate, item.start))
+        for items in (
+            turn_violations,
+            site_speed_violations,
+            route_speed_violations,
+            region_speed_violations,
+        ):
+            items.sort(key=lambda item: (item.plate, item.start))
 
         turn_report.save_report(
             output,
@@ -134,10 +130,11 @@ def main() -> None:
             max_seconds,
             control_seconds,
         )
-        append_speed_sheets(
+        append_regional_speed_sheets(
             output,
             site_speed_violations,
-            outside_speed_violations,
+            route_speed_violations,
+            region_speed_violations,
             site_threshold_kmh=site_threshold,
             outside_threshold_kmh=outside_threshold,
         )
@@ -147,11 +144,11 @@ def main() -> None:
         print(f"Готово: {output}")
         print(f"Загружено GPS-точек: {stats['loaded']}")
         print(f"Запрещённых поворотов: {len(turn_violations)}")
-        print(f"Валидных нарушений скорости на площадке: {len(site_speed_violations)}")
-        print(f"Валидных нарушений скорости вне площадки: {len(outside_speed_violations)}")
-        print(f"Порог на площадке: {site_threshold:g} км/ч")
-        print(f"Порог вне площадки: {outside_threshold:g} км/ч")
-        print("Граница площадки: полигон «Площадка АЭС АККУЮ»")
+        print(f"Нарушений скорости на площадке: {len(site_speed_violations)}")
+        print(f"Нарушений скорости Ташуджу - Аккую: {len(route_speed_violations)}")
+        print(f"Нарушений скорости вне региона: {len(region_speed_violations)}")
+        print(f"Порог на площадке: {site_threshold:.1f} км/ч")
+        print(f"Порог маршрута и вне региона: {outside_threshold:.1f} км/ч")
         print(f"Ссылок на карту добавлено: {map_link_count}")
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
