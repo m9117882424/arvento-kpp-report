@@ -14,7 +14,7 @@ from __future__ import annotations
 import argparse
 import os
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Iterable
 
@@ -128,7 +128,7 @@ def annotate_roster_usage(
             cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
         for row in range(2, diagnostics.max_row + 1):
             report_day = diagnostics.cell(row, 1).value
-            if hasattr(report_day, "date") and not isinstance(report_day, date):
+            if isinstance(report_day, datetime):
                 report_day = report_day.date()
             if not isinstance(report_day, date):
                 continue
