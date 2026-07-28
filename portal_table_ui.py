@@ -37,6 +37,47 @@ def json_cell_without_fractional_seconds(value):
 implementation.json_cell = json_cell_without_fractional_seconds
 
 
+# The KPP workbook now has two title rows before the table header. Find the
+# actual header by its plate column so those title rows do not appear as web
+# table columns. Other reports still resolve their first row immediately.
+_original_workbook_preview = implementation.workbook_preview
+
+
+def workbook_preview_with_title_rows(path):
+    workbook = portal.load_workbook(path, read_only=True, data_only=True)
+    try:
+        sheet = workbook.worksheets[0]
+        iterator = sheet.iter_rows(values_only=True)
+        columns = None
+        for row_number, row in enumerate(iterator, 1):
+            values = [str(value or "").strip() for value in row]
+            if "Госномер" in values or "Номерной знак" in values:
+                columns = values
+                break
+            if row_number >= 10:
+                break
+
+        if columns is None:
+            workbook.close()
+            return _original_workbook_preview(path)
+
+        rows = []
+        total = 0
+        for row in iterator:
+            if not any(value not in (None, "") for value in row):
+                continue
+            total += 1
+            if len(rows) < implementation.PREVIEW_ROWS:
+                rows.append([implementation.json_cell(value) for value in row])
+        return columns, rows, total
+    finally:
+        if workbook is not None:
+            workbook.close()
+
+
+implementation.workbook_preview = workbook_preview_with_title_rows
+
+
 # Replace the exact-value dropdown with a text field plus browser suggestions.
 implementation.HTML = implementation.HTML.replace(
     '<select id="plateFilter"><option value="">Все госномера</option></select>',
