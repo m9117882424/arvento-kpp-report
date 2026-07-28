@@ -89,6 +89,15 @@ def check_portal_runtime() -> bool:
     ):
         assert token in html, f"В интерфейсе отсутствует обязательный элемент: {token}"
 
+    duration = timedelta(hours=3, minutes=4, seconds=56, microseconds=176000)
+    assert portal_table_ui.implementation.json_cell(duration) == "3:04:56", (
+        "В интерфейсе времени остались доли секунды"
+    )
+    long_duration = timedelta(hours=27, minutes=2, seconds=3, microseconds=900000)
+    assert portal_table_ui.implementation.json_cell(long_duration) == "27:02:04", (
+        "Продолжительность более суток отображается неверно"
+    )
+
     paths = {route.path for route in portal_table_ui.app.routes}
     assert "/api/database-status" in paths
     assert "/api/generate-v2" in paths
@@ -134,8 +143,8 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки округления, геозоны, нарушений, фильтра, значков "
-            "сортировки, карты и статуса БД пройдены."
+            "OK: runtime-проверки округления, времени, геозоны, нарушений, фильтра, "
+            "значков сортировки, карты и статуса БД пройдены."
         )
     else:
         print(
