@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
+from arvento_first_entry_report import ReportFilters
+from arvento_first_entry_report_fixed import build_report_titles, extract_date_from_text
 from arvento_reports import round_metric, round_ratio
 from geozone_registry import find_site_boundary, load_registry, point_in_zone
 from map_links import google_maps_url, parse_coordinate_pair
@@ -105,6 +107,21 @@ def check_portal_runtime() -> bool:
 
 
 def main() -> None:
+    assert extract_date_from_text("23.07.2026 SON GUNCEL.xlsx") == date(2026, 7, 23)
+    assert extract_date_from_text("gps_2026-07-24.csv") == date(2026, 7, 24)
+    title, subtitle = build_report_titles(
+        date(2026, 7, 24),
+        date(2026, 7, 23),
+        ReportFilters(time_from=time(7, 0), time_to=time(9, 0)),
+    )
+    assert title == (
+        "Отчет по времени въезда служебных автомобилей в утреннее время за "
+        "24.07.2026 (с 7:00 до 09:00) без учёта повторных проездов через геозону."
+    )
+    assert subtitle == (
+        "(принадлежность водителей проставлена по разнарядке от 23.07.2026)"
+    )
+
     assert round_metric(12.349) == 12.3, "Пробег не округлён до одного знака"
     assert round_metric(12.351) == 12.4, "Округление пробега работает неверно"
     assert round_ratio(0.32654) == 0.327, "Процент не округлён до одного отображаемого знака"
@@ -143,13 +160,13 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки округления, времени, геозоны, нарушений, фильтра, "
-            "значков сортировки, карты и статуса БД пройдены."
+            "OK: runtime-проверки заголовка КПП, округления, времени, геозоны, "
+            "нарушений, фильтра, сортировки, карты и статуса БД пройдены."
         )
     else:
         print(
-            "OK: runtime-проверки округления и расчётной логики пройдены; проверка "
-            "веб-портала будет выполнена при Docker-сборке."
+            "OK: runtime-проверки заголовка КПП, округления и расчётной логики "
+            "пройдены; проверка веб-портала будет выполнена при Docker-сборке."
         )
 
 
