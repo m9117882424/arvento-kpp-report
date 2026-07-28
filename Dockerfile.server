@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 RUN python /app/verify_repository.py \
-    && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py
+    && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
+    && python /app/verify_left_turn_runtime.py
 
 CMD ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
