@@ -13,6 +13,7 @@ of importing the web application from ``sitecustomize``.
 """
 
 from copy import copy
+from dataclasses import is_dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Sequence
@@ -46,24 +47,44 @@ def _install_speed_exclusions() -> None:
         return any(point_in_zone(lat, lon, zone) for zone in exclusion_zones)
 
     def without_speed(point: Any) -> Any:
+        """Clone a GPS point with speed removed, preserving mileage fields."""
         if not excluded(point):
             return point
+
+        if is_dataclass(point):
+            try:
+                return replace(point, speed=None)
+            except (TypeError, ValueError):
+                pass
+
         try:
             cloned = copy(point)
             cloned.speed = None
             return cloned
         except Exception:
-            values = dict(getattr(point, "__dict__", {}))
-            values.update(
-                plate=getattr(point, "plate", ""),
-                timestamp=getattr(point, "timestamp", getattr(point, "time", None)),
-                time=getattr(point, "time", getattr(point, "timestamp", None)),
-                lat=getattr(point, "lat", None),
-                lon=getattr(point, "lon", None),
-                speed=None,
-                address=getattr(point, "address", ""),
-            )
-            return SimpleNamespace(**values)
+            pass
+
+        values = dict(getattr(point, "__dict__", {}))
+        for name in (
+            "plate",
+            "timestamp",
+            "time",
+            "lat",
+            "lon",
+            "odometer",
+            "source_distance",
+            "speed",
+            "region",
+            "address",
+        ):
+            if name not in values and hasattr(point, name):
+                values[name] = getattr(point, name)
+        if "timestamp" not in values and "time" in values:
+            values["timestamp"] = values["time"]
+        if "time" not in values and "timestamp" in values:
+            values["time"] = values["timestamp"]
+        values["speed"] = None
+        return SimpleNamespace(**values)
 
     original_detect = speed_violation_report.detect_speed_violations
     if not getattr(original_detect, "_speed_exclusion_installed", False):
