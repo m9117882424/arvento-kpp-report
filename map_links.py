@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """Google Maps links for violation coordinates in Excel and the web portal."""
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,10 +10,14 @@ from urllib.parse import quote
 from openpyxl import load_workbook
 
 GOOGLE_MAPS_SEARCH_URL = "https://www.google.com/maps/search/?api=1&query="
+SPEED_SHEETS = (
+    "Скорость на площадке",
+    "Скорость Ташуджу - Аккую",
+    "Скорость вне региона",
+)
 
 
 def google_maps_url(lat: float, lon: float) -> str:
-    """Return a stable Google Maps search URL for a latitude/longitude point."""
     latitude = float(lat)
     longitude = float(lon)
     if not -90 <= latitude <= 90:
@@ -27,7 +29,6 @@ def google_maps_url(lat: float, lon: float) -> str:
 
 
 def parse_coordinate_pair(value: Any) -> tuple[float, float] | None:
-    """Parse the report coordinate format ``lat, lon``."""
     if value in (None, ""):
         return None
     text = str(value).strip().replace(";", ",")
@@ -58,11 +59,9 @@ def _set_address_link(sheet, row: int, address_header: str, coordinates_header: 
     coordinates_column = headers.get(coordinates_header)
     if address_column is None or coordinates_column is None:
         return False
-
     coordinates = parse_coordinate_pair(sheet.cell(row, coordinates_column).value)
     if coordinates is None:
         return False
-
     cell = sheet.cell(row, address_column)
     if not str(cell.value or "").strip():
         cell.value = "Открыть на карте"
@@ -72,21 +71,17 @@ def _set_address_link(sheet, row: int, address_header: str, coordinates_header: 
 
 
 def add_violation_map_links(workbook_path: Path) -> int:
-    """Make violation address cells clickable in the generated Excel workbook."""
     workbook = load_workbook(workbook_path)
     links = 0
     try:
-        for sheet_name in ("Скорость на площадке", "Скорость вне площадки"):
+        for sheet_name in SPEED_SHEETS:
             if sheet_name not in workbook.sheetnames:
                 continue
             sheet = workbook[sheet_name]
             for row in range(2, sheet.max_row + 1):
                 links += int(
                     _set_address_link(
-                        sheet,
-                        row,
-                        "Адрес максимума",
-                        "Координаты максимума",
+                        sheet, row, "Адрес максимума", "Координаты максимума"
                     )
                 )
 
@@ -95,18 +90,12 @@ def add_violation_map_links(workbook_path: Path) -> int:
             for row in range(2, sheet.max_row + 1):
                 links += int(
                     _set_address_link(
-                        sheet,
-                        row,
-                        "Адрес начала",
-                        "Координаты начала",
+                        sheet, row, "Адрес начала", "Координаты начала"
                     )
                 )
                 links += int(
                     _set_address_link(
-                        sheet,
-                        row,
-                        "Адрес окончания",
-                        "Координаты окончания",
+                        sheet, row, "Адрес окончания", "Координаты окончания"
                     )
                 )
 
@@ -115,7 +104,6 @@ def add_violation_map_links(workbook_path: Path) -> int:
                 "Ссылки на карту",
                 f"Google Maps, добавлено ссылок: {links}",
             ])
-
         workbook.save(workbook_path)
     finally:
         workbook.close()
