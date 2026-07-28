@@ -12,16 +12,18 @@ The calculation engine and Excel layout remain in ``consolidated_report.py``.
 from __future__ import annotations
 
 import argparse
+import math
 import os
-from dataclasses import dataclass
-from datetime import date, datetime
+from dataclasses import dataclass, replace
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 
 import consolidated_report as core
+from arvento_io import Point
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,6 +81,75 @@ def validate_period(start_day: date, end_day: date) -> None:
         raise ValueError(f"Период не должен превышать {core.MAX_REPORT_DAYS} дней")
 
 
+def intervals_overlap(
+    start: datetime,
+    finish: datetime,
+    window_start: datetime,
+    window_finish: datetime,
+) -> bool:
+    return start < window_finish and finish > window_start
+
+
+def has_night_site_mileage(
+    report_day: date,
+    points: Sequence[Point],
+    site_polygon: list[tuple[float, float]],
+) -> bool:
+    """Return True only for site mileage within the report date's night windows.
+
+    The flag belongs to the calendar date of the report and is set when there is
+    positive mileage inside Akkuyu NPP during either interval:
+    00:00 <= time < 05:00 or 22:00 <= time < 24:00.
+    """
+    track = core.sanitize_position_outliers(points)
+    if len(track) < 2:
+        return False
+
+    site_states = core.smooth_boolean_states([
+        core.point_in_polygon(point.lat, point.lon, site_polygon)
+        for point in track
+    ])
+    day_start = datetime.combine(report_day, time.min)
+    early_finish = datetime.combine(report_day, core.NIGHT_END)
+    late_start = datetime.combine(report_day, core.NIGHT_START)
+    day_finish = datetime.combine(report_day + timedelta(days=1), time.min)
+
+    for index, (p1, p2) in enumerate(zip(track, track[1:])):
+        gap = (p2.time - p1.time).total_seconds()
+        if gap <= 0:
+            continue
+
+        distance = core.segment_distance(p1, p2)
+        if not math.isfinite(distance) or distance <= 0:
+            continue
+
+        p1_inside = site_states[index]
+        p2_inside = site_states[index + 1]
+        if p1_inside == p2_inside:
+            portions = [(p1_inside, 0.0, 1.0)]
+        else:
+            fraction = core.polygon_crossing_fraction(p1, p2, site_polygon)
+            if not p1_inside and p2_inside:
+                portions = [(False, 0.0, fraction), (True, fraction, 1.0)]
+            else:
+                portions = [(True, 0.0, fraction), (False, fraction, 1.0)]
+
+        for is_inside, start_fraction, finish_fraction in portions:
+            if not is_inside:
+                continue
+            fraction = max(0.0, finish_fraction - start_fraction)
+            if distance * fraction <= 0:
+                continue
+            part_start = p1.time + (p2.time - p1.time) * start_fraction
+            part_finish = p1.time + (p2.time - p1.time) * finish_fraction
+            if intervals_overlap(part_start, part_finish, day_start, early_finish):
+                return True
+            if intervals_overlap(part_start, part_finish, late_start, day_finish):
+                return True
+
+    return False
+
+
 def annotate_roster_usage(
     output_path: Path,
     rosters: list[DatedRoster],
@@ -93,6 +164,11 @@ def annotate_roster_usage(
                 parameters.cell(row, 2).value = "Несколько загруженных файлов"
             elif label == "Дата разнарядки":
                 parameters.cell(row, 2).value = "выбирается отдельно для каждой даты отчёта"
+            elif label == "Работа ночью":
+                parameters.cell(row, 2).value = (
+                    "есть положительный пробег внутри АЭС в дату отчёта "
+                    "в интервалах 00:00–05:00 или 22:00–24:00"
+                )
 
         parameters.append([])
         parameters.append(["Загруженные разнарядки", "Файл"])
@@ -191,6 +267,8 @@ def generate_multi_roster_report(
             route_polygon,
         )
         if item is not None:
+            night_work = int(has_night_site_mileage(report_day, points, site_polygon))
+            item = replace(item, night_work=night_work)
             rows.append(item)
         processed += 1
 
