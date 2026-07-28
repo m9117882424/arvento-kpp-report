@@ -36,7 +36,7 @@ CANONICAL_FILES = {
     "generate_first_entry_report.py": ("arvento_first_entry_report_fixed",),
     "generate_prohibited_left_turn_report.py": (
         "prohibited_left_turn_report",
-        "site_boundary_speed",
+        "regional_speed_report",
         "add_violation_map_links",
         "--site-speed-threshold",
         "--outside-speed-threshold",
@@ -66,6 +66,24 @@ REQUIRED_SUPPORT_MODULES = {
         "generate_multi_roster_report",
         "MAX_ROSTER_FILES",
         "report_end_date",
+    ),
+    "portal_runtime_patch.py": (
+        "patch_portal",
+        "Скорость Ташуджу - Аккую",
+        "Скорость вне региона",
+        "round(float(value), 1)",
+    ),
+    "portal_entrypoint.py": (
+        "import consolidated_portal as portal",
+        "patch_portal(portal)",
+        "app = portal.app",
+    ),
+    "regional_speed_report.py": (
+        "detect_regional_speed_violations",
+        "append_regional_speed_sheets",
+        "ROUTE_SHEET_NAME",
+        "REGION_SHEET_NAME",
+        "speed_exclusion",
     ),
     "consolidated_multi_report.py": (
         "class DatedRoster",
@@ -142,7 +160,7 @@ OPERATIONAL_EXPECTATIONS = {
         "sync_arvento_gps_to_postgres.py",
         "run_geofence_editor:app",
         "report-portal:",
-        "consolidated_portal:app",
+        "portal_entrypoint:app",
     ),
     "report_portal.py": (
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
@@ -152,6 +170,7 @@ OPERATIONAL_EXPECTATIONS = {
     "geozones.json": (
         '"name": "Площадка АЭС АККУЮ"',
         '"purpose": "site_boundary"',
+        '"purpose": "speed_exclusion"',
         '"enabled": true',
         '"type": "polygon"',
     ),
@@ -177,6 +196,7 @@ FORBIDDEN_OPERATIONAL_REFERENCES = {
         "geofence_editor_api:app",
         '"report_portal:app"',
         '"portal_table_ui:app"',
+        '"consolidated_portal:app"',
     ),
     "Dockerfile.server": (
         "arvento_postgres_sync_v2.py",
