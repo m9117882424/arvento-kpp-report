@@ -172,7 +172,7 @@ function renderTable(columns, rows) {
 }
 plateFilter.addEventListener('change', drawFilteredTable);'''
 
-new_renderer = '''function normalizePlate(value) {
+new_renderer = r'''function normalizePlate(value) {
   return String(value ?? '').toUpperCase().replace(/[^0-9A-ZА-ЯЁ]/g, '');
 }
 function sortableValue(value) {
