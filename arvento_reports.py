@@ -10,6 +10,9 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
+DECIMAL_PLACES = 1
+
+
 SUMMARY_HEADERS = [
     "Госномер",
     "Водитель",
@@ -39,6 +42,24 @@ SUMMARY_HEADERS = [
 ]
 
 
+def round_metric(value: Any) -> Any:
+    """Round calculated decimal indicators to one digit after the decimal point."""
+    if value is None:
+        return None
+    return round(float(value), DECIMAL_PLACES)
+
+
+def round_ratio(value: Any) -> Any:
+    """Round a 0..1 ratio to one displayed percentage decimal.
+
+    Excel stores 32.7% as 0.327. Rounding the percentage first preserves exactly
+    one decimal in both the workbook and values read back for the web preview.
+    """
+    if value is None:
+        return None
+    return round(float(value) * 100.0, DECIMAL_PLACES) / 100.0
+
+
 def summary_row(item: dict[str, Any]) -> list[Any]:
     return [
         item["plate"],
@@ -55,17 +76,17 @@ def summary_row(item: dict[str, Any]) -> list[Any]:
         item["end_state"],
         item["entries"],
         item["exits"],
-        item["inside_km"],
-        item["outside_km"],
-        item["total_km"],
-        item["inside_percent"],
-        item["outside_percent"],
+        round_metric(item["inside_km"]),
+        round_metric(item["outside_km"]),
+        round_metric(item["total_km"]),
+        round_ratio(item["inside_percent"]),
+        round_ratio(item["outside_percent"]),
         item["inside_seconds"] / 86400.0,
         item["moving_seconds"] / 86400.0,
         item["stopped_seconds"] / 86400.0,
         item["stop_count"],
-        item["moving_percent"],
-        item["stopped_percent"],
+        round_ratio(item["moving_percent"]),
+        round_ratio(item["stopped_percent"]),
     ]
 
 
@@ -95,7 +116,7 @@ def format_summary_sheet(sheet, offset: int = 0) -> None:
         for index in (6, 7, 8, 9):
             row[offset + index].number_format = "dd.mm.yyyy hh:mm:ss"
         for index in range(14, 17):
-            row[offset + index].number_format = "0.000"
+            row[offset + index].number_format = "0.0"
         for index in (17, 18, 23, 24):
             row[offset + index].number_format = "0.0%"
         for index in range(19, 22):
