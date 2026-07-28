@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from arvento_reports import round_metric, round_ratio
 from geozone_registry import find_site_boundary, load_registry, point_in_zone
 from map_links import google_maps_url, parse_coordinate_pair
 from site_boundary_speed import classify_site_state_by_polygon
@@ -95,6 +96,10 @@ def check_portal_runtime() -> bool:
 
 
 def main() -> None:
+    assert round_metric(12.349) == 12.3, "Пробег не округлён до одного знака"
+    assert round_metric(12.351) == 12.4, "Округление пробега работает неверно"
+    assert round_ratio(0.32654) == 0.327, "Процент не округлён до одного отображаемого знака"
+
     assert _event_is_smooth(points(40, 45, 50)), "Плавная последовательность отклонена"
     assert not _event_is_smooth(points(40, 120, 42)), "Одиночный выброс не отфильтрован"
     assert not _event_is_smooth(points(40, 45)), "Событие из двух точек не должно быть валидным"
@@ -129,13 +134,13 @@ def main() -> None:
     portal_checked = check_portal_runtime()
     if portal_checked:
         print(
-            "OK: runtime-проверки геозоны, нарушений, фильтра, значков сортировки, "
-            "карты и статуса БД пройдены."
+            "OK: runtime-проверки округления, геозоны, нарушений, фильтра, значков "
+            "сортировки, карты и статуса БД пройдены."
         )
     else:
         print(
-            "OK: runtime-проверки расчётной логики пройдены; проверка веб-портала "
-            "будет выполнена при Docker-сборке."
+            "OK: runtime-проверки округления и расчётной логики пройдены; проверка "
+            "веб-портала будет выполнена при Docker-сборке."
         )
 
 
