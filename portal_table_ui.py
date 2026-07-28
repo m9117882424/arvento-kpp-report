@@ -10,9 +10,31 @@ result column sortable without changing report generation logic.
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import run_report_portal as portal
 
 implementation = portal.implementation
+
+
+# Display report durations as whole seconds in the web table. Excel time cells
+# already use [h]:mm:ss; this removes Python's trailing microseconds from the
+# browser preview, e.g. 3:04:56.176000 -> 3:04:56.
+_original_json_cell = implementation.json_cell
+
+
+def json_cell_without_fractional_seconds(value):
+    if isinstance(value, timedelta):
+        total_seconds = int(round(value.total_seconds()))
+        sign = "-" if total_seconds < 0 else ""
+        total_seconds = abs(total_seconds)
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        return f"{sign}{hours}:{minutes:02d}:{seconds:02d}"
+    return _original_json_cell(value)
+
+
+implementation.json_cell = json_cell_without_fractional_seconds
 
 
 # Replace the exact-value dropdown with a text field plus browser suggestions.
