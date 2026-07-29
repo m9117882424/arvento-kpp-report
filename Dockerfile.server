@@ -15,7 +15,11 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
-RUN python /app/verify_repository.py \
+RUN python -m py_compile \
+        /app/consolidated_cache.py \
+        /app/consolidated_cache_portal.py \
+        /app/consolidated_cache_worker.py \
+    && python /app/verify_repository.py \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
     && python /app/verify_left_turn_runtime.py \
     && python /app/verify_kpp_preview.py
