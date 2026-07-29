@@ -11,6 +11,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import psycopg
+import psycopg.rows
 
 from consolidated_cache import (
     ensure_schema,
@@ -40,6 +41,8 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
     url = database_url()
     with psycopg.connect(url) as lock_connection:
         ensure_schema(lock_connection)
+        # Commit schema creation before the worker opens other DB connections.
+        lock_connection.commit()
         with lock_connection.cursor() as cursor:
             cursor.execute("SELECT pg_try_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
             locked = bool(cursor.fetchone()[0])
