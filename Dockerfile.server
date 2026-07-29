@@ -19,6 +19,7 @@ RUN python -m py_compile \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
         /app/consolidated_cache_worker.py \
+        /app/roster_management_portal.py \
     && python /app/verify_repository.py \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
     && python /app/verify_left_turn_runtime.py \
