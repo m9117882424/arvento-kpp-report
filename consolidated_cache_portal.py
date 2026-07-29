@@ -9,10 +9,9 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import HTTPException
-
 import consolidated_portal as portal
 from consolidated_cache import (
+    TZ,
     cache_complete,
     save_roster_uploads,
     upsert_cache_from_workbook,
@@ -75,7 +74,7 @@ def cached_generate_consolidated_web(
         columns, rows, total_rows = portal.implementation.workbook_preview(output_path)
         refreshed_at = stats.get("refreshed_at")
         refreshed_text = (
-            refreshed_at.astimezone(portal.implementation.TZ).strftime("%d.%m.%Y %H:%M:%S")
+            refreshed_at.astimezone(TZ).strftime("%d.%m.%Y %H:%M:%S")
             if refreshed_at
             else "не определено"
         )
