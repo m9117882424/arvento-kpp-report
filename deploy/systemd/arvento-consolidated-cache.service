@@ -1,0 +1,13 @@
+[Unit]
+Description=Refresh Arvento consolidated report history cache
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/arvento_report
+ExecStart=/usr/bin/flock -n /run/arvento-consolidated-cache.lock /usr/bin/docker compose -f /opt/arvento_report/docker-compose.server.yml run --rm --no-deps report-portal python consolidated_cache_worker.py refresh --days-back 1 --trigger schedule
+TimeoutStartSec=infinity
+Nice=5
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
