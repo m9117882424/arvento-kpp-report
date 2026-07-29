@@ -9,6 +9,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+import psycopg.rows
+
 import consolidated_portal as portal
 from consolidated_cache import (
     TZ,
