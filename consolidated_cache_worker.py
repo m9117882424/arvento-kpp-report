@@ -13,6 +13,10 @@ from zoneinfo import ZoneInfo
 import psycopg
 import psycopg.rows
 
+from extended_roster_fields import apply_extended_roster_fields
+
+apply_extended_roster_fields()
+
 from consolidated_cache import (
     ensure_schema,
     export_stored_rosters,
