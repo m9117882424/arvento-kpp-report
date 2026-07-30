@@ -14,6 +14,10 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from consolidated_time_logic import apply_consolidated_time_logic
+
+apply_consolidated_time_logic()
+
 from consolidated_multi_report import generate_multi_roster_report as generate_base_report
 from roster_registry import normalize_plate
 
