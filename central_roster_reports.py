@@ -7,17 +7,17 @@ import base64
 import tempfile
 from datetime import date
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import psycopg
 
 import consolidated_cache_portal as cache_portal
 import consolidated_portal as portal
 import extended_roster_fields as roster_store
-import run_report_portal as current
+import portal_runtime_patch as runtime_patch
 from consolidated_cache import cache_complete, upsert_cache_from_workbook
 
-_ORIGINAL_REPORT_GENERATOR = current.generate_report_with_thresholds
+_BASE_REPORT_GENERATOR: Callable[..., dict[str, Any]] | None = None
 _ORIGINAL_CONSOLIDATED_GENERATOR = cache_portal._ORIGINAL_GENERATE
 _CACHED_CONSOLIDATED_GENERATOR = cache_portal.cached_generate_consolidated_web
 _PATCHED = False
@@ -106,8 +106,11 @@ def generate_report_from_central_roster(
     outside_speed_threshold: float,
 ) -> dict[str, Any]:
     """Run KPP and efficiency reports using a roster selected from PostgreSQL."""
+    if _BASE_REPORT_GENERATOR is None:
+        raise RuntimeError("Центральный источник разнарядок не инициализирован")
+
     if report_type not in {"kpp", "efficiency"}:
-        return _ORIGINAL_REPORT_GENERATOR(
+        return _BASE_REPORT_GENERATOR(
             report_type,
             report_day,
             report_end_day,
@@ -135,7 +138,7 @@ def generate_report_from_central_roster(
             target_day,
             Path(temp_name),
         )
-        result = _ORIGINAL_REPORT_GENERATOR(
+        result = _BASE_REPORT_GENERATOR(
             report_type,
             report_day,
             report_end_day,
@@ -232,11 +235,14 @@ def _patch_report_page() -> None:
 
 def apply_central_roster_reports() -> None:
     """Install central-roster report generators and remove upload controls."""
-    global _PATCHED
+    global _BASE_REPORT_GENERATOR, _PATCHED
     if _PATCHED:
         return
 
-    current.generate_report_with_thresholds = generate_report_from_central_roster
+    # Keep the public runtime wrapper in place. It still applies violation-summary
+    # wording, while its internal generator is replaced by the central source.
+    _BASE_REPORT_GENERATOR = runtime_patch._original_generate_report
+    runtime_patch._original_generate_report = generate_report_from_central_roster
     portal.generate_consolidated_web = generate_consolidated_from_central_store
     _patch_report_page()
     _PATCHED = True
