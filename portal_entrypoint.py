@@ -2,6 +2,12 @@ from __future__ import annotations
 
 """Production ASGI entrypoint with explicit, testable portal integration."""
 
+from speed_threshold_defaults import apply_speed_threshold_defaults
+
+# Speed defaults must be patched before the portal imports the constants into
+# its form and API layers.
+apply_speed_threshold_defaults()
+
 import consolidated_portal as portal
 from central_roster_reports import apply_central_roster_reports
 from consolidated_cache_portal import apply_cache_portal
