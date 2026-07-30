@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 RUN python -m py_compile \
+        /app/central_roster_reports.py \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
         /app/consolidated_cache_worker.py \
@@ -26,6 +27,7 @@ RUN python -m py_compile \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
     && python /app/verify_left_turn_runtime.py \
     && python /app/verify_kpp_preview.py \
-    && python /app/verify_consolidated_time_logic.py
+    && python /app/verify_consolidated_time_logic.py \
+    && python /app/verify_central_roster_reports.py
 
 CMD ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
