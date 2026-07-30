@@ -225,9 +225,9 @@ def build_roster_download(roster_day: date) -> tuple[bytes, str]:
 def apply_extended_roster_fields() -> None:
     """Patch cache, worker-facing and portal-facing roster functions."""
     global _PATCHED
-    if _PATCHED:
-        return
 
+    # Reapply on every call: during circular imports roster_management_portal may
+    # still be only partially initialized and later overwrite its globals.
     cache.ensure_schema = ensure_schema
     cache.save_roster_uploads = save_roster_uploads
     cache.export_stored_rosters = export_stored_rosters
