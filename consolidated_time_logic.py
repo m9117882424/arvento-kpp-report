@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Arrival/departure rules and date-only rendering for the consolidated report."""
+"""Arrival/departure rules, worked hours, and date-only report rendering."""
 from __future__ import annotations
 
 import math
@@ -110,24 +110,53 @@ def _movement_bounds(
     return first_start, last_stop
 
 
-def calculate_arrival_departure(
+def _inside_seconds_in_window(
+    report_day: date,
+    track: Sequence[Point],
+    states: Sequence[bool],
+    polygon: list[tuple[float, float]],
+) -> float:
+    """Sum time inside the site, clipped to the 05:00–23:00 window."""
+    window_start = _day_moment(report_day, WINDOW_START)
+    window_end = _day_moment(report_day, WINDOW_END)
+    total_seconds = 0.0
+
+    for index, (p1, p2) in enumerate(zip(track, track[1:])):
+        if p2.time <= p1.time:
+            continue
+        state1 = bool(states[index])
+        state2 = bool(states[index + 1])
+        if state1 == state2:
+            portions = [(state1, 0.0, 1.0)]
+        else:
+            fraction = core.polygon_crossing_fraction(p1, p2, polygon)
+            portions = [
+                (state1, 0.0, fraction),
+                (state2, fraction, 1.0),
+            ]
+
+        for is_inside, start_fraction, finish_fraction in portions:
+            if not is_inside or finish_fraction <= start_fraction:
+                continue
+            part_start = p1.time + (p2.time - p1.time) * start_fraction
+            part_finish = p1.time + (p2.time - p1.time) * finish_fraction
+            clipped_start = max(part_start, window_start)
+            clipped_finish = min(part_finish, window_end)
+            if clipped_finish > clipped_start:
+                total_seconds += (clipped_finish - clipped_start).total_seconds()
+
+    return total_seconds
+
+
+def calculate_operational_metrics(
     report_day: date,
     points: Sequence[Point],
     site_polygon: list[tuple[float, float]],
-) -> tuple[time | None, time | None]:
-    """Calculate ``Прибыл`` and ``Убыл`` for the 05:00–23:00 reporting window.
-
-    Arrival:
-    * outside at 05:00 -> first outside-to-inside boundary crossing;
-    * inside at 05:00 -> first movement start.
-
-    Departure:
-    * outside at 23:00 -> last inside-to-outside boundary crossing before 23:00;
-    * inside at 23:00 -> last movement stop before 23:00.
-    """
+) -> tuple[time | None, time | None, float]:
+    """Return arrival, departure and site-presence hours for 05:00–23:00."""
     track = core.sanitize_position_outliers(points)
     if len(track) < 2:
-        return None, None
+        return None, None, 0.0
 
     states = core.smooth_boolean_states([
         core.point_in_polygon(point.lat, point.lon, site_polygon)
@@ -144,10 +173,59 @@ def calculate_arrival_departure(
 
     arrived = first_movement if inside_at_start else (entries[0] if entries else None)
     departed = last_movement if inside_at_end else (exits[-1] if exits else None)
+    worked_hours = _inside_seconds_in_window(
+        report_day,
+        track,
+        states,
+        site_polygon,
+    ) / 3600.0
+
     return (
         arrived.time().replace(tzinfo=None) if arrived else None,
         departed.time().replace(tzinfo=None) if departed else None,
+        worked_hours,
     )
+
+
+def calculate_arrival_departure(
+    report_day: date,
+    points: Sequence[Point],
+    site_polygon: list[tuple[float, float]],
+) -> tuple[time | None, time | None]:
+    """Calculate ``Прибыл`` and ``Убыл`` for the 05:00–23:00 reporting window.
+
+    Arrival:
+    * outside at 05:00 -> first outside-to-inside boundary crossing;
+    * inside at 05:00 -> first movement start.
+
+    Departure:
+    * outside at 23:00 -> last inside-to-outside boundary crossing before 23:00;
+    * inside at 23:00 -> last movement stop before 23:00.
+    """
+    arrived, departed, _worked_hours = calculate_operational_metrics(
+        report_day,
+        points,
+        site_polygon,
+    )
+    return arrived, departed
+
+
+def calculate_worked_hours(
+    report_day: date,
+    points: Sequence[Point],
+    site_polygon: list[tuple[float, float]],
+    *,
+    inside_km: float,
+) -> float | None:
+    """Return site-presence hours in 05:00–23:00, or blank without site mileage."""
+    if inside_km <= 0:
+        return None
+    _arrived, _departed, worked_hours = calculate_operational_metrics(
+        report_day,
+        points,
+        site_polygon,
+    )
+    return worked_hours
 
 
 def analyze_track_with_operational_times(
@@ -168,8 +246,17 @@ def analyze_track_with_operational_times(
     )
     if row is None:
         return None
-    arrived, departed = calculate_arrival_departure(day, points, site_polygon)
-    return replace(row, entry_time=arrived, exit_time=departed)
+    arrived, departed, worked_hours = calculate_operational_metrics(
+        day,
+        points,
+        site_polygon,
+    )
+    return replace(
+        row,
+        entry_time=arrived,
+        exit_time=departed,
+        worked_hours=worked_hours if row.inside_km > 0 else None,
+    )
 
 
 def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
@@ -187,6 +274,18 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
                     cell.value = cell.value.date()
                 cell.number_format = "dd.mm.yyyy"
 
+        inside_km_column = headers.get("Пробег внутри АЭС АККУЮ, км")
+        worked_hours_column = headers.get("Всего отработано часов")
+        if inside_km_column is not None and worked_hours_column is not None:
+            for row_index in range(2, sheet.max_row + 1):
+                inside_value = sheet.cell(row_index, inside_km_column).value
+                try:
+                    has_site_mileage = float(inside_value or 0) > 0
+                except (TypeError, ValueError):
+                    has_site_mileage = False
+                if not has_site_mileage:
+                    sheet.cell(row_index, worked_hours_column).value = None
+
         parameters = workbook["Параметры"]
         for row_index in range(1, parameters.max_row + 1):
             if parameters.cell(row_index, 1).value == "Допустимое время Прибыл/Убыл":
@@ -200,6 +299,11 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
             "Логика Убыл",
             "в 23:00 снаружи АЭС — последнее пересечение границы изнутри наружу до 23:00; "
             "в 23:00 внутри АЭС — окончание последнего движения до 23:00",
+        ])
+        parameters.append([
+            "Логика Всего отработано часов",
+            "суммарное время нахождения внутри площадки в окне 05:00–23:00; "
+            "если пробег внутри площадки отсутствует, поле остаётся пустым",
         ])
         workbook.save(output_path)
     finally:
@@ -248,4 +352,6 @@ __all__ = [
     "apply_consolidated_date_preview",
     "apply_consolidated_time_logic",
     "calculate_arrival_departure",
+    "calculate_operational_metrics",
+    "calculate_worked_hours",
 ]
