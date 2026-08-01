@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Arrival/departure rules, worked hours, and date-only report rendering."""
+"""Confirmed arrival/departure rules, worked hours, and date-only rendering."""
 from __future__ import annotations
 
-import math
 import re
 from dataclasses import replace
 from datetime import date, datetime, time
@@ -76,51 +75,18 @@ def _crossings(
     return entries, exits
 
 
-def _is_moving_segment(p1: Point, p2: Point) -> bool:
-    gap = (p2.time - p1.time).total_seconds()
-    if gap <= 0 or gap > core.MAX_SPEED_EVENT_GAP_SECONDS:
-        return False
-    distance = core.segment_distance(p1, p2)
-    if not math.isfinite(distance) or distance < 0:
-        distance = 0.0
-    speed1 = core.valid_speed(p1.speed) or 0.0
-    speed2 = core.valid_speed(p2.speed) or 0.0
-    return distance >= core.MOVEMENT_SEGMENT_KM or max(speed1, speed2) >= core.MOVEMENT_SPEED_KMH
-
-
-def _movement_bounds(
-    track: Sequence[Point],
-    window_start: datetime,
-    window_end: datetime,
-) -> tuple[datetime | None, datetime | None]:
-    first_start: datetime | None = None
-    last_stop: datetime | None = None
-    for p1, p2 in zip(track, track[1:]):
-        if not _is_moving_segment(p1, p2):
-            continue
-        if p2.time <= window_start or p1.time >= window_end:
-            continue
-        segment_start = max(p1.time, window_start)
-        segment_finish = min(p2.time, window_end)
-        if segment_finish <= segment_start:
-            continue
-        if first_start is None:
-            first_start = segment_start
-        last_stop = segment_finish
-    return first_start, last_stop
-
-
-def _inside_seconds_in_window(
-    report_day: date,
+def _inside_seconds_between(
     track: Sequence[Point],
     states: Sequence[bool],
     polygon: list[tuple[float, float]],
+    interval_start: datetime,
+    interval_end: datetime,
 ) -> float:
-    """Sum time inside the site, clipped to the 05:00–23:00 window."""
-    window_start = _day_moment(report_day, WINDOW_START)
-    window_end = _day_moment(report_day, WINDOW_END)
-    total_seconds = 0.0
+    """Sum site-presence time strictly inside a confirmed entry/exit interval."""
+    if interval_end <= interval_start:
+        return 0.0
 
+    total_seconds = 0.0
     for index, (p1, p2) in enumerate(zip(track, track[1:])):
         if p2.time <= p1.time:
             continue
@@ -140,8 +106,8 @@ def _inside_seconds_in_window(
                 continue
             part_start = p1.time + (p2.time - p1.time) * start_fraction
             part_finish = p1.time + (p2.time - p1.time) * finish_fraction
-            clipped_start = max(part_start, window_start)
-            clipped_finish = min(part_finish, window_end)
+            clipped_start = max(part_start, interval_start)
+            clipped_finish = min(part_finish, interval_end)
             if clipped_finish > clipped_start:
                 total_seconds += (clipped_finish - clipped_start).total_seconds()
 
@@ -152,11 +118,18 @@ def calculate_operational_metrics(
     report_day: date,
     points: Sequence[Point],
     site_polygon: list[tuple[float, float]],
-) -> tuple[time | None, time | None, float]:
-    """Return arrival, departure and site-presence hours for 05:00–23:00."""
+) -> tuple[time | None, time | None, float | None]:
+    """Return confirmed entry, confirmed exit, and worked hours.
+
+    A site entry is confirmed only when the vehicle is outside at 05:00 and an
+    outside-to-inside crossing occurs before 23:00. A site exit is confirmed
+    only when the vehicle is outside at 23:00 and an inside-to-outside crossing
+    occurs before 23:00. Worked hours are returned only when both events are
+    confirmed and ordered; time outside the site between them is excluded.
+    """
     track = core.sanitize_position_outliers(points)
     if len(track) < 2:
-        return None, None, 0.0
+        return None, None, None
 
     states = core.smooth_boolean_states([
         core.point_in_polygon(point.lat, point.lon, site_polygon)
@@ -166,23 +139,31 @@ def calculate_operational_metrics(
     window_end = _day_moment(report_day, WINDOW_END)
     inside_at_start = _site_state_at(track, states, window_start, site_polygon)
     inside_at_end = _site_state_at(track, states, window_end, site_polygon)
+
     entries, exits = _crossings(track, states, site_polygon)
     entries = [value for value in entries if window_start <= value < window_end]
-    exits = [value for value in exits if window_start <= value < window_end]
-    first_movement, last_movement = _movement_bounds(track, window_start, window_end)
+    exits = [value for value in exits if window_start < value <= window_end]
 
-    arrived = first_movement if inside_at_start else (entries[0] if entries else None)
-    departed = last_movement if inside_at_end else (exits[-1] if exits else None)
-    worked_hours = _inside_seconds_in_window(
-        report_day,
-        track,
-        states,
-        site_polygon,
-    ) / 3600.0
+    confirmed_entry = entries[0] if not inside_at_start and entries else None
+    confirmed_exit = exits[-1] if not inside_at_end and exits else None
+
+    worked_hours: float | None = None
+    if (
+        confirmed_entry is not None
+        and confirmed_exit is not None
+        and confirmed_exit > confirmed_entry
+    ):
+        worked_hours = _inside_seconds_between(
+            track,
+            states,
+            site_polygon,
+            confirmed_entry,
+            confirmed_exit,
+        ) / 3600.0
 
     return (
-        arrived.time().replace(tzinfo=None) if arrived else None,
-        departed.time().replace(tzinfo=None) if departed else None,
+        confirmed_entry.time().replace(tzinfo=None) if confirmed_entry else None,
+        confirmed_exit.time().replace(tzinfo=None) if confirmed_exit else None,
         worked_hours,
     )
 
@@ -192,16 +173,7 @@ def calculate_arrival_departure(
     points: Sequence[Point],
     site_polygon: list[tuple[float, float]],
 ) -> tuple[time | None, time | None]:
-    """Calculate ``Прибыл`` and ``Убыл`` for the 05:00–23:00 reporting window.
-
-    Arrival:
-    * outside at 05:00 -> first outside-to-inside boundary crossing;
-    * inside at 05:00 -> first movement start.
-
-    Departure:
-    * outside at 23:00 -> last inside-to-outside boundary crossing before 23:00;
-    * inside at 23:00 -> last movement stop before 23:00.
-    """
+    """Return only confirmed boundary-crossing entry and exit events."""
     arrived, departed, _worked_hours = calculate_operational_metrics(
         report_day,
         points,
@@ -217,7 +189,7 @@ def calculate_worked_hours(
     *,
     inside_km: float,
 ) -> float | None:
-    """Return site-presence hours in 05:00–23:00, or blank without site mileage."""
+    """Return worked hours only with mileage and confirmed entry plus exit."""
     if inside_km <= 0:
         return None
     _arrived, _departed, worked_hours = calculate_operational_metrics(
@@ -255,8 +227,16 @@ def analyze_track_with_operational_times(
         row,
         entry_time=arrived,
         exit_time=departed,
-        worked_hours=worked_hours if row.inside_km > 0 else None,
+        worked_hours=(worked_hours if row.inside_km > 0 else None),
     )
+
+
+def _has_confirmed_time(value: Any) -> bool:
+    if value in (None, "", 0, 0.0):
+        return False
+    if isinstance(value, str) and value.strip() in {"", "0", "00:00", "00:00:00"}:
+        return False
+    return True
 
 
 def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
@@ -275,35 +255,46 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
                 cell.number_format = "dd.mm.yyyy"
 
         inside_km_column = headers.get("Пробег внутри АЭС АККУЮ, км")
+        entry_column = headers.get("Прибыл / Giriş")
+        exit_column = headers.get("Убыл / Çıkış")
         worked_hours_column = headers.get("Всего отработано часов")
-        if inside_km_column is not None and worked_hours_column is not None:
+        if worked_hours_column is not None:
             for row_index in range(2, sheet.max_row + 1):
-                inside_value = sheet.cell(row_index, inside_km_column).value
-                try:
-                    has_site_mileage = float(inside_value or 0) > 0
-                except (TypeError, ValueError):
-                    has_site_mileage = False
-                if not has_site_mileage:
+                has_site_mileage = True
+                if inside_km_column is not None:
+                    inside_value = sheet.cell(row_index, inside_km_column).value
+                    try:
+                        has_site_mileage = float(inside_value or 0) > 0
+                    except (TypeError, ValueError):
+                        has_site_mileage = False
+                has_entry = entry_column is not None and _has_confirmed_time(
+                    sheet.cell(row_index, entry_column).value
+                )
+                has_exit = exit_column is not None and _has_confirmed_time(
+                    sheet.cell(row_index, exit_column).value
+                )
+                if not (has_site_mileage and has_entry and has_exit):
                     sheet.cell(row_index, worked_hours_column).value = None
 
         parameters = workbook["Параметры"]
         for row_index in range(1, parameters.max_row + 1):
-            if parameters.cell(row_index, 1).value == "Допустимое время Прибыл/Убыл":
+            label = parameters.cell(row_index, 1).value
+            if label == "Допустимое время Прибыл/Убыл":
                 parameters.cell(row_index, 2).value = "операционное окно 05:00–23:00"
         parameters.append([
             "Логика Прибыл",
-            "в 05:00 снаружи АЭС — первое пересечение границы снаружи внутрь; "
-            "в 05:00 внутри АЭС — начало первого движения",
+            "только подтверждённое пересечение границы снаружи внутрь; "
+            "если в 05:00 автомобиль уже внутри площадки, значение не заполняется",
         ])
         parameters.append([
             "Логика Убыл",
-            "в 23:00 снаружи АЭС — последнее пересечение границы изнутри наружу до 23:00; "
-            "в 23:00 внутри АЭС — окончание последнего движения до 23:00",
+            "только подтверждённое пересечение границы изнутри наружу; "
+            "если в 23:00 автомобиль остаётся внутри площадки, значение не заполняется",
         ])
         parameters.append([
             "Логика Всего отработано часов",
-            "суммарное время нахождения внутри площадки в окне 05:00–23:00; "
-            "если пробег внутри площадки отсутствует, поле остаётся пустым",
+            "суммарное время внутри площадки между подтверждёнными въездом и выездом; "
+            "без пробега внутри либо без одного из двух событий поле остаётся пустым",
         ])
         workbook.save(output_path)
     finally:

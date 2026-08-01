@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Smoke tests for consolidated operational-time and date-preview rules."""
+"""Smoke tests for confirmed entry/exit, worked hours, and date preview."""
 from __future__ import annotations
 
 from datetime import date, datetime, time
@@ -29,70 +29,91 @@ def point(clock: str, lon: float, speed: float = 0.0) -> Point:
     )
 
 
-def check_outside_at_five() -> None:
-    arrived, departed = calculate_arrival_departure(
-        REPORT_DAY,
-        [
-            point("04:50", -0.1),
-            point("05:10", -0.1),
-            point("06:00", -0.1),
-            point("06:10", 0.5, 10),
-            point("18:00", 0.5),
-            point("18:10", -0.1, 10),
-            point("22:50", -0.1),
-        ],
-        SITE,
-    )
+def outside_outside_track() -> list[Point]:
+    return [
+        point("04:50", -0.1),
+        point("05:10", -0.1),
+        point("06:00", -0.1),
+        point("06:10", 0.5, 10),
+        point("12:00", 0.5),
+        point("12:10", -0.1, 10),
+        point("13:00", -0.1),
+        point("13:10", 0.5, 10),
+        point("18:00", 0.5),
+        point("18:10", -0.1, 10),
+        point("22:50", -0.1),
+        point("23:10", -0.1),
+    ]
+
+
+def check_outside_at_five_and_outside_at_23() -> None:
+    points = outside_outside_track()
+    arrived, departed = calculate_arrival_departure(REPORT_DAY, points, SITE)
     assert arrived is not None and arrived.hour == 6 and arrived.minute == 1
     assert departed is not None and departed.hour == 18 and departed.minute == 8
 
-
-def check_inside_at_five() -> None:
-    arrived, departed = calculate_arrival_departure(
-        REPORT_DAY,
-        [
-            point("04:50", 0.5),
-            point("05:10", 0.5),
-            point("07:00", 0.5),
-            point("07:02", 0.5003, 10),
-            point("07:04", 0.5003),
-            point("17:00", 0.5003),
-            point("17:02", 0.5006, 10),
-            point("17:04", 0.5006),
-            point("22:50", 0.5006),
-        ],
-        SITE,
-    )
-    assert arrived == time(7, 0)
-    assert departed == time(17, 4)
-
-
-def check_worked_hours_clipped_to_window() -> None:
     worked_hours = calculate_worked_hours(
         REPORT_DAY,
-        [
-            point("04:00", 0.2),
-            point("12:00", 0.3),
-            point("23:59", 0.4),
-        ],
+        points,
         SITE,
         inside_km=1.0,
     )
     assert worked_hours is not None
-    assert abs(worked_hours - 18.0) < 1e-9
+    elapsed = (
+        datetime.combine(REPORT_DAY, departed)
+        - datetime.combine(REPORT_DAY, arrived)
+    ).total_seconds() / 3600.0
+    assert 0 < worked_hours < elapsed
+    assert worked_hours < 12.2
+
+
+def check_inside_at_five_and_inside_at_23_is_blank() -> None:
+    points = [
+        point("04:50", 0.5),
+        point("05:10", 0.5),
+        point("12:00", 0.6, 10),
+        point("22:50", 0.7),
+        point("23:10", 0.7),
+    ]
+    arrived, departed = calculate_arrival_departure(REPORT_DAY, points, SITE)
+    assert arrived is None
+    assert departed is None
+    assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=1.0) is None
+
+
+def check_inside_at_five_and_outside_at_23_has_only_exit() -> None:
+    points = [
+        point("04:50", 0.5),
+        point("05:10", 0.5),
+        point("17:00", 0.5),
+        point("17:10", -0.1, 10),
+        point("22:50", -0.1),
+        point("23:10", -0.1),
+    ]
+    arrived, departed = calculate_arrival_departure(REPORT_DAY, points, SITE)
+    assert arrived is None
+    assert departed is not None
+    assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=1.0) is None
+
+
+def check_outside_at_five_and_inside_at_23_has_only_entry() -> None:
+    points = [
+        point("04:50", -0.1),
+        point("05:10", -0.1),
+        point("07:00", -0.1),
+        point("07:10", 0.5, 10),
+        point("22:50", 0.5),
+        point("23:10", 0.5),
+    ]
+    arrived, departed = calculate_arrival_departure(REPORT_DAY, points, SITE)
+    assert arrived is not None
+    assert departed is None
+    assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=1.0) is None
 
 
 def check_worked_hours_blank_without_site_mileage() -> None:
-    worked_hours = calculate_worked_hours(
-        REPORT_DAY,
-        [
-            point("06:00", 0.5),
-            point("10:00", 0.5),
-        ],
-        SITE,
-        inside_km=0.0,
-    )
-    assert worked_hours is None
+    points = outside_outside_track()
+    assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=0.0) is None
 
     apply_consolidated_time_logic()
     row = core.analyze_track(
@@ -111,19 +132,6 @@ def check_worked_hours_blank_without_site_mileage() -> None:
     assert row.worked_hours is None
 
 
-def check_site_mileage_outside_window_returns_zero() -> None:
-    worked_hours = calculate_worked_hours(
-        REPORT_DAY,
-        [
-            point("23:10", 0.2),
-            point("23:20", 0.3),
-        ],
-        SITE,
-        inside_km=1.0,
-    )
-    assert worked_hours == 0.0
-
-
 def check_date_preview() -> None:
     class FakeImplementation:
         @staticmethod
@@ -139,10 +147,10 @@ def check_date_preview() -> None:
 
 
 if __name__ == "__main__":
-    check_outside_at_five()
-    check_inside_at_five()
-    check_worked_hours_clipped_to_window()
+    check_outside_at_five_and_outside_at_23()
+    check_inside_at_five_and_inside_at_23_is_blank()
+    check_inside_at_five_and_outside_at_23_has_only_exit()
+    check_outside_at_five_and_inside_at_23_has_only_entry()
     check_worked_hours_blank_without_site_mileage()
-    check_site_mileage_outside_window_returns_zero()
     check_date_preview()
-    print("OK: consolidated operational-time and date-preview rules")
+    print("OK: confirmed entry/exit and worked-hours rules")
