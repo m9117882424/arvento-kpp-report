@@ -81,7 +81,7 @@ def check_inside_at_five_and_inside_at_23_is_blank() -> None:
     assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=1.0) is None
 
 
-def check_inside_at_five_and_outside_at_23_is_blank() -> None:
+def check_inside_at_five_and_outside_at_23_has_only_exit() -> None:
     points = [
         point("04:50", 0.5),
         point("05:10", 0.5),
@@ -92,11 +92,11 @@ def check_inside_at_five_and_outside_at_23_is_blank() -> None:
     ]
     arrived, departed = calculate_arrival_departure(REPORT_DAY, points, SITE)
     assert arrived is None
-    assert departed is None
+    assert departed is not None
     assert calculate_worked_hours(REPORT_DAY, points, SITE, inside_km=1.0) is None
 
 
-def check_outside_at_five_and_inside_at_23_is_blank() -> None:
+def check_outside_at_five_and_inside_at_23_has_only_entry() -> None:
     points = [
         point("04:50", -0.1),
         point("05:10", -0.1),
@@ -149,8 +149,8 @@ def check_date_preview() -> None:
 if __name__ == "__main__":
     check_outside_at_five_and_outside_at_23()
     check_inside_at_five_and_inside_at_23_is_blank()
-    check_inside_at_five_and_outside_at_23_is_blank()
-    check_outside_at_five_and_inside_at_23_is_blank()
+    check_inside_at_five_and_outside_at_23_has_only_exit()
+    check_outside_at_five_and_inside_at_23_has_only_entry()
     check_worked_hours_blank_without_site_mileage()
     check_date_preview()
     print("OK: confirmed entry/exit and worked-hours rules")
