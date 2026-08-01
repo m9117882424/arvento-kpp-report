@@ -19,7 +19,10 @@ from consolidated_time_logic import apply_consolidated_time_logic
 apply_consolidated_time_logic()
 
 from consolidated_multi_report import generate_multi_roster_report as generate_base_report
+from consolidated_performance import apply_consolidated_performance
 from roster_registry import normalize_plate
+
+apply_consolidated_performance()
 
 FUEL_HEADER = "Заправка, л"
 FUEL_SOURCE = "Fuel Monitor: public.fuel_events"

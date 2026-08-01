@@ -36,10 +36,18 @@ def database_url() -> str:
     return value
 
 
+def requested_days(start_day: date, end_day: date) -> list[date]:
+    return [
+        start_day + timedelta(days=offset)
+        for offset in range((end_day - start_day).days + 1)
+    ]
+
+
 def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
     if end_day < start_day:
         raise ValueError("Дата окончания раньше даты начала")
-    if (end_day - start_day).days + 1 > 31:
+    days = requested_days(start_day, end_day)
+    if len(days) > 31:
         raise ValueError("За один запуск можно обновить не более 31 дня")
 
     url = database_url()
@@ -54,38 +62,82 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
             print("SKIPPED: другой процесс обновления сводной истории уже работает", flush=True)
             return {"status": "SKIPPED"}
 
+        # The lock is session-scoped and survives COMMIT. Closing this transaction
+        # avoids an hours-long ``idle in transaction`` backend during calculations.
+        lock_connection.commit()
+
         try:
             with tempfile.TemporaryDirectory(prefix="arvento_cache_refresh_") as temp_name:
                 temp_dir = Path(temp_name)
                 roster_paths = export_stored_rosters(url, temp_dir)
-                output_path = temp_dir / f"cache_{start_day.isoformat()}_{end_day.isoformat()}.xlsx"
-                stats = generate_multi_roster_report(
-                    start_day=start_day,
-                    end_day=end_day,
-                    roster_paths=roster_paths,
-                    output_path=output_path,
-                    database_url=url,
-                )
-                cache_stats = upsert_cache_from_workbook(
-                    url,
-                    output_path,
-                    start_day,
-                    end_day,
-                    trigger_name=trigger_name,
-                )
+                total_calculated = 0
+                total_cached = 0
+                total_fuel_liters = 0.0
+                run_ids: list[int] = []
+
+                for position, report_day in enumerate(days, start=1):
+                    output_path = temp_dir / f"cache_{report_day.isoformat()}.xlsx"
+                    print(
+                        {
+                            "status": "START_DAY",
+                            "day": report_day.isoformat(),
+                            "position": position,
+                            "total_days": len(days),
+                        },
+                        flush=True,
+                    )
+                    stats = generate_multi_roster_report(
+                        start_day=report_day,
+                        end_day=report_day,
+                        roster_paths=roster_paths,
+                        output_path=output_path,
+                        database_url=url,
+                    )
+                    cache_stats = upsert_cache_from_workbook(
+                        url,
+                        output_path,
+                        report_day,
+                        report_day,
+                        trigger_name=trigger_name,
+                    )
+                    calculated_rows = int(stats.get("rows", 0))
+                    cached_rows = int(cache_stats.get("rows", 0))
+                    fuel_liters = float(stats.get("fuel_liters", 0) or 0)
+                    run_id = cache_stats.get("run_id")
+                    if run_id is not None:
+                        run_ids.append(int(run_id))
+                    total_calculated += calculated_rows
+                    total_cached += cached_rows
+                    total_fuel_liters += fuel_liters
+                    print(
+                        {
+                            "status": "DONE_DAY",
+                            "day": report_day.isoformat(),
+                            "calculated_rows": calculated_rows,
+                            "cached_rows": cached_rows,
+                            "cache_run_id": run_id,
+                            "fuel_liters": fuel_liters,
+                        },
+                        flush=True,
+                    )
+                    output_path.unlink(missing_ok=True)
+
                 result = {
                     "status": "SUCCESS",
                     "period": f"{start_day.isoformat()}..{end_day.isoformat()}",
-                    "calculated_rows": stats.get("rows", 0),
-                    "cached_rows": cache_stats.get("rows", 0),
-                    "cache_run_id": cache_stats.get("run_id"),
-                    "fuel_liters": stats.get("fuel_liters", 0),
+                    "days_completed": len(days),
+                    "calculated_rows": total_calculated,
+                    "cached_rows": total_cached,
+                    "cache_run_id": run_ids[-1] if run_ids else None,
+                    "cache_run_ids": run_ids,
+                    "fuel_liters": round(total_fuel_liters, 1),
                 }
                 print(result, flush=True)
                 return result
         finally:
             with lock_connection.cursor() as cursor:
                 cursor.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+            lock_connection.commit()
 
 
 def parse_day(value: str) -> date:
