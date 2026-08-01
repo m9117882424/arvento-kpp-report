@@ -124,8 +124,8 @@ def calculate_operational_metrics(
     A site entry is confirmed only when the vehicle is outside at 05:00 and an
     outside-to-inside crossing occurs before 23:00. A site exit is confirmed
     only when the vehicle is outside at 23:00 and an inside-to-outside crossing
-    occurs after the confirmed entry. Worked hours are returned only when both
-    events are confirmed; time outside the site between them is excluded.
+    occurs before 23:00. Worked hours are returned only when both events are
+    confirmed and ordered; time outside the site between them is excluded.
     """
     track = core.sanitize_position_outliers(points)
     if len(track) < 2:
@@ -145,13 +145,14 @@ def calculate_operational_metrics(
     exits = [value for value in exits if window_start < value <= window_end]
 
     confirmed_entry = entries[0] if not inside_at_start and entries else None
-    confirmed_exit = None
-    if not inside_at_end and confirmed_entry is not None:
-        exits_after_entry = [value for value in exits if value > confirmed_entry]
-        confirmed_exit = exits_after_entry[-1] if exits_after_entry else None
+    confirmed_exit = exits[-1] if not inside_at_end and exits else None
 
     worked_hours: float | None = None
-    if confirmed_entry is not None and confirmed_exit is not None:
+    if (
+        confirmed_entry is not None
+        and confirmed_exit is not None
+        and confirmed_exit > confirmed_entry
+    ):
         worked_hours = _inside_seconds_between(
             track,
             states,
