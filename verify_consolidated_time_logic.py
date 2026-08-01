@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Smoke tests for consolidated arrival/departure and date-only preview rules."""
+"""Smoke tests for consolidated operational-time and date-preview rules."""
 from __future__ import annotations
 
 from datetime import date, datetime, time
 from pathlib import Path
 
+import consolidated_report as core
 from arvento_io import Point
 from consolidated_time_logic import (
     apply_consolidated_date_preview,
+    apply_consolidated_time_logic,
     calculate_arrival_departure,
+    calculate_worked_hours,
 )
 
 REPORT_DAY = date(2026, 7, 30)
@@ -64,6 +67,63 @@ def check_inside_at_five() -> None:
     assert departed == time(17, 4)
 
 
+def check_worked_hours_clipped_to_window() -> None:
+    worked_hours = calculate_worked_hours(
+        REPORT_DAY,
+        [
+            point("04:00", 0.2),
+            point("12:00", 0.3),
+            point("23:59", 0.4),
+        ],
+        SITE,
+        inside_km=1.0,
+    )
+    assert worked_hours is not None
+    assert abs(worked_hours - 18.0) < 1e-9
+
+
+def check_worked_hours_blank_without_site_mileage() -> None:
+    worked_hours = calculate_worked_hours(
+        REPORT_DAY,
+        [
+            point("06:00", 0.5),
+            point("10:00", 0.5),
+        ],
+        SITE,
+        inside_km=0.0,
+    )
+    assert worked_hours is None
+
+    apply_consolidated_time_logic()
+    row = core.analyze_track(
+        REPORT_DAY,
+        "TEST",
+        [
+            point("06:00", 0.5),
+            point("10:00", 0.5),
+        ],
+        {},
+        SITE,
+        SITE,
+    )
+    assert row is not None
+    assert row.inside_km == 0.0
+    assert row.worked_hours is None
+
+
+def check_site_mileage_outside_window_returns_zero() -> None:
+    worked_hours = calculate_worked_hours(
+        REPORT_DAY,
+        [
+            point("23:10", 0.2),
+            point("23:20", 0.3),
+        ],
+        SITE,
+        inside_km=1.0,
+    )
+    assert worked_hours == 0.0
+
+
 def check_date_preview() -> None:
     class FakeImplementation:
         @staticmethod
@@ -81,5 +141,8 @@ def check_date_preview() -> None:
 if __name__ == "__main__":
     check_outside_at_five()
     check_inside_at_five()
+    check_worked_hours_clipped_to_window()
+    check_worked_hours_blank_without_site_mileage()
+    check_site_mileage_outside_window_returns_zero()
     check_date_preview()
-    print("OK: consolidated arrival/departure and date preview rules")
+    print("OK: consolidated operational-time and date-preview rules")
