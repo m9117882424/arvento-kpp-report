@@ -16,11 +16,29 @@ from arvento_io import Point
 
 WINDOW_START = time(5, 0)
 WINDOW_END = time(23, 0)
+SITE_EXIT_DISTANCE_THRESHOLD_KM = 10.0
+PREFERRED_COMPANY_HEADER = "Эксплуатирующая фирма / ÇALIŞTIĞI FİRMA"
 
 _ORIGINAL_ANALYZE_TRACK = core.analyze_track
 _ORIGINAL_SAVE_REPORT = core.save_report
 _TIME_LOGIC_PATCHED = False
 _PREVIEW_PATCHED_IDS: set[int] = set()
+
+
+def _apply_preferred_company_alias() -> None:
+    """Prefer the exact operating-company column from the roster workbook."""
+    aliases = tuple(getattr(core, "COMPANY_ALIASES", ()))
+    preferred_normalized = core.normalized_text(PREFERRED_COMPANY_HEADER)
+    ordered = (PREFERRED_COMPANY_HEADER,) + tuple(
+        alias
+        for alias in aliases
+        if core.normalized_text(alias) != preferred_normalized
+    )
+    core.COMPANY_ALIASES = ordered
+    core.ROSTER_ALIASES["company"] = ordered
+
+
+_apply_preferred_company_alias()
 
 
 def _day_moment(report_day: date, clock: time) -> datetime:
@@ -119,14 +137,7 @@ def calculate_operational_metrics(
     points: Sequence[Point],
     site_polygon: list[tuple[float, float]],
 ) -> tuple[time | None, time | None, float | None]:
-    """Return confirmed entry, confirmed exit, and worked hours.
-
-    A site entry is confirmed only when the vehicle is outside at 05:00 and an
-    outside-to-inside crossing occurs before 23:00. A site exit is confirmed
-    only when the vehicle is outside at 23:00 and an inside-to-outside crossing
-    occurs before 23:00. Worked hours are returned only when both events are
-    confirmed and ordered; time outside the site between them is excluded.
-    """
+    """Return confirmed entry, confirmed exit, and worked hours."""
     track = core.sanitize_position_outliers(points)
     if len(track) < 2:
         return None, None, None
@@ -200,6 +211,15 @@ def calculate_worked_hours(
     return worked_hours
 
 
+def _outside_distance_is_insignificant(total_km: Any, inside_km: Any) -> bool:
+    """Return True when total and inside mileage differ by no more than 10 km."""
+    try:
+        difference = abs(float(total_km or 0) - float(inside_km or 0))
+    except (TypeError, ValueError):
+        return False
+    return difference <= SITE_EXIT_DISTANCE_THRESHOLD_KM
+
+
 def analyze_track_with_operational_times(
     day: date,
     display_plate: str,
@@ -218,6 +238,15 @@ def analyze_track_with_operational_times(
     )
     if row is None:
         return None
+
+    if _outside_distance_is_insignificant(row.total_km, row.inside_km):
+        return replace(
+            row,
+            entry_time=None,
+            exit_time=None,
+            worked_hours=None,
+        )
+
     arrived, departed, worked_hours = calculate_operational_metrics(
         day,
         points,
@@ -239,6 +268,13 @@ def _has_confirmed_time(value: Any) -> bool:
     return True
 
 
+def _float_cell(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
     _ORIGINAL_SAVE_REPORT(*args, **kwargs)
     output_path = Path(args[0] if args else kwargs["output_path"])
@@ -254,27 +290,47 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
                     cell.value = cell.value.date()
                 cell.number_format = "dd.mm.yyyy"
 
+        total_km_column = headers.get("Пробег общий, км")
         inside_km_column = headers.get("Пробег внутри АЭС АККУЮ, км")
         entry_column = headers.get("Прибыл / Giriş")
         exit_column = headers.get("Убыл / Çıkış")
         worked_hours_column = headers.get("Всего отработано часов")
-        if worked_hours_column is not None:
-            for row_index in range(2, sheet.max_row + 1):
-                has_site_mileage = True
-                if inside_km_column is not None:
-                    inside_value = sheet.cell(row_index, inside_km_column).value
-                    try:
-                        has_site_mileage = float(inside_value or 0) > 0
-                    except (TypeError, ValueError):
-                        has_site_mileage = False
-                has_entry = entry_column is not None and _has_confirmed_time(
-                    sheet.cell(row_index, entry_column).value
-                )
-                has_exit = exit_column is not None and _has_confirmed_time(
-                    sheet.cell(row_index, exit_column).value
-                )
-                if not (has_site_mileage and has_entry and has_exit):
+
+        for row_index in range(2, sheet.max_row + 1):
+            total_km = (
+                _float_cell(sheet.cell(row_index, total_km_column).value)
+                if total_km_column is not None else None
+            )
+            inside_km = (
+                _float_cell(sheet.cell(row_index, inside_km_column).value)
+                if inside_km_column is not None else None
+            )
+            insignificant_outside_distance = (
+                total_km is not None
+                and inside_km is not None
+                and _outside_distance_is_insignificant(total_km, inside_km)
+            )
+
+            if insignificant_outside_distance:
+                if entry_column is not None:
+                    sheet.cell(row_index, entry_column).value = None
+                if exit_column is not None:
+                    sheet.cell(row_index, exit_column).value = None
+                if worked_hours_column is not None:
                     sheet.cell(row_index, worked_hours_column).value = None
+                continue
+
+            if worked_hours_column is None:
+                continue
+            has_site_mileage = inside_km is not None and inside_km > 0
+            has_entry = entry_column is not None and _has_confirmed_time(
+                sheet.cell(row_index, entry_column).value
+            )
+            has_exit = exit_column is not None and _has_confirmed_time(
+                sheet.cell(row_index, exit_column).value
+            )
+            if not (has_site_mileage and has_entry and has_exit):
+                sheet.cell(row_index, worked_hours_column).value = None
 
         parameters = workbook["Параметры"]
         for row_index in range(1, parameters.max_row + 1):
@@ -292,6 +348,15 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
             "если в 23:00 автомобиль остаётся внутри площадки, значение не заполняется",
         ])
         parameters.append([
+            "Фильтр Прибыл/Убыл по пробегу",
+            "если разница между общим пробегом и пробегом внутри площадки не превышает 10 км, "
+            "поля Прибыл, Убыл и Всего отработано часов остаются пустыми",
+        ])
+        parameters.append([
+            "Источник компании",
+            f"столбец разнарядки «{PREFERRED_COMPANY_HEADER}» имеет приоритет",
+        ])
+        parameters.append([
             "Логика Всего отработано часов",
             "суммарное время внутри площадки между подтверждёнными въездом и выездом; "
             "без пробега внутри либо без одного из двух событий поле остаётся пустым",
@@ -303,6 +368,7 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
 
 def apply_consolidated_time_logic() -> None:
     global _TIME_LOGIC_PATCHED
+    _apply_preferred_company_alias()
     if _TIME_LOGIC_PATCHED:
         return
     core.analyze_track = analyze_track_with_operational_times
@@ -340,6 +406,8 @@ def apply_consolidated_date_preview(implementation: Any) -> None:
 
 
 __all__ = [
+    "PREFERRED_COMPANY_HEADER",
+    "SITE_EXIT_DISTANCE_THRESHOLD_KM",
     "apply_consolidated_date_preview",
     "apply_consolidated_time_logic",
     "calculate_arrival_departure",
