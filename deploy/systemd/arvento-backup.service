@@ -1,0 +1,26 @@
+[Unit]
+Description=Backup Arvento PostgreSQL database
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/arvento-report
+ExecStart=/usr/local/sbin/arvento-backup
+TimeoutStartSec=45min
+TimeoutStopSec=90s
+KillMode=control-group
+Nice=15
+CPUWeight=25
+IOWeight=25
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/opt/arvento_backups /run
+UMask=0077
+StandardOutput=journal
+StandardError=journal
