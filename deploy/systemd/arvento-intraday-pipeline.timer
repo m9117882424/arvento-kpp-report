@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Arvento intraday pipeline every 30 minutes
+
+[Timer]
+OnCalendar=*-*-* 05..23:00:00 Europe/Istanbul
+OnCalendar=*-*-* 05..23:30:00 Europe/Istanbul
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=arvento-intraday-pipeline.service
+
+[Install]
+WantedBy=timers.target
