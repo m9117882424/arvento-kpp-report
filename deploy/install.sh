@@ -151,7 +151,7 @@ install -m 0755 "$ROOT/deploy/arvento-backup.sh" \
 install -m 0755 "$ROOT/deploy/arvento-healthcheck.sh" \
     /usr/local/sbin/arvento-healthcheck
 
-log "Установка systemd units"
+log "Установка актуальных systemd units"
 install -m 0644 "$ROOT"/deploy/systemd/*.service /etc/systemd/system/
 install -m 0644 "$ROOT"/deploy/systemd/*.timer /etc/systemd/system/
 
@@ -186,6 +186,15 @@ result = {
     ),
     "BACKUP_DIR": values.get("BACKUP_DIR", "/opt/arvento_backups"),
     "BACKUP_RETENTION_DAYS": values.get("BACKUP_RETENTION_DAYS", "14"),
+    "BACKUP_PIPELINE_LOCK_WAIT_SECONDS": values.get(
+        "BACKUP_PIPELINE_LOCK_WAIT_SECONDS", "600"
+    ),
+    "BACKUP_DUMP_TIMEOUT_SECONDS": values.get(
+        "BACKUP_DUMP_TIMEOUT_SECONDS", "2700"
+    ),
+    "BACKUP_VERIFY_TIMEOUT_SECONDS": values.get(
+        "BACKUP_VERIFY_TIMEOUT_SECONDS", "300"
+    ),
     "REPORT_PORTAL_PORT": values.get("REPORT_PORTAL_PORT", "18084"),
     "GEOFENCE_EDITOR_PORT": values.get("GEOFENCE_EDITOR_PORT", "18083"),
     "MIN_FREE_DISK_PERCENT": values.get("MIN_FREE_DISK_PERCENT", "10"),
@@ -202,20 +211,29 @@ BACKUP_DIR="$(
 BACKUP_DIR="${BACKUP_DIR:-/opt/arvento_backups}"
 install -d -m 0700 "$BACKUP_DIR"
 
-systemctl daemon-reload
-
-# Disable previous scheduling schemes when they exist. Running both the daemon
-# and systemd timers would duplicate API traffic and database work.
-for obsolete_timer in \
+# Disable and remove superseded scheduling schemes. Running any of them together
+# with the unified pipeline would duplicate API traffic and database work.
+for obsolete_unit in \
     arvento-consolidated-cache.timer \
-    arvento-yesterday-backfill.timer; do
-    systemctl disable --now "$obsolete_timer" 2>/dev/null || true
+    arvento-consolidated-cache.service \
+    arvento-yesterday-backfill.timer \
+    arvento-yesterday-backfill.service; do
+    systemctl disable --now "$obsolete_unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$obsolete_unit"
 done
 
+# Stop a container created by the previous default gps-sync daemon setup.
 docker compose \
     --project-directory "$ROOT" \
     -f "$COMPOSE_FILE" \
     stop gps-sync 2>/dev/null || true
+
+systemctl daemon-reload
+systemctl reset-failed \
+    arvento-intraday-pipeline.service \
+    arvento-nightly-correction.service \
+    arvento-backup.service \
+    2>/dev/null || true
 
 if [[ "$ENABLE_TIMERS" == "1" ]]; then
     log "Включение systemd timers"
