@@ -110,15 +110,16 @@ BEFORE_RUN_ID="$(db_scalar 'SELECT COALESCE(MAX(id), 0) FROM sync_runs;')"
 
 log "SYNC: начало загрузки Arvento; previous_run_id=$BEFORE_RUN_ID timeout=${SYNC_TIMEOUT}s"
 
-set +e
-timeout --signal=TERM --kill-after=60 "$SYNC_TIMEOUT" \
+if timeout --signal=TERM --kill-after=60 "$SYNC_TIMEOUT" \
     "${COMPOSE[@]}" run \
         --rm \
         --no-deps \
         report-portal \
-        "${SYNC_COMMAND[@]}"
-SYNC_RC=$?
-set -e
+        "${SYNC_COMMAND[@]}"; then
+    SYNC_RC=0
+else
+    SYNC_RC=$?
+fi
 
 if (( SYNC_RC != 0 )); then
     mark_interrupted_run_failed "$BEFORE_RUN_ID" "Pipeline process stopped with rc=$SYNC_RC"
@@ -166,17 +167,18 @@ fi
 log "CACHE: расчёт сводного за $REPORT_DAY timeout=${CACHE_TIMEOUT}s"
 
 # consolidated_cache_worker.py refresh
-set +e
-timeout --signal=TERM --kill-after=60 "$CACHE_TIMEOUT" \
+if timeout --signal=TERM --kill-after=60 "$CACHE_TIMEOUT" \
     "${COMPOSE[@]}" run \
         --rm \
         --no-deps \
         report-portal \
         python consolidated_cache_worker.py refresh \
             --date "$REPORT_DAY" \
-            --trigger "${TRIGGER}-${REPORT_DAY}"
-CACHE_RC=$?
-set -e
+            --trigger "${TRIGGER}-${REPORT_DAY}"; then
+    CACHE_RC=0
+else
+    CACHE_RC=$?
+fi
 
 (( CACHE_RC == 0 )) || fail "расчёт кэша завершился с rc=$CACHE_RC"
 
