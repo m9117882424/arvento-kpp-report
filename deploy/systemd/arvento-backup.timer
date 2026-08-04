@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Arvento PostgreSQL backup daily at 03:30 Istanbul time
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 Europe/Istanbul
+Persistent=true
+AccuracySec=5min
+RandomizedDelaySec=0
+Unit=arvento-backup.service
+
+[Install]
+WantedBy=timers.target
