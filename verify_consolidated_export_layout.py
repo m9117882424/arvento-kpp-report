@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Offline verification for the downloadable consolidated workbook layout."""
+"""Offline verification for consolidated export and roster-field selection."""
 from __future__ import annotations
 
 import tempfile
@@ -16,11 +16,40 @@ from consolidated_export_layout import (
     RosterExportDetails,
     finalize_consolidated_workbook,
 )
+from responsible_roster_fields import _load_responsible_values
+
+
+def verify_responsible_source(temp_dir: Path) -> None:
+    roster_path = temp_dir / "28.07.2026 roster.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Список легкового автотранспорта"
+    sheet.append(["служебная строка"])
+    sheet.append([])
+    sheet.append([
+        "Гос рег знак / PLAKA",
+        "Ответственный по подразделению / Birim sorumlusu",
+        "Ответственный / Sorumlu",
+    ])
+    sheet.append([
+        "33 ATB 635",
+        "Виктория Лодыгина / Victoria Lodygina",
+        "Евгений Яценко / IATCENKO EVGENII",
+    ])
+    workbook.save(roster_path)
+    workbook.close()
+
+    values = _load_responsible_values(roster_path)
+    assert values["33ATB635"] == "Виктория Лодыгина / Victoria Lodygina"
+    assert "Евгений Яценко" not in values["33ATB635"]
 
 
 def main() -> int:
     with tempfile.TemporaryDirectory(prefix="verify_consolidated_export_") as temp_name:
-        output_path = Path(temp_name) / "report.xlsx"
+        temp_dir = Path(temp_name)
+        verify_responsible_source(temp_dir)
+
+        output_path = temp_dir / "report.xlsx"
         workbook = Workbook()
         report = workbook.active
         report.title = REPORT_SHEET
@@ -80,7 +109,10 @@ def main() -> int:
         finally:
             result.close()
 
-    print("OK: consolidated download keeps one sheet and appends roster columns")
+    print(
+        "OK: consolidated download keeps one sheet, appends roster columns, "
+        "and uses Birim sorumlusu rather than generic Sorumlu"
+    )
     return 0
 
 
