@@ -2,9 +2,6 @@
 Description=Run Arvento intraday pipeline every 30 minutes from 01:00
 
 [Timer]
-# Compatibility markers for the current offline deployment verifier:
-# 05..23:00:00 Europe/Istanbul
-# 05..23:30:00 Europe/Istanbul
 OnCalendar=*-*-* 01..23:00:00 Europe/Istanbul
 OnCalendar=*-*-* 01..23:30:00 Europe/Istanbul
 Persistent=true
