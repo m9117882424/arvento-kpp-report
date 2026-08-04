@@ -42,6 +42,7 @@ RUN bash -n \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
         /app/consolidated_cache_worker.py \
+        /app/consolidated_incremental_cache.py \
         /app/consolidated_mileage_logic.py \
         /app/consolidated_performance.py \
         /app/consolidated_time_logic.py \
