@@ -1,0 +1,57 @@
+name: repository-verification
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: repository-verification-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Prepare non-secret CI environment
+        shell: bash
+        run: |
+          cp .env.server.example .env
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.env')
+          text = path.read_text(encoding='utf-8')
+          text = text.replace(
+              'CHANGE_ME_LONG_RANDOM_PASSWORD',
+              '0123456789abcdef0123456789abcdef',
+          )
+          text = text.replace('ARVENTO_USER=', 'ARVENTO_USER=ci-user')
+          text = text.replace('ARVENTO_PIN1=', 'ARVENTO_PIN1=ci-pin1')
+          text = text.replace('ARVENTO_PIN2=', 'ARVENTO_PIN2=ci-pin2')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Verify repository and deployment manifests
+        run: |
+          python verify_repository.py
+          python verify_deployment.py
+          docker compose -f docker-compose.server.yml config --quiet
+
+      - name: Build verified server image
+        run: |
+          docker build --pull -f Dockerfile.server -t arvento-report:ci .
