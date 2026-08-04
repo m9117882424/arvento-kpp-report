@@ -1,8 +1,33 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 .venv/
 venv/
+
+# Secrets and local configuration
 .env
+.env.*
+!.env.server.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+id_ed25519
+credentials.json
+service-account.json
+
+# Runtime data
+logs/
+reports/
+backups/
+input/
+*.log
+*.dump
+
+# Generated office/data files
 *.xlsx
 *.xlsm
 *.xls
@@ -13,4 +38,12 @@ venv/
 *.db-journal
 *.db-wal
 *.db-shm
+
+# Archives and editor leftovers
+*.zip
+*.tar
+*.tar.gz
+*.bak
+*.old
+*.orig
 ~$*
