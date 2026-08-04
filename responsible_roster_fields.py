@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Persist the optional responsible person from centrally uploaded rosters.
+"""Persist the subdivision responsible person from centrally uploaded rosters.
 
 The established roster store already keeps driver, grade, position and
-Directorate. This patch adds one optional ``responsible`` field without changing
-existing report calculations. Supported source headers are explicit variants of
-``Ответственный``/``Responsible``/``Sorumlu``; when the source column is absent,
-the stored value remains empty.
+Directorate. This patch adds one optional ``responsible`` field sourced only
+from ``Ответственный по подразделению / Birim sorumlusu``. The neighboring
+``Ответственный / Sorumlu`` column is intentionally not used.
 """
 from __future__ import annotations
 
@@ -27,6 +26,7 @@ _BASE_SAVE_ROSTER_UPLOADS = extended.save_roster_uploads
 _PATCHED = False
 
 PLATE_ALIASES = (
+    "Гос рег знак / PLAKA",
     "Гос рег знак",
     "PLAKA",
     "Госномер",
@@ -34,13 +34,9 @@ PLATE_ALIASES = (
     "License Plate",
 )
 RESPONSIBLE_ALIASES = (
-    "Ответственный",
-    "Ответственное лицо",
-    "Responsible",
-    "Responsible person",
-    "Sorumlu",
-    "Sorumlu kişi",
-    "Sorumlu kisi",
+    "Ответственный по подразделению / Birim sorumlusu",
+    "Ответственный по подразделению",
+    "Birim sorumlusu",
 )
 
 
@@ -54,16 +50,25 @@ def _normalized(value: Any) -> str:
 
 def _find_column(values: Sequence[Any], aliases: Sequence[str]) -> int | None:
     headers = [_normalized(value) for value in values]
-    for alias in aliases:
-        needle = _normalized(alias)
+    needles = [_normalized(alias) for alias in aliases]
+
+    # Exact bilingual/monolingual headers have priority. This prevents the
+    # adjacent generic ``Ответственный / Sorumlu`` column from being selected.
+    for needle in needles:
         for index, header in enumerate(headers):
-            if header == needle or needle in header:
+            if header == needle:
+                return index
+
+    # Accept harmless suffixes/prefixes occasionally added to the same field.
+    for needle in needles:
+        for index, header in enumerate(headers):
+            if needle and needle in header:
                 return index
     return None
 
 
 def _load_responsible_values(path: Path) -> dict[str, str]:
-    """Read responsible persons keyed by normalized plate from one roster file."""
+    """Read subdivision responsible persons keyed by normalized plate."""
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
         result: dict[str, str] = {}
@@ -119,7 +124,7 @@ def save_roster_uploads(
     database_url: str,
     uploads: Sequence[tuple[str, bytes]],
 ) -> int:
-    """Save the established roster fields and then persist responsible persons."""
+    """Save established fields, then persist subdivision responsible persons."""
     if not uploads:
         return 0
 
@@ -163,7 +168,7 @@ def save_roster_uploads(
 
 
 def apply_responsible_roster_fields() -> None:
-    """Install the optional responsible field in all portal-facing roster paths."""
+    """Install the subdivision-responsible field in portal-facing roster paths."""
     global _PATCHED
     if _PATCHED:
         return
