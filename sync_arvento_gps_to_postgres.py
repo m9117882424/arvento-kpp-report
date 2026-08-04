@@ -17,20 +17,8 @@ from arvento_api_client import (
     build_general_report_params,
     fetch_general_report_chunk,
 )
-from arvento_odometer_storage import insert_rows_with_odometer
 from parse_arvento_general_report import parse_general_report_rows
 import arvento_postgres_sync_v2 as implementation
-
-
-def ensure_schema(conn: psycopg.Connection) -> None:
-    """Add optional fields used by the canonical Arvento data pipeline."""
-    with conn.cursor() as cur:
-        cur.execute("ALTER TABLE gps_points ADD COLUMN IF NOT EXISTS region_name TEXT")
-        cur.execute(
-            "ALTER TABLE gps_points "
-            "ADD COLUMN IF NOT EXISTS odometer_km DOUBLE PRECISION"
-        )
-    conn.commit()
 
 
 def ensure_partition(conn: psycopg.Connection, day) -> None:
@@ -79,9 +67,7 @@ implementation.HEADERS = HEADERS
 implementation.build_params = build_general_report_params
 implementation.fetch_chunk = fetch_general_report_chunk
 implementation.parse_rows = parse_general_report_rows
-implementation.ensure_schema = ensure_schema
 implementation.ensure_partition = ensure_partition
-implementation.insert_rows = insert_rows_with_odometer
 
 
 if __name__ == "__main__":
