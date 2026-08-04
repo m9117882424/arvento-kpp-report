@@ -16,6 +16,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY . /app
 RUN python -m py_compile \
+        /app/arvento_odometer_storage.py \
         /app/central_roster_reports.py \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
@@ -24,8 +25,10 @@ RUN python -m py_compile \
         /app/consolidated_performance.py \
         /app/consolidated_time_logic.py \
         /app/extended_roster_fields.py \
+        /app/parse_arvento_general_report.py \
         /app/roster_management_portal.py \
         /app/speed_threshold_defaults.py \
+        /app/sync_arvento_gps_to_postgres.py \
         /app/verify_consolidated_mileage_logic.py \
         /app/verify_consolidated_performance.py \
     && python /app/verify_repository.py \
