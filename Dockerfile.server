@@ -42,15 +42,19 @@ RUN bash -n \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
         /app/consolidated_cache_worker.py \
+        /app/consolidated_export_layout.py \
+        /app/consolidated_export_portal_patch.py \
         /app/consolidated_incremental_cache.py \
         /app/consolidated_mileage_logic.py \
         /app/consolidated_performance.py \
         /app/consolidated_time_logic.py \
         /app/extended_roster_fields.py \
         /app/parse_arvento_general_report.py \
+        /app/responsible_roster_fields.py \
         /app/roster_management_portal.py \
         /app/speed_threshold_defaults.py \
         /app/sync_arvento_gps_to_postgres.py \
+        /app/verify_consolidated_export_layout.py \
         /app/verify_consolidated_mileage_logic.py \
         /app/verify_consolidated_performance.py \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
@@ -60,6 +64,7 @@ RUN bash -n \
     && python /app/verify_consolidated_mileage_logic.py \
     && python /app/verify_consolidated_performance.py \
     && python /app/verify_central_roster_reports.py \
+    && python /app/verify_consolidated_export_layout.py \
     && python /app/verify_speed_threshold_defaults.py
 
 USER app
