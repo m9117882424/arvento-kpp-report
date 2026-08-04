@@ -6,7 +6,7 @@ import arvento_postgres_sync_v2 as implementation
 
 
 def insert_rows_with_odometer(conn, rows, group_name: str) -> tuple[int, set[tuple[str, object]]]:
-    """Upsert GPS rows including cumulative odometer mileage."""
+    """Insert new GPS rows and update existing rows only when values changed."""
     processed = 0
     affected: set[tuple[str, object]] = set()
 
@@ -41,6 +41,19 @@ def insert_rows_with_odometer(conn, rows, group_name: str) -> tuple[int, set[tup
                         THEN EXCLUDED.region_name
                         ELSE gps_points.region_name
                     END
+                WHERE
+                    (
+                        EXCLUDED.distance_km IS NOT NULL
+                        AND gps_points.distance_km IS DISTINCT FROM EXCLUDED.distance_km
+                    )
+                    OR (
+                        EXCLUDED.odometer_km IS NOT NULL
+                        AND gps_points.odometer_km IS DISTINCT FROM EXCLUDED.odometer_km
+                    )
+                    OR (
+                        COALESCE(gps_points.region_name, '') = ''
+                        AND COALESCE(EXCLUDED.region_name, '') <> ''
+                    )
                 RETURNING 1
                 """,
                 (
