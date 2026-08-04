@@ -27,9 +27,14 @@ RUN python -m pip install --no-cache-dir -r /app/requirements.txt
 COPY --chown=app:app . /app
 
 # Build-time verification is intentionally part of the image build. A clean
-# server must not receive an image whose entrypoints, configuration references,
-# geozones or runtime patches are inconsistent.
-RUN python -m py_compile \
+# server must not receive an image whose entrypoints, deployment scripts,
+# configuration references, geozones or runtime patches are inconsistent.
+RUN bash -n \
+        /app/deploy/arvento-backup.sh \
+        /app/deploy/arvento-healthcheck.sh \
+        /app/deploy/arvento-sync-and-cache.sh \
+        /app/deploy/install.sh \
+    && python -m py_compile \
         /app/central_roster_reports.py \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
@@ -57,4 +62,6 @@ RUN python -m py_compile \
 
 USER app
 
-CMD ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
+# Scheduling is explicit in systemd/Compose. The image default must not start a
+# background synchronization daemon accidentally.
+CMD ["python", "-m", "uvicorn", "portal_entrypoint:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
