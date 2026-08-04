@@ -23,8 +23,8 @@ from consolidated_multi_report import generate_multi_roster_report as generate_b
 from consolidated_performance import apply_consolidated_performance
 from roster_registry import normalize_plate
 
-apply_consolidated_mileage_logic()
 apply_consolidated_performance()
+apply_consolidated_mileage_logic()
 
 FUEL_HEADER = "Заправка, л"
 FUEL_SOURCE = "Fuel Monitor: public.fuel_events"
