@@ -23,6 +23,11 @@ from consolidated_cache import (
     recent_status,
     upsert_cache_from_workbook,
 )
+from consolidated_incremental_cache import (
+    complete_recalculation_queue,
+    pending_recalculation_plates,
+    refresh_pending_day,
+)
 from fuel_enriched_consolidated_report import generate_multi_roster_report
 
 TZ = ZoneInfo("Europe/Istanbul")
@@ -73,6 +78,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                 total_calculated = 0
                 total_cached = 0
                 total_fuel_liters = 0.0
+                total_queue_completed = 0
                 run_ids: list[int] = []
 
                 for position, report_day in enumerate(days, start=1):
@@ -100,6 +106,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                         report_day,
                         trigger_name=trigger_name,
                     )
+                    queue_completed = complete_recalculation_queue(url, report_day)
                     calculated_rows = int(stats.get("rows", 0))
                     cached_rows = int(cache_stats.get("rows", 0))
                     fuel_liters = float(stats.get("fuel_liters", 0) or 0)
@@ -109,6 +116,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                     total_calculated += calculated_rows
                     total_cached += cached_rows
                     total_fuel_liters += fuel_liters
+                    total_queue_completed += queue_completed
                     print(
                         {
                             "status": "DONE_DAY",
@@ -116,6 +124,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                             "calculated_rows": calculated_rows,
                             "cached_rows": cached_rows,
                             "cache_run_id": run_id,
+                            "queue_completed": queue_completed,
                             "fuel_liters": fuel_liters,
                         },
                         flush=True,
@@ -130,10 +139,62 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                     "cached_rows": total_cached,
                     "cache_run_id": run_ids[-1] if run_ids else None,
                     "cache_run_ids": run_ids,
+                    "queue_completed": total_queue_completed,
                     "fuel_liters": round(total_fuel_liters, 1),
                 }
                 print(result, flush=True)
                 return result
+        finally:
+            with lock_connection.cursor() as cursor:
+                cursor.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
+            lock_connection.commit()
+
+
+def refresh_pending(report_day: date, trigger_name: str) -> dict:
+    """Recalculate only vehicles queued by the latest intraday GPS sync."""
+    url = database_url()
+    with psycopg.connect(url) as lock_connection:
+        ensure_schema(lock_connection)
+        lock_connection.commit()
+        with lock_connection.cursor() as cursor:
+            cursor.execute("SELECT pg_try_advisory_lock(%s)", (ADVISORY_LOCK_KEY,))
+            locked = bool(cursor.fetchone()[0])
+        if not locked:
+            print("SKIPPED: другой процесс обновления сводной истории уже работает", flush=True)
+            return {"status": "SKIPPED"}
+        lock_connection.commit()
+
+        try:
+            plates = pending_recalculation_plates(url, report_day)
+            if not plates:
+                result = {
+                    "status": "SKIPPED",
+                    "day": report_day.isoformat(),
+                    "reason": "нет новых GPS-точек в очереди пересчёта",
+                    "requested_plates": 0,
+                }
+                print(result, flush=True)
+                return result
+
+            print(
+                {
+                    "status": "START_PENDING",
+                    "day": report_day.isoformat(),
+                    "requested_plates": len(plates),
+                },
+                flush=True,
+            )
+            with tempfile.TemporaryDirectory(prefix="arvento_cache_pending_") as temp_name:
+                roster_paths = export_stored_rosters(url, Path(temp_name))
+                result = refresh_pending_day(
+                    url,
+                    report_day,
+                    plates,
+                    roster_paths,
+                    trigger_name=trigger_name,
+                )
+            print(result, flush=True)
+            return result
         finally:
             with lock_connection.cursor() as cursor:
                 cursor.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_KEY,))
@@ -183,12 +244,19 @@ def main() -> None:
     refresh_parser.add_argument("--days-back", type=int, default=1)
     refresh_parser.add_argument("--trigger", default="manual")
 
+    pending_parser = subparsers.add_parser("refresh-pending")
+    pending_parser.add_argument("--date", type=parse_day, required=True)
+    pending_parser.add_argument("--trigger", default="intraday")
+
     status_parser = subparsers.add_parser("status")
     status_parser.add_argument("--limit", type=int, default=10)
 
     args = parser.parse_args()
     if args.command == "status":
         show_status(args.limit)
+        return
+    if args.command == "refresh-pending":
+        refresh_pending(args.date, args.trigger)
         return
 
     today = datetime.now(TZ).date()
