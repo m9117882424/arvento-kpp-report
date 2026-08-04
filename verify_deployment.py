@@ -20,6 +20,7 @@ REQUIRED_FILES = (
     "Dockerfile.server",
     "docker-compose.server.yml",
     "SERVER_DEPLOY.md",
+    "consolidated_incremental_cache.py",
     "deploy/arvento-backup.sh",
     "deploy/arvento-healthcheck.sh",
     "deploy/arvento-sync-and-cache.sh",
@@ -192,6 +193,7 @@ def check_dockerfile_references(errors: list[str]) -> None:
         "COPY --chown=app:app . /app",
         "python /app/verify_repository.py",
         "python /app/verify_deployment.py",
+        "/app/consolidated_incremental_cache.py",
         "USER app",
     )
     for token in required_tokens:
@@ -247,8 +249,8 @@ def check_systemd(errors: list[str]) -> None:
 
     timer_expectations = {
         "deploy/systemd/arvento-intraday-pipeline.timer": (
-            "05..23:00:00 Europe/Istanbul",
-            "05..23:30:00 Europe/Istanbul",
+            "01..23:00:00 Europe/Istanbul",
+            "01..23:30:00 Europe/Istanbul",
             "Persistent=true",
         ),
         "deploy/systemd/arvento-nightly-correction.timer": (
@@ -274,7 +276,8 @@ def check_scripts(errors: list[str]) -> None:
         "/run/arvento-sync-and-cache.lock",
         "flock -n",
         "timeout --signal=TERM",
-        "sync_arvento_gps_to_postgres.py",
+        "sync_arvento_gps_to_postgres.py recent --hours 1",
+        "consolidated_cache_worker.py refresh-pending",
         "consolidated_cache_worker.py refresh",
         "if timeout --signal=TERM",
     ):
