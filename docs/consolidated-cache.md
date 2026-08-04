@@ -13,74 +13,82 @@
 
 Схема создаётся автоматически при первом обращении.
 
-## Логика наложения
+## Актуальное расписание
 
-Плановый запуск выполняется три раза в день по `Europe/Istanbul`:
+Отдельный `arvento-consolidated-cache.timer` больше не используется. Расчёт кэша является второй стадией общей цепочки синхронизации:
 
-- 08:00;
-- 12:30;
-- 20:00.
+```text
+arvento-intraday-pipeline.timer   каждые 30 минут с 05:00 до 23:30 Europe/Istanbul
+arvento-nightly-correction.timer  ежедневно в 00:10 Europe/Istanbul
+```
 
-Каждый запуск полностью пересчитывает и атомарно заменяет два календарных дня:
+Внутридневная цепочка:
 
-- вчера;
-- сегодня.
+1. загружает последние шесть часов Arvento;
+2. проверяет новую запись в `sync_runs`;
+3. только после статуса `SUCCESS` пересчитывает текущую дату.
 
-Поэтому одни и те же даты перекрываются несколькими запусками. Поздно поступившие GPS-точки и заправки попадают в следующий запуск. Участок текущего дня после 20:00 окончательно догружается на следующий день в 08:00, когда эта дата пересчитывается как «вчера».
+Ночная цепочка загружает и пересчитывает предыдущие календарные сутки. Поздно поступившие GPS-точки попадают в ночную корректировку либо следующий внутридневный запуск.
 
-Ключ строки: `(report_day, normalized_plate)`. Дубли не создаются.
+Ключ итоговой строки: `(report_day, normalized_plate)`. Дубли не создаются.
 
 ## Первичное заполнение разнарядок
 
-После обновления портала один раз сформируйте сводный отчёт с загруженными разнарядками. Портал:
+После установки один раз сформируйте сводный отчёт с загруженными разнарядками. Портал:
 
 1. сохранит разнарядки в PostgreSQL;
-2. выполнит обычный расчёт;
+2. выполнит расчёт;
 3. сохранит готовые строки в историю.
 
 После этого исторический отчёт можно запрашивать без повторной загрузки разнарядок. Если готовых данных за весь период нет, портал потребует разнарядку или ручную дозагрузку.
 
-## Установка таймера
+## Установка расписания
+
+Расписание устанавливается общим installer:
 
 ```bash
 cd /opt/arvento_report
-sudo cp deploy/systemd/arvento-consolidated-cache.service /etc/systemd/system/
-sudo cp deploy/systemd/arvento-consolidated-cache.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now arvento-consolidated-cache.timer
+sudo bash deploy/install.sh /opt/arvento_report
 ```
 
-Проверка расписания:
+Проверка:
 
 ```bash
-systemctl list-timers --all arvento-consolidated-cache.timer
-systemctl status arvento-consolidated-cache.timer --no-pager -l
+systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly)'
+systemctl status arvento-intraday-pipeline.timer --no-pager -l
+systemctl status arvento-nightly-correction.timer --no-pager -l
 ```
 
-## Ручной первый запуск
+## Ручной расчёт
 
-Обновить вчера и сегодня:
-
-```bash
-cd /opt/arvento_report
-docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
-  python consolidated_cache_worker.py refresh --days-back 1 --trigger initial
-```
+Перед ручным расчётом убедитесь, что другая цепочка не выполняется. Используйте тот же lock.
 
 Один день:
 
 ```bash
-docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
-  python consolidated_cache_worker.py refresh --date 2026-07-28 --trigger manual
+cd /opt/arvento_report
+flock -n /run/arvento-consolidated-cache.lock \
+  timeout --signal=TERM --kill-after=60 3600 \
+  docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
+  python consolidated_cache_worker.py refresh \
+    --date 2026-07-28 \
+    --trigger manual
 ```
 
 Произвольный период до 31 дня:
 
 ```bash
-docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
+cd /opt/arvento_report
+flock -n /run/arvento-consolidated-cache.lock \
+  timeout --signal=TERM --kill-after=60 7200 \
+  docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python consolidated_cache_worker.py refresh \
-  --date-from 2026-07-01 --date-to 2026-07-28 --trigger backfill
+    --date-from 2026-07-01 \
+    --date-to 2026-07-28 \
+    --trigger backfill
 ```
+
+Массовый backfill выполняйте только в отдельное окно после оценки нагрузки. Для проверки новой логики предпочтительна отдельная тестовая база.
 
 ## Контроль
 
@@ -90,17 +98,18 @@ docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python consolidated_cache_worker.py status --limit 10
 ```
 
-Журнал systemd:
+Журналы:
 
 ```bash
-journalctl -u arvento-consolidated-cache.service -n 200 --no-pager
+journalctl -u arvento-intraday-pipeline.service -n 200 --no-pager
+journalctl -u arvento-nightly-correction.service -n 200 --no-pager
 ```
 
 SQL-проверка:
 
 ```bash
 docker exec arvento_report-postgres-1 sh -lc '
-psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+psql -X -U "$POSTGRES_USER" -d "$POSTGRES_DB" -P pager=off -c "
 SELECT report_day, status, row_count,
        gps_max_event_time AT TIME ZONE '\''Europe/Istanbul'\'' AS gps_max_tr,
        refreshed_at AT TIME ZONE '\''Europe/Istanbul'\'' AS refreshed_tr
@@ -110,9 +119,11 @@ LIMIT 10;
 "'
 ```
 
-## Параллельные запуски
+## Защита от параллельных запусков
 
-- systemd использует `flock`;
+- вся цепочка синхронизации использует `/run/arvento-sync-and-cache.lock`;
+- стадия кэша использует `/run/arvento-consolidated-cache.lock`;
 - worker дополнительно использует PostgreSQL advisory lock;
-- если предыдущий расчёт ещё выполняется, новый запуск завершается со статусом `SKIPPED`;
+- каждый этап имеет конечный timeout;
+- если sync завершён не со статусом `SUCCESS`, кэш не запускается;
 - готовые строки даты заменяются только внутри успешной транзакции.
