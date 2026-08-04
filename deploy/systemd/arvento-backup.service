@@ -20,7 +20,6 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=full
-ReadWritePaths=/opt/arvento_backups /run
 UMask=0077
 StandardOutput=journal
 StandardError=journal
