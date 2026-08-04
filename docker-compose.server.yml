@@ -1,5 +1,38 @@
 name: arvento_report
 
+x-app-service: &app-service
+  build:
+    context: .
+    dockerfile: Dockerfile.server
+  image: arvento-report:${ARVENTO_IMAGE_TAG:-local}
+  init: true
+  env_file:
+    - .env
+  environment:
+    DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
+    TZ: Europe/Istanbul
+    HOME: /tmp
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  networks:
+    - arvento_report
+  logging:
+    driver: json-file
+    options:
+      max-size: ${DOCKER_LOG_MAX_SIZE:-20m}
+      max-file: ${DOCKER_LOG_MAX_FILES:-5}
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  stop_grace_period: 60s
+
 services:
   postgres:
     image: postgis/postgis:16-3.4
@@ -12,67 +45,107 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./sql:/docker-entrypoint-initdb.d:ro
+    shm_size: ${POSTGRES_SHM_SIZE:-256m}
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-arvento_report} -d ${POSTGRES_DB:-arvento_report}"]
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${POSTGRES_USER:-arvento_report} -d ${POSTGRES_DB:-arvento_report}
       interval: 10s
       timeout: 5s
-      retries: 10
-    networks: [arvento_report]
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: ${DOCKER_LOG_MAX_SIZE:-20m}
+        max-file: ${DOCKER_LOG_MAX_FILES:-5}
+    stop_grace_period: 90s
+    networks:
+      - arvento_report
 
+  # Compatibility daemon. It is deliberately excluded from the default stack.
+  # Production synchronization is performed by the systemd timers in deploy/.
+  # An explicitly targeted `docker compose run gps-sync ...` still works.
   gps-sync:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
-      TZ: Europe/Istanbul
-    command: ["python", "sync_arvento_gps_to_postgres.py", "daemon"]
+    <<: *app-service
+    profiles:
+      - legacy-daemon
+    command:
+      - python
+      - sync_arvento_gps_to_postgres.py
+      - daemon
+    read_only: true
+    tmpfs:
+      - /tmp:size=${GPS_SYNC_TMPFS_SIZE:-256m},mode=1777
     volumes:
       - ./logs:/app/logs
       - ./reports:/app/reports
       - ./input:/app/input:ro
-    networks: [arvento_report]
+    cpus: ${GPS_SYNC_CPU_LIMIT:-1.0}
+    mem_limit: ${GPS_SYNC_MEMORY_LIMIT:-1g}
+    pids_limit: ${GPS_SYNC_PIDS_LIMIT:-256}
 
   geofence-editor:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
-      TZ: Europe/Istanbul
-    command: ["uvicorn", "run_geofence_editor:app", "--host", "0.0.0.0", "--port", "8080"]
+    <<: *app-service
+    command:
+      - uvicorn
+      - run_geofence_editor:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "1"
     ports:
-      - "127.0.0.1:${GEOFENCE_EDITOR_PORT:-18083}:8080"
-    networks: [arvento_report]
+      - 127.0.0.1:${GEOFENCE_EDITOR_PORT:-18083}:8080
+    read_only: true
+    tmpfs:
+      - /tmp:size=${GEOFENCE_EDITOR_TMPFS_SIZE:-128m},mode=1777
+    cpus: ${GEOFENCE_EDITOR_CPU_LIMIT:-1.0}
+    mem_limit: ${GEOFENCE_EDITOR_MEMORY_LIMIT:-768m}
+    pids_limit: ${GEOFENCE_EDITOR_PIDS_LIMIT:-192}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
 
   report-portal:
-    build:
-      context: .
-      dockerfile: Dockerfile.server
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_healthy
-    env_file: .env
-    environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-arvento_report}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-arvento_report}
-      TZ: Europe/Istanbul
-    command: ["uvicorn", "portal_entrypoint:app", "--host", "0.0.0.0", "--port", "8080"]
+    <<: *app-service
+    command:
+      - uvicorn
+      - portal_entrypoint:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+      - --workers
+      - "1"
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - host.docker.internal:host-gateway
     ports:
-      - "127.0.0.1:${REPORT_PORTAL_PORT:-18084}:8080"
-    networks: [arvento_report]
+      - 127.0.0.1:${REPORT_PORTAL_PORT:-18084}:8080
+    read_only: true
+    tmpfs:
+      - /tmp:size=${REPORT_PORTAL_TMPFS_SIZE:-1g},mode=1777
+    cpus: ${REPORT_PORTAL_CPU_LIMIT:-2.0}
+    mem_limit: ${REPORT_PORTAL_MEMORY_LIMIT:-2g}
+    pids_limit: ${REPORT_PORTAL_PIDS_LIMIT:-384}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5).read()
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 45s
 
 volumes:
   postgres_data:
