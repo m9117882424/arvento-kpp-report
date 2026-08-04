@@ -1,159 +1,180 @@
 # arvento_report
 
-Система загрузки телематических данных Arvento, хранения GPS-точек в PostgreSQL/PostGIS, управления собственными геозонами и формирования транспортных отчётов.
+Система загрузки телематических данных Arvento, хранения GPS-точек в PostgreSQL/PostGIS, управления геозонами и формирования транспортных отчётов.
 
 ## Основные задачи
 
 1. Получение `GeneralReportWithDistance` из Arvento API.
-2. Сохранение GPS-точек, скорости, расстояния, простоев, зажигания и справочной геозоны Arvento.
+2. Сохранение GPS-точек, скорости, расстояния, простоев и справочной геозоны Arvento.
 3. Хранение собственных геозон и их версий в PostGIS.
-4. Формирование отчётов по КПП, первому въезду, эффективности легкового транспорта и запрещённому повороту.
-5. Подготовка расчётов пробега, простоев, нарушений и эффективности.
+4. Формирование отчётов по КПП, первому въезду, эффективности транспорта и запрещённому повороту.
+5. Расчёт пробега, времени внутри площадки, нарушений и показателей эффективности.
 
-## Канонические имена исполняемых файлов
+## Производственная схема
 
-- `sync_arvento_gps_to_postgres.py` — загрузка GPS из Arvento API в PostgreSQL/PostGIS;
-- `run_geofence_editor.py` — веб-редактор собственных геозон;
-- `generate_kpp_summary_report.py` — сводный отчёт по КПП и эффективности легкового транспорта;
-- `generate_first_entry_report.py` — отчёт по первому въезду;
-- `generate_prohibited_left_turn_report.py` — отчёт о запрещённом повороте налево;
-- `generate_scheduled_reports.py` — пакетный запуск отчётов по расписанию.
-
-Внутренние модули:
-
-- `arvento_api_client.py` — клиент Arvento API;
-- `parse_arvento_general_report.py` — разбор XML `GeneralReportWithDistance`.
-
-Старые имена временно оставлены как совместимые внутренние реализации, чтобы не ломать ранее созданные команды. Новые команды, Docker Compose, портал и документация используют только канонические имена.
-
-## Docker-сервисы
+По умолчанию Docker Compose запускает только постоянные сервисы:
 
 - `postgres` — PostgreSQL 16 + PostGIS;
-- `gps-sync` — регулярная синхронизация Arvento;
-- `geofence-editor` — веб-редактор геозон;
-- `report-portal` — временная веб-страница формирования отчётов.
+- `geofence-editor` — редактор геозон на localhost;
+- `report-portal` — портал отчётов на localhost.
 
-Имя Compose-проекта: `arvento_report`.
+Синхронизация не запускается вторым бесконечным Docker-демоном. Её выполняют systemd timers:
 
-## Установка на сервер
+- `arvento-intraday-pipeline.timer` — каждые 30 минут с 05:00 до 23:30;
+- `arvento-nightly-correction.timer` — корректировка предыдущих суток в 00:10;
+- `arvento-backup.timer` — проверенный `pg_dump` в 03:30.
+
+Все тяжёлые задания используют общий `flock`, конечные timeout и ограничения ресурсов контейнера. Сервис `gps-sync` сохранён только в профиле `legacy-daemon` для совместимости и не входит в обычный `docker compose up`.
+
+## Развёртывание на чистом Ubuntu-сервере
+
+Требуются Git, Docker Engine, Docker Compose plugin, `curl`, `flock`, `timeout` и Python 3.
 
 ```bash
+cd /opt
 git clone https://github.com/m9117882424/arvento-kpp-report.git arvento_report
-cd arvento_report
+cd /opt/arvento_report
 cp .env.server.example .env
 nano .env
-docker compose -f docker-compose.server.yml up -d --build
+sudo bash deploy/install.sh /opt/arvento_report
 ```
 
-Проверка:
+Для `POSTGRES_PASSWORD` используйте URL-safe значение, поскольку этот пароль входит в `DATABASE_URL`:
 
 ```bash
+openssl rand -hex 32
+```
+
+Одинаковое значение необходимо указать в `POSTGRES_PASSWORD` и внутри `DATABASE_URL`.
+
+Installer:
+
+- проверяет обязательные переменные;
+- запускает `verify_repository.py` и `verify_deployment.py`;
+- валидирует Docker Compose;
+- собирает image вместе со smoke-тестами;
+- запускает только core stack;
+- устанавливает production scripts и systemd units;
+- включает синхронизацию, ночную коррекцию и резервное копирование;
+- проверяет health endpoints.
+
+Полная инструкция: [`SERVER_DEPLOY.md`](SERVER_DEPLOY.md).
+
+## Проверка после установки
+
+```bash
+sudo /usr/local/sbin/arvento-healthcheck
+
 docker compose -f docker-compose.server.yml ps
-docker compose -f docker-compose.server.yml logs -f gps-sync
+systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly|backup)'
+
 curl http://127.0.0.1:18083/health
 curl http://127.0.0.1:18084/health
-python verify_repository.py
+```
+
+Логи:
+
+```bash
+journalctl -u arvento-intraday-pipeline.service -n 200 --no-pager
+journalctl -u arvento-nightly-correction.service -n 200 --no-pager
+journalctl -u arvento-backup.service -n 100 --no-pager
 ```
 
 ## Ручная синхронизация
 
-Последние 6 часов:
+Перед ручным запуском остановите соответствующий timer либо используйте тот же общий lock. Production wrapper:
 
 ```bash
-docker compose -f docker-compose.server.yml run --rm gps-sync \
+sudo /usr/local/sbin/arvento-sync-and-cache intraday
+sudo /usr/local/sbin/arvento-sync-and-cache nightly
+```
+
+Только загрузка последних шести часов без расчёта кэша:
+
+```bash
+flock -n /run/arvento-sync-and-cache.lock \
+  docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python sync_arvento_gps_to_postgres.py recent --hours 6
 ```
 
-Конкретные сутки:
+Конкретные сутки загружаются только при реальной необходимости:
 
 ```bash
-docker compose -f docker-compose.server.yml run --rm gps-sync \
+flock -n /run/arvento-sync-and-cache.lock \
+  docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python sync_arvento_gps_to_postgres.py day 2026-07-24
 ```
 
-Очистка GPS старше срока хранения:
+## Обновление
 
 ```bash
-docker compose -f docker-compose.server.yml run --rm gps-sync \
-  python sync_arvento_gps_to_postgres.py retention
+cd /opt/arvento_report
+git fetch origin
+git pull --ff-only origin main
+sudo bash deploy/install.sh /opt/arvento_report
 ```
 
-## Портал отчётов
+`install.sh` повторяемый: он пересобирает проверенный image, обновляет units и сохраняет существующий PostgreSQL volume.
 
-Портал слушает только localhost на порту `${REPORT_PORTAL_PORT:-18084}`. Для внешнего доступа используется Nginx с HTTPS и авторизацией.
+## Резервные копии
 
-Доступные отчёты:
+По умолчанию backup хранится вне Git checkout в `/opt/arvento_backups` и удаляется через 14 дней. Параметры:
 
-- первый въезд через КПП;
-- эффективность легкового транспорта;
-- запрещённый поворот.
-
-GPS выгружается из PostgreSQL во временный CSV. Промежуточные CSV и Excel удаляются после формирования ответа браузеру.
-
-## Отчёты на Windows
-
-Сводный отчёт по КПП и эффективности:
-
-```powershell
-python generate_kpp_summary_report.py "C:\Reports\Report.csv"
+```text
+BACKUP_DIR=/opt/arvento_backups
+BACKUP_RETENTION_DAYS=14
 ```
 
-Первый въезд:
-
-```powershell
-python generate_first_entry_report.py "Report.xlsx" "Разнарядка.xlsx" "Первый въезд.xlsx" --time-from 07:00 --time-to 09:00
-```
-
-Запрещённый поворот:
-
-```powershell
-python generate_prohibited_left_turn_report.py "C:\Reports\Report.csv"
-```
-
-Пакетный запуск:
-
-```powershell
-python generate_scheduled_reports.py
-```
-
-## Геозоны
-
-Основным источником для расчётов являются собственные геозоны PostGIS. Геозона, возвращённая Arvento, сохраняется только как справочное поле `region_name`.
-
-Редактор использует Google Satellite при наличии ключа. Если ключ отсутствует или карта Google не загрузилась, автоматически используется OpenStreetMap.
-
-## Поддерживаемые исходные форматы
-
-Для локальных отчётов поддерживаются `.xlsx`, `.xlsm` и `.csv`. Крупные файлы импортируются во временную SQLite-базу и обрабатываются по автомобилям и датам.
-
-## Проверка согласованности репозитория
+Ручной запуск:
 
 ```bash
-python verify_repository.py
+sudo systemctl start arvento-backup.service
+journalctl -u arvento-backup.service -n 100 --no-pager
+```
+
+Backup принимается только после проверки `pg_restore --list`.
+
+## Портал и Nginx
+
+Порты привязаны только к localhost:
+
+```text
+geofence-editor: 127.0.0.1:18083
+report-portal:   127.0.0.1:18084
+```
+
+Пример reverse proxy с HTTPS и Basic Auth находится в `deploy/nginx/arvento-report.conf.example`. Порты 18083/18084 не требуется открывать в UFW.
+
+## Канонические исполняемые файлы
+
+- `sync_arvento_gps_to_postgres.py` — загрузка GPS в PostgreSQL/PostGIS;
+- `run_geofence_editor.py` — веб-редактор геозон;
+- `run_report_portal.py` — базовый портал отчётов;
+- `generate_kpp_summary_report.py` — сводный отчёт по КПП;
+- `generate_first_entry_report.py` — отчёт по первому въезду;
+- `generate_prohibited_left_turn_report.py` — отчёт о запрещённом повороте;
+- `generate_consolidated_report.py` — сводный отчёт;
+- `generate_scheduled_reports.py` — пакетный запуск отчётов.
+
+Файлы `arvento_postgres_sync_v2.py`, `arvento_first_entry_report_fixed.py` и другие старые имена пока остаются внутренними compatibility-модулями: канонические wrappers их импортируют. Они не являются отдельными production entrypoints и не должны использоваться в Compose, systemd или новых инструкциях.
+
+## Репозиторные проверки
+
+```bash
+python3 verify_repository.py
+python3 verify_deployment.py
+docker compose -f docker-compose.server.yml config --quiet
+docker build -f Dockerfile.server -t arvento-report:test .
 ```
 
 Проверяются:
 
-- наличие канонических исполняемых файлов;
-- ссылки на них в Docker, портале и документации;
-- отсутствие лишних неканонических entrypoint-файлов;
-- синтаксис всех Python-файлов.
+- Python-синтаксис и runtime smoke-тесты;
+- наличие канонических entrypoints;
+- ссылки Dockerfile только на существующие файлы;
+- systemd timers, locks и конечные timeout;
+- отсутствие отслеживаемых `.env`, ключей, backup, Excel/CSV/SQLite и других runtime-артефактов;
+- геозоны и KML;
+- успешная сборка server image.
 
-## Именование
-
-Правило для новых исполняемых файлов:
-
-```text
-<действие>_<объект>_<результат>.py
-```
-
-Примеры:
-
-```text
-sync_arvento_gps_to_postgres.py
-generate_kpp_summary_report.py
-generate_first_entry_report.py
-generate_prohibited_left_turn_report.py
-```
-
-Имена вида `fixed`, `v2`, `new`, `final` в канонических исполняемых файлах не используются. Версии алгоритмов хранятся в базе и Git, а не в имени файла.
+GitHub Actions выполняет эти проверки для pull request и `main`.
