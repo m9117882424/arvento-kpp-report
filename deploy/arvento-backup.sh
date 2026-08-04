@@ -6,8 +6,12 @@ set -Eeuo pipefail
 ROOT="${ARVENTO_ROOT:-/opt/arvento_report}"
 BACKUP_DIR="${BACKUP_DIR:-/opt/arvento_backups}"
 BACKUP_RETENTION_DAYS="${BACKUP_RETENTION_DAYS:-14}"
+BACKUP_PIPELINE_LOCK_WAIT_SECONDS="${BACKUP_PIPELINE_LOCK_WAIT_SECONDS:-600}"
+BACKUP_DUMP_TIMEOUT_SECONDS="${BACKUP_DUMP_TIMEOUT_SECONDS:-2700}"
+BACKUP_VERIFY_TIMEOUT_SECONDS="${BACKUP_VERIFY_TIMEOUT_SECONDS:-300}"
 COMPOSE_FILE="$ROOT/docker-compose.server.yml"
-LOCK_FILE="/run/arvento-backup.lock"
+BACKUP_LOCK_FILE="/run/arvento-backup.lock"
+PIPELINE_LOCK_FILE="/run/arvento-sync-and-cache.lock"
 
 log() {
     printf '%s | %s\n' "$(date '+%F %T %z')" "$*"
@@ -21,15 +25,31 @@ fail() {
 [[ -d "$ROOT" ]] || fail "каталог $ROOT не найден"
 [[ -f "$ROOT/.env" ]] || fail "файл $ROOT/.env не найден"
 [[ -f "$COMPOSE_FILE" ]] || fail "файл $COMPOSE_FILE не найден"
-[[ "$BACKUP_RETENTION_DAYS" =~ ^[0-9]+$ ]] || fail "BACKUP_RETENTION_DAYS должен быть числом"
+
+for value_name in \
+    BACKUP_RETENTION_DAYS \
+    BACKUP_PIPELINE_LOCK_WAIT_SECONDS \
+    BACKUP_DUMP_TIMEOUT_SECONDS \
+    BACKUP_VERIFY_TIMEOUT_SECONDS; do
+    value="${!value_name}"
+    [[ "$value" =~ ^[0-9]+$ ]] || fail "$value_name должен быть целым числом"
+done
 
 mkdir -p "$BACKUP_DIR"
 chmod 0700 "$BACKUP_DIR"
 
-exec 9>"$LOCK_FILE"
+# Prevent duplicate backup processes first. Then join the shared pipeline lock so
+# pg_dump does not add load while Arvento sync/cache work is active.
+exec 9>"$BACKUP_LOCK_FILE"
 if ! flock -n 9; then
     log "SKIP: резервное копирование уже выполняется"
     exit 0
+fi
+
+exec 8>"$PIPELINE_LOCK_FILE"
+log "LOCK: ожидание общей цепочки до ${BACKUP_PIPELINE_LOCK_WAIT_SECONDS}s"
+if ! flock -w "$BACKUP_PIPELINE_LOCK_WAIT_SECONDS" 8; then
+    fail "общая цепочка Arvento не освободила lock за ${BACKUP_PIPELINE_LOCK_WAIT_SECONDS}s"
 fi
 
 COMPOSE=(
@@ -37,6 +57,8 @@ COMPOSE=(
     --project-directory "$ROOT"
     -f "$COMPOSE_FILE"
 )
+
+"${COMPOSE[@]}" config --quiet
 
 POSTGRES_CONTAINER="$("${COMPOSE[@]}" ps -q postgres)"
 [[ -n "$POSTGRES_CONTAINER" ]] || fail "контейнер PostgreSQL не запущен"
@@ -53,17 +75,30 @@ cleanup() {
 }
 trap cleanup EXIT
 
-log "START: создание $FINAL_PATH"
+log "START: создание $FINAL_PATH timeout=${BACKUP_DUMP_TIMEOUT_SECONDS}s"
 
-docker exec "$POSTGRES_CONTAINER" \
-    sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
-    > "$TEMP_PATH"
+if timeout --signal=TERM --kill-after=60 "$BACKUP_DUMP_TIMEOUT_SECONDS" \
+    docker exec "$POSTGRES_CONTAINER" \
+        sh -lc 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" -Fc' \
+        > "$TEMP_PATH"; then
+    :
+else
+    rc=$?
+    fail "pg_dump завершился с rc=$rc"
+fi
 
 [[ -s "$TEMP_PATH" ]] || fail "создан пустой backup"
 
-docker exec -i "$POSTGRES_CONTAINER" pg_restore --list \
-    < "$TEMP_PATH" \
-    > /dev/null
+log "VERIFY: проверка структуры backup timeout=${BACKUP_VERIFY_TIMEOUT_SECONDS}s"
+if timeout --signal=TERM --kill-after=30 "$BACKUP_VERIFY_TIMEOUT_SECONDS" \
+    docker exec -i "$POSTGRES_CONTAINER" pg_restore --list \
+        < "$TEMP_PATH" \
+        > /dev/null; then
+    :
+else
+    rc=$?
+    fail "pg_restore --list завершился с rc=$rc"
+fi
 
 chmod 0600 "$TEMP_PATH"
 mv -f "$TEMP_PATH" "$FINAL_PATH"
