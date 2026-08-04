@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS gps_points (
     pause_duration TEXT,
     idling_duration TEXT,
     ignition_duration TEXT,
+    region_name TEXT,
     received_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     source_hash TEXT NOT NULL,
     PRIMARY KEY (id, event_time),
