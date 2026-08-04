@@ -1,10 +1,8 @@
 # Развёртывание arvento_report на чистом сервере
 
-Документ описывает production-схему для Ubuntu, Docker Compose и systemd. Рекомендуемый путь проекта: `/opt/arvento_report`. Данные PostgreSQL хранятся в отдельном Docker volume, backup — вне Git checkout.
+Production-схема рассчитана на Ubuntu, Docker Compose и systemd. Рекомендуемый путь проекта — `/opt/arvento_report`. PostgreSQL хранится в Docker volume, резервные копии — вне Git checkout.
 
 ## 1. Предварительные требования
-
-Проверьте наличие:
 
 ```bash
 git --version
@@ -14,42 +12,23 @@ python3 --version
 curl --version
 flock --version
 timeout --version
-```
-
-Docker Engine должен быть установлен из доверенного репозитория и запущен:
-
-```bash
-systemctl enable --now docker
 systemctl is-active docker
 ```
 
-Рекомендуемый минимум для production:
+Рекомендуемый минимум: 4 vCPU, 8 ГиБ RAM, настроенный swap и отдельный запас диска под PostgreSQL и backup. Порты PostgreSQL, 18083 и 18084 не должны быть доступны из внешней сети.
 
-- 4 vCPU;
-- 8 ГиБ RAM;
-- настроенный swap;
-- отдельный запас диска под PostgreSQL и backup;
-- корректное время `Europe/Istanbul`;
-- закрытые внешним firewall порты PostgreSQL, 18083 и 18084.
-
-## 2. Клонирование
+## 2. Клонирование и `.env`
 
 ```bash
 cd /opt
 git clone https://github.com/m9117882424/arvento-kpp-report.git arvento_report
 cd /opt/arvento_report
-git status --short --branch
-```
-
-Создайте конфигурацию:
-
-```bash
 cp .env.server.example .env
 chmod 600 .env
 nano .env
 ```
 
-Обязательные значения:
+Обязательные параметры:
 
 ```text
 POSTGRES_DB
@@ -62,50 +41,44 @@ ARVENTO_PIN2
 ARVENTO_GROUP
 ```
 
-Создайте URL-safe пароль:
+Для чистой установки используйте URL-safe пароль:
 
 ```bash
 openssl rand -hex 32
 ```
 
-Укажите одно и то же значение:
+Одинаковое значение указывается в `POSTGRES_PASSWORD` и внутри `DATABASE_URL`:
 
 ```text
-POSTGRES_PASSWORD=<пароль>
 DATABASE_URL=postgresql://arvento_report:<пароль>@postgres:5432/arvento_report
 ```
 
-Пароли с `@`, `:`, `/`, `?`, `#`, `[` и `]` требуют URL-кодирования. Installer запрещает такие значения для чистой установки, чтобы исключить скрытую ошибку подключения.
+`.env` не отслеживается Git и исключён из Docker build context.
 
-Файл `.env` не добавляется в Git и не попадает в Docker build context.
-
-## 3. Автоматическая установка
+## 3. Установка
 
 ```bash
-cd /opt/arvento_report
 sudo bash deploy/install.sh /opt/arvento_report
 ```
 
-Installer выполняет:
+Installer:
 
-1. проверку зависимостей и `.env`;
-2. `verify_repository.py`;
-3. `verify_deployment.py`;
-4. `docker compose config --quiet`;
-5. сборку image со smoke-тестами;
-6. запуск `postgres`, `geofence-editor`, `report-portal`;
-7. установку scripts в `/usr/local/sbin`;
-8. установку systemd units/timers;
-9. включение синхронизации и backup;
-10. HTTP health checks.
+1. проверяет зависимости и обязательные переменные;
+2. запускает `verify_repository.py` и `verify_deployment.py`;
+3. проверяет `docker compose config`;
+4. собирает image вместе со smoke-тестами;
+5. запускает `postgres`, `geofence-editor`, `report-portal`;
+6. устанавливает scripts и systemd units;
+7. включает синхронизацию, ночную коррекцию и backup;
+8. проверяет HTTP health endpoints.
 
-Установить units, но не включать timers:
+Установка без включения timers:
 
 ```bash
 sudo INSTALL_ENABLE_TIMERS=0 bash deploy/install.sh /opt/arvento_report
 ```
 
-## 4. Состав production stack
+## 4. Production stack
 
 Обычный запуск:
 
@@ -113,7 +86,7 @@ sudo INSTALL_ENABLE_TIMERS=0 bash deploy/install.sh /opt/arvento_report
 docker compose -f docker-compose.server.yml up -d
 ```
 
-поднимает только:
+запускает только:
 
 ```text
 postgres
@@ -121,63 +94,34 @@ geofence-editor
 report-portal
 ```
 
-`gps-sync` находится в профиле `legacy-daemon` и по умолчанию не запускается. Это исключает одновременную работу бесконечного Docker-демона и systemd pipeline.
-
-Для просмотра итоговой конфигурации:
-
-```bash
-docker compose -f docker-compose.server.yml config
-```
+`gps-sync` находится в профиле `legacy-daemon` и не входит в default stack. Это исключает одновременную работу бесконечного Docker-демона и systemd pipeline.
 
 ## 5. Расписание
 
-### Внутридневная синхронизация
-
 ```text
-arvento-intraday-pipeline.timer
-05:00–23:30 Europe/Istanbul, каждые 30 минут
+arvento-intraday-pipeline.timer   каждые 30 минут, 05:00–23:30 Europe/Istanbul
+arvento-nightly-correction.timer  ежедневно в 00:10 Europe/Istanbul
+arvento-backup.timer              ежедневно в 03:30 Europe/Istanbul
 ```
 
-Pipeline:
-
-1. получает последние шесть часов Arvento;
-2. проверяет статус новой записи `sync_runs`;
-3. только при `SUCCESS` пересчитывает кэш текущего дня.
-
-### Ночная корректировка
-
-```text
-arvento-nightly-correction.timer
-00:10 Europe/Istanbul
-```
-
-Загружает предыдущие сутки и пересчитывает их кэш.
-
-### Резервное копирование
-
-```text
-arvento-backup.timer
-03:30 Europe/Istanbul
-```
-
-Создаёт custom-format `pg_dump`, проверяет его командой `pg_restore --list`, затем применяет retention.
-
-Проверка timers:
+Проверка:
 
 ```bash
 systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly|backup)'
 ```
 
-## 6. Защита от зависаний и повторных запусков
+Внутридневный pipeline загружает последние шесть часов и пересчитывает текущий день только после статуса `SUCCESS`. Ночная коррекция загружает предыдущие сутки. Backup создаётся в custom-format и проверяется командой `pg_restore --list`.
 
-Pipeline использует:
+## 6. Защита от зависаний
+
+Общие блокировки:
 
 ```text
 /run/arvento-sync-and-cache.lock
 /run/arvento-consolidated-cache.lock
 ```
 
-Внутридневный и ночной запуск не могут выполняться одновременно. Для каждого этапа задан конечный timeout:
+Timeout:
 
 ```text
 PIPELINE_INTRADAY_TIMEOUT_SECONDS=2700
@@ -185,45 +129,24 @@ PIPELINE_NIGHTLY_TIMEOUT_SECONDS=7200
 PIPELINE_CACHE_TIMEOUT_SECONDS=3600
 ```
 
-Docker-контейнеры имеют ограничения CPU, RAM, PID, размер tmpfs и ротацию JSON-логов. Значения задаются в `.env`.
-
-Не запускайте синхронизацию полного дня напрямую параллельно systemd pipeline. Для диагностических тестов используйте короткий read-only диапазон либо отдельную тестовую базу.
+Контейнеры имеют ограничения CPU, RAM, PID, tmpfs и ротацию JSON-логов. Не запускайте полносуточную тестовую синхронизацию параллельно production pipeline. Для диагностики применяйте короткий read-only диапазон либо отдельную тестовую базу.
 
 ## 7. Проверка состояния
-
-Комплексная read-only проверка:
 
 ```bash
 sudo /usr/local/sbin/arvento-healthcheck
 ```
 
-Она проверяет:
-
-- состояние Compose-контейнеров;
-- health endpoints;
-- timers;
-- последние `sync_runs`;
-- записи `RUNNING` для ручной проверки;
-- RAM и диск.
-
-Отдельные команды:
+Дополнительно:
 
 ```bash
 docker compose -f docker-compose.server.yml ps
 curl http://127.0.0.1:18083/health
 curl http://127.0.0.1:18084/health
-```
 
-Логи:
-
-```bash
 journalctl -u arvento-intraday-pipeline.service -n 200 --no-pager
 journalctl -u arvento-nightly-correction.service -n 200 --no-pager
 journalctl -u arvento-backup.service -n 100 --no-pager
-
-docker compose -f docker-compose.server.yml logs --tail=200 postgres
-docker compose -f docker-compose.server.yml logs --tail=200 report-portal
-docker compose -f docker-compose.server.yml logs --tail=200 geofence-editor
 ```
 
 ## 8. Ручные операции
@@ -235,7 +158,7 @@ sudo /usr/local/sbin/arvento-sync-and-cache intraday
 sudo /usr/local/sbin/arvento-sync-and-cache nightly
 ```
 
-Только синхронизация последних шести часов:
+Только загрузка последних шести часов:
 
 ```bash
 cd /opt/arvento_report
@@ -247,22 +170,18 @@ flock -n /run/arvento-sync-and-cache.lock \
 Очистка старых GPS-партиций:
 
 ```bash
-cd /opt/arvento_report
 flock -n /run/arvento-sync-and-cache.lock \
   docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python sync_arvento_gps_to_postgres.py retention
 ```
 
-Конкретные сутки:
+Конкретные сутки запускайте только при реальной необходимости и после проверки нагрузки:
 
 ```bash
-cd /opt/arvento_report
 flock -n /run/arvento-sync-and-cache.lock \
   docker compose -f docker-compose.server.yml run --rm --no-deps report-portal \
   python sync_arvento_gps_to_postgres.py day 2026-07-24
 ```
-
-Такой запуск может быть тяжёлым. Перед ним проверьте нагрузку, свободную память, отсутствие активного pipeline и необходимость операции.
 
 ## 9. Backup и восстановление
 
@@ -281,61 +200,34 @@ journalctl -u arvento-backup.service -n 100 --no-pager
 ls -lh /opt/arvento_backups
 ```
 
-Восстановление выполняйте в запланированное окно:
+Перед восстановлением остановите timers, создайте дополнительный backup и проверьте имя базы/пользователя в `.env`. После восстановления включите timers обратно.
 
-```bash
-cd /opt/arvento_report
-systemctl stop arvento-intraday-pipeline.timer arvento-nightly-correction.timer
+## 10. Nginx
 
-docker compose -f docker-compose.server.yml exec -T postgres \
-  dropdb -U arvento_report --if-exists arvento_report
-
-docker compose -f docker-compose.server.yml exec -T postgres \
-  createdb -U arvento_report arvento_report
-
-docker compose -f docker-compose.server.yml exec -T postgres \
-  pg_restore -U arvento_report -d arvento_report --clean --if-exists \
-  < /opt/arvento_backups/arvento_report_YYYYMMDD_HHMMSS.dump
-
-systemctl start arvento-intraday-pipeline.timer arvento-nightly-correction.timer
-```
-
-Перед восстановлением сохраните текущий backup и проверьте имя пользователя/базы из `.env`.
-
-## 10. Nginx и внешний доступ
-
-Порты приложений слушают только localhost:
+Сервисы слушают только localhost:
 
 ```text
 127.0.0.1:18083
 127.0.0.1:18084
 ```
 
-Пример:
+Пример reverse proxy с TLS и Basic Auth:
 
 ```text
 deploy/nginx/arvento-report.conf.example
 ```
 
-Перед включением:
+Перед включением замените домен и certificate paths, создайте htpasswd, выполните `nginx -t` и только затем перезагрузите Nginx.
 
-1. замените `reports.example.com`;
-2. получите TLS-сертификат;
-3. создайте Basic Auth;
-4. выполните `nginx -t`;
-5. перезагрузите Nginx.
+## 11. Обновление и rollback
 
-Порты 18083 и 18084 не открывайте во внешний интерфейс.
-
-## 11. Обновление
-
-Сначала создайте backup:
+Перед обновлением:
 
 ```bash
 sudo systemctl start arvento-backup.service
 ```
 
-Затем:
+Обновление:
 
 ```bash
 cd /opt/arvento_report
@@ -344,8 +236,6 @@ git status --short --branch
 git pull --ff-only origin main
 sudo bash deploy/install.sh /opt/arvento_report
 ```
-
-Installer не удаляет PostgreSQL volume.
 
 Rollback к известному commit:
 
@@ -356,9 +246,9 @@ git checkout --detach <COMMIT_SHA>
 sudo bash deploy/install.sh /opt/arvento_report
 ```
 
-После проверки создайте отдельную rollback-ветку либо вернитесь на `main`. Не используйте `git reset --hard` при наличии несохранённых локальных изменений.
+Installer не удаляет PostgreSQL volume.
 
-## 12. Проверка репозитория до развёртывания
+## 12. Репозиторные проверки
 
 ```bash
 python3 verify_repository.py
@@ -367,20 +257,21 @@ docker compose -f docker-compose.server.yml config --quiet
 docker build -f Dockerfile.server -t arvento-report:test .
 ```
 
-`verify_deployment.py` проверяет:
+Проверяются deployment manifests, конечные timeout, общий lock, ссылки Dockerfile, отсутствие секретов и runtime-артефактов, resource limits, геозоны, KML и сборка server image.
 
-- все deployment manifests;
-- отсутствие бесконечных timeout;
-- общий lock;
-- ссылки Dockerfile только на существующие файлы;
-- отсутствие отслеживаемых `.env`, ключей, архивов, backup, Excel/CSV/SQLite и runtime-каталогов;
-- наличие resource/log limits;
-- обязательные timers и scripts.
+## 13. Канонические команды и compatibility-модули
 
-GitHub Actions выполняет те же проверки для pull request и `main`.
+Production entrypoints:
 
-## 13. Legacy-модули
+```text
+sync_arvento_gps_to_postgres.py
+run_geofence_editor.py
+run_report_portal.py
+generate_kpp_summary_report.py
+generate_first_entry_report.py
+generate_prohibited_left_turn_report.py
+generate_consolidated_report.py
+generate_scheduled_reports.py
+```
 
-Старые файлы, включая `arvento_postgres_sync_v2.py` и `arvento_first_entry_report_fixed.py`, пока остаются внутренними compatibility-модулями. Канонические wrappers импортируют их, поэтому удалять их сейчас нельзя.
-
-Они не должны использоваться как отдельные production entrypoints. Последующий рефакторинг должен переносить реализацию в канонические модули по одному компоненту с тестами, после чего legacy-файл можно удалить отдельным PR.
+Старые реализации `arvento_postgres_sync_v2.py`, `arvento_first_entry_report_fixed.py` и другие compatibility-модули пока удалять нельзя: канонические wrappers всё ещё импортируют их. Они не должны использоваться в Docker Compose, systemd или новых инструкциях. Удаление выполняется отдельным рефакторингом с тестами.
