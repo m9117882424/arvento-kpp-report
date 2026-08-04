@@ -155,7 +155,7 @@ def iter_database_tracks_with_odometer(
                 SELECT EXISTS (
                     SELECT 1
                     FROM information_schema.columns
-                    WHERE table_schema = current_schema()
+                    WHERE table_schema = 'public'
                       AND table_name = 'gps_points'
                       AND column_name = 'odometer_km'
                 )
