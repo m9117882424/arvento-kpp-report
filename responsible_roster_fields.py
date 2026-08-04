@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Persist the subdivision responsible person from centrally uploaded rosters.
+"""Persist and restore the subdivision responsible person from rosters.
 
 The established roster store already keeps driver, grade, position and
 Directorate. This patch adds one optional ``responsible`` field sourced only
@@ -9,12 +9,15 @@ from ``Ответственный по подразделению / Birim soruml
 """
 from __future__ import annotations
 
+import io
 import tempfile
+from collections import defaultdict
+from datetime import date
 from pathlib import Path
 from typing import Any, Sequence
 
 import psycopg
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 import consolidated_cache as cache
 import extended_roster_fields as extended
@@ -120,6 +123,45 @@ def ensure_schema(connection: psycopg.Connection) -> None:
         )
 
 
+def _write_roster_workbook(rows: Sequence[Sequence[str]]) -> bytes:
+    """Write a complete stored roster including subdivision responsible."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Разнарядка"
+    sheet.append([
+        "Гос рег знак",
+        "Компания или фирма",
+        "Марка, модель",
+        "Грейд",
+        "ПОЛЬЗОВАТЕЛЬ",
+        "Должность",
+        "Дирекция",
+        "Ответственный по подразделению / Birim sorumlusu",
+    ])
+    for source_row in rows:
+        row = list(source_row)
+        if len(row) < 8:
+            row.extend([""] * (8 - len(row)))
+        sheet.append(row[:8])
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = sheet.dimensions
+    for column, width in {
+        "A": 18,
+        "B": 28,
+        "C": 26,
+        "D": 14,
+        "E": 38,
+        "F": 38,
+        "G": 52,
+        "H": 38,
+    }.items():
+        sheet.column_dimensions[column].width = width
+    stream = io.BytesIO()
+    workbook.save(stream)
+    workbook.close()
+    return stream.getvalue()
+
+
 def save_roster_uploads(
     database_url: str,
     uploads: Sequence[tuple[str, bytes]],
@@ -167,16 +209,119 @@ def save_roster_uploads(
     return saved
 
 
+def _load_all_rows(
+    database_url: str,
+) -> dict[date, list[tuple[str, str, str, str, str, str, str, str]]]:
+    with psycopg.connect(database_url) as connection:
+        ensure_schema(connection)
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT
+                    roster_day, plate, company, model, grade,
+                    user_name, position, directorate, responsible
+                FROM consolidated_roster_entries
+                ORDER BY roster_day, normalized_plate
+                """
+            )
+            rows = cursor.fetchall()
+
+    grouped: defaultdict[
+        date,
+        list[tuple[str, str, str, str, str, str, str, str]],
+    ] = defaultdict(list)
+    for (
+        roster_day,
+        plate,
+        company,
+        model,
+        grade,
+        user_name,
+        position,
+        directorate,
+        responsible,
+    ) in rows:
+        grouped[roster_day].append(
+            (
+                plate or "",
+                company or "",
+                model or "",
+                grade or "",
+                user_name or "",
+                position or "",
+                directorate or "",
+                responsible or "",
+            )
+        )
+    return grouped
+
+
+def export_stored_rosters(database_url: str, target_dir: Path) -> list[Path]:
+    """Export stored snapshots without discarding the responsible field."""
+    grouped = _load_all_rows(database_url)
+    if not grouped:
+        raise ValueError(
+            "В базе нет сохранённых разнарядок. Сначала загрузите разнарядку на странице «Разнарядки»."
+        )
+
+    result: list[Path] = []
+    for roster_day in sorted(grouped):
+        path = target_dir / f"roster_{roster_day.isoformat()}.xlsx"
+        path.write_bytes(_write_roster_workbook(grouped[roster_day]))
+        result.append(path)
+    return result
+
+
+def build_roster_download(roster_day: date) -> tuple[bytes, str]:
+    """Download one stored roster with its subdivision responsible values."""
+    import consolidated_portal as portal
+
+    database_url = portal.implementation.db_url()
+    with psycopg.connect(database_url) as connection:
+        ensure_schema(connection)
+        connection.commit()
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT 1 FROM consolidated_roster_snapshots WHERE roster_day=%s",
+                (roster_day,),
+            )
+            if cursor.fetchone() is None:
+                raise ValueError("Разнарядка за выбранную дату не найдена")
+            cursor.execute(
+                """
+                SELECT plate, company, model, grade,
+                       user_name, position, directorate, responsible
+                FROM consolidated_roster_entries
+                WHERE roster_day=%s
+                ORDER BY normalized_plate
+                """,
+                (roster_day,),
+            )
+            rows = [
+                tuple(value or "" for value in row)
+                for row in cursor.fetchall()
+            ]
+
+    return _write_roster_workbook(rows), f"Разнарядка_{roster_day.isoformat()}.xlsx"
+
+
 def apply_responsible_roster_fields() -> None:
-    """Install the subdivision-responsible field in portal-facing roster paths."""
+    """Install responsible storage and lossless stored-roster exports."""
     global _PATCHED
     if _PATCHED:
         return
 
     extended.ensure_schema = ensure_schema
     extended.save_roster_uploads = save_roster_uploads
+    extended._write_roster_workbook = _write_roster_workbook
+    extended._load_all_rows = _load_all_rows
+    extended.export_stored_rosters = export_stored_rosters
+    extended.build_roster_download = build_roster_download
+
     cache.ensure_schema = ensure_schema
     cache.save_roster_uploads = save_roster_uploads
+    cache.export_stored_rosters = export_stored_rosters
 
     try:
         import consolidated_cache_portal as cache_portal
@@ -190,6 +335,7 @@ def apply_responsible_roster_fields() -> None:
 
         roster_portal.ensure_schema = ensure_schema
         roster_portal.save_roster_uploads = save_roster_uploads
+        roster_portal.build_roster_download = build_roster_download
     except ImportError:
         pass
 
@@ -199,6 +345,8 @@ def apply_responsible_roster_fields() -> None:
 __all__ = [
     "RESPONSIBLE_ALIASES",
     "apply_responsible_roster_fields",
+    "build_roster_download",
     "ensure_schema",
+    "export_stored_rosters",
     "save_roster_uploads",
 ]
