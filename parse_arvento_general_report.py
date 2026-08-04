@@ -14,7 +14,6 @@ class ApiRow:
     longitude: float
     speed: float | None
     distance: float | None
-    odometer: float | None
     address: str
     event_type: str
     device_no: str
@@ -66,46 +65,6 @@ def extract_xml(response_text: str) -> str:
     return response_text[start:]
 
 
-def odometer_text_of(element: ET.Element) -> str:
-    """Return cumulative mileage from English or Turkish Arvento XML fields."""
-    exact = text_of(
-        element,
-        "Odometer",
-        "Distance_x0020_Counter",
-        "Distance_x0020_Counter_x0020_km",
-        "Km_x0020_Counter",
-        "Km_x0020_Counter_x0020_km",
-        "Mesafe_x0020_Sayacı",
-        "Mesafe_x0020_Sayacı_x0020_km",
-        "Mesafe_x0020_Sayaci",
-        "Mesafe_x0020_Sayaci_x0020_km",
-        "Km_x0020_Sayacı",
-        "Km_x0020_Sayaci",
-    )
-    if exact:
-        return exact
-
-    for child in element:
-        name = local_name(child.tag).casefold()
-        compact = (
-            name.replace("_x0020_", "")
-            .replace("_", "")
-            .replace("ı", "i")
-        )
-        if any(
-            token in compact
-            for token in (
-                "odometer",
-                "distancecounter",
-                "kmcounter",
-                "mesafesayaci",
-                "kmsayaci",
-            )
-        ):
-            return (child.text or "").strip()
-    return ""
-
-
 def parse_general_report_rows(response_text: str) -> list[ApiRow]:
     root = ET.fromstring(extract_xml(response_text))
     rows: list[ApiRow] = []
@@ -125,7 +84,6 @@ def parse_general_report_rows(response_text: str) -> list[ApiRow]:
             longitude=longitude,
             speed=parse_float(text_of(element, "Speed_x0020_km_x002F_h")),
             distance=parse_float(text_of(element, "Distance")),
-            odometer=parse_float(odometer_text_of(element)),
             address=text_of(element, "Address"),
             event_type=text_of(element, "Type"),
             device_no=text_of(element, "Device_x0020_No"),
