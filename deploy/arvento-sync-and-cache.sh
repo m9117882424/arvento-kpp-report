@@ -32,14 +32,26 @@ case "$MODE" in
     intraday)
         REPORT_DAY="$(TZ=Europe/Istanbul date '+%F')"
         SYNC_TIMEOUT="$INTRADAY_TIMEOUT"
-        SYNC_COMMAND=(python sync_arvento_gps_to_postgres.py recent --hours 6)
+        SYNC_COMMAND=(python sync_arvento_gps_to_postgres.py recent --hours 1)
         TRIGGER="intraday"
+        CACHE_LABEL="инкрементальный расчёт затронутых автомобилей за $REPORT_DAY"
+        CACHE_COMMAND=(
+            python consolidated_cache_worker.py refresh-pending
+            --date "$REPORT_DAY"
+            --trigger "${TRIGGER}-${REPORT_DAY}"
+        )
         ;;
     nightly)
         REPORT_DAY="$(TZ=Europe/Istanbul date -d yesterday '+%F')"
         SYNC_TIMEOUT="$NIGHTLY_TIMEOUT"
         SYNC_COMMAND=(python sync_arvento_gps_to_postgres.py day "$REPORT_DAY")
         TRIGGER="nightly-correction"
+        CACHE_LABEL="полный расчёт сводного за $REPORT_DAY"
+        CACHE_COMMAND=(
+            python consolidated_cache_worker.py refresh
+            --date "$REPORT_DAY"
+            --trigger "${TRIGGER}-${REPORT_DAY}"
+        )
         ;;
     *)
         printf 'Usage: %s intraday|nightly\n' "$0" >&2
@@ -164,17 +176,14 @@ if ! flock -n 8; then
     exit 0
 fi
 
-log "CACHE: расчёт сводного за $REPORT_DAY timeout=${CACHE_TIMEOUT}s"
+log "CACHE: $CACHE_LABEL timeout=${CACHE_TIMEOUT}s"
 
-# consolidated_cache_worker.py refresh
 if timeout --signal=TERM --kill-after=60 "$CACHE_TIMEOUT" \
     "${COMPOSE[@]}" run \
         --rm \
         --no-deps \
         report-portal \
-        python consolidated_cache_worker.py refresh \
-            --date "$REPORT_DAY" \
-            --trigger "${TRIGGER}-${REPORT_DAY}"; then
+        "${CACHE_COMMAND[@]}"; then
     CACHE_RC=0
 else
     CACHE_RC=$?
