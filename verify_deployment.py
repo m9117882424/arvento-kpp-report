@@ -2,9 +2,9 @@
 """Deployment and repository hygiene checks.
 
 The checks are offline and safe to run on a workstation, in CI, during an image
-build, or on a production checkout. They intentionally validate the deployment
-files that are required for a clean-server installation and catch accidental
-runtime artifacts or stale Dockerfile references before deployment.
+build, or on a production checkout. They validate the deployment files required
+for a clean-server installation and catch runtime artifacts, literal secrets,
+superseded schedulers and stale Dockerfile references before deployment.
 """
 from __future__ import annotations
 
@@ -33,9 +33,9 @@ REQUIRED_FILES = (
     "deploy/systemd/arvento-nightly-correction.timer",
 )
 
-# These names are retained only because canonical wrappers still import them.
-# They are not independent production entrypoints and must not be referenced by
-# Docker Compose, systemd or deployment documentation.
+# These modules remain only because canonical wrappers import them. They are not
+# independent production entrypoints and must not be referenced by Compose,
+# systemd or new deployment instructions.
 LEGACY_COMPATIBILITY_FILES = {
     "arvento_first_entry_report_fixed.py",
     "arvento_postgres_sync_v2.py",
@@ -43,6 +43,13 @@ LEGACY_COMPATIBILITY_FILES = {
     "geofence_editor_api.py",
     "prohibited_left_turn_report.py",
     "run_automated_reports.py",
+}
+
+FORBIDDEN_TRACKED_PATHS = {
+    # Superseded by the unified sync-and-cache pipeline. The old service had an
+    # infinite timeout and its own overlapping schedule.
+    "deploy/systemd/arvento-consolidated-cache.service",
+    "deploy/systemd/arvento-consolidated-cache.timer",
 }
 
 FORBIDDEN_TRACKED_NAMES = {
@@ -87,6 +94,37 @@ FORBIDDEN_TRACKED_PARTS = {
     "reports",
     "venv",
 }
+
+TEXT_SUFFIXES = {
+    ".example",
+    ".json",
+    ".md",
+    ".py",
+    ".sh",
+    ".txt",
+    ".yaml",
+    ".yml",
+}
+
+LITERAL_SECRET_PATTERNS = (
+    (
+        "заполненная переменная доступа",
+        re.compile(
+            r"(?mi)^\s*(?:ARVENTO_USER|ARVENTO_PIN1|ARVENTO_PIN2|"
+            r"POSTGRES_PASSWORD)\s*=\s*(?!$|CHANGE_ME|<)[^\s#]+"
+        ),
+    ),
+    (
+        "пароль в PostgreSQL URL",
+        re.compile(
+            r"(?mi)^\s*DATABASE_URL\s*=\s*postgres(?:ql)?://[^:\s]+:"
+            r"(?!CHANGE_ME|<)[^@\s]+@"
+        ),
+    ),
+    ("Google API key", re.compile(r"AIza[0-9A-Za-z_-]{35}")),
+    ("GitHub token", re.compile(r"gh[pousr]_[A-Za-z0-9]{30,}")),
+    ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
+)
 
 MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 
@@ -173,17 +211,26 @@ def check_compose(errors: list[str]) -> None:
 
 
 def check_systemd(errors: list[str]) -> None:
-    service_files = (
+    required_services = (
         "deploy/systemd/arvento-intraday-pipeline.service",
         "deploy/systemd/arvento-nightly-correction.service",
         "deploy/systemd/arvento-backup.service",
     )
-    for relative_path in service_files:
+    for relative_path in required_services:
         content = read_text(relative_path)
-        if "TimeoutStartSec=infinity" in content:
-            errors.append(f"{relative_path}: бесконечный timeout запрещён")
         if "EnvironmentFile=-/etc/default/arvento-report" not in content:
             errors.append(f"{relative_path}: отсутствует общий EnvironmentFile")
+
+    for service_path in sorted((ROOT / "deploy/systemd").glob("*.service")):
+        content = service_path.read_text(encoding="utf-8")
+        if "TimeoutStartSec=infinity" in content:
+            errors.append(
+                f"{service_path.relative_to(ROOT)}: бесконечный timeout запрещён"
+            )
+        if "TimeoutStartSec=" not in content:
+            errors.append(
+                f"{service_path.relative_to(ROOT)}: отсутствует конечный TimeoutStartSec"
+            )
 
     timer_expectations = {
         "deploy/systemd/arvento-intraday-pipeline.timer": (
@@ -216,9 +263,15 @@ def check_scripts(errors: list[str]) -> None:
         "timeout --signal=TERM",
         "sync_arvento_gps_to_postgres.py",
         "consolidated_cache_worker.py refresh",
+        "if timeout --signal=TERM",
     ):
         if token not in pipeline:
             errors.append(f"deploy/arvento-sync-and-cache.sh: отсутствует {token}")
+
+    if "set +e" in pipeline:
+        errors.append(
+            "deploy/arvento-sync-and-cache.sh: set +e нельзя использовать вместе с ERR trap"
+        )
 
     installer = read_text("deploy/install.sh")
     for token in (
@@ -264,6 +317,20 @@ def check_environment_example(errors: list[str]) -> None:
             break
 
 
+def check_superseded_documentation(errors: list[str]) -> None:
+    for relative_path in (
+        "README.md",
+        "SERVER_DEPLOY.md",
+        "docs/consolidated-cache.md",
+    ):
+        content = read_text(relative_path)
+        for obsolete in FORBIDDEN_TRACKED_PATHS:
+            if obsolete.rsplit("/", 1)[-1] in content:
+                errors.append(
+                    f"{relative_path}: ссылка на устаревший scheduler {obsolete}"
+                )
+
+
 def check_repository_hygiene(errors: list[str], warnings: list[str]) -> None:
     for path in tracked_files():
         try:
@@ -273,6 +340,10 @@ def check_repository_hygiene(errors: list[str], warnings: list[str]) -> None:
 
         if not path.exists():
             continue
+
+        relative_text = relative.as_posix()
+        if relative_text in FORBIDDEN_TRACKED_PATHS:
+            errors.append(f"В Git отслеживается устаревший deployment-файл: {relative}")
 
         if relative.name in FORBIDDEN_TRACKED_NAMES:
             errors.append(f"В Git отслеживается секретный/локальный файл: {relative}")
@@ -289,18 +360,37 @@ def check_repository_hygiene(errors: list[str], warnings: list[str]) -> None:
             )
 
         lowered = relative.name.casefold()
-        suspicious_markers = (" copy", "копия", "_final", "-final", "_backup", "-backup")
+        suspicious_markers = (
+            " copy",
+            "копия",
+            "_final",
+            "-final",
+            "_backup",
+            "-backup",
+        )
         if any(marker in lowered for marker in suspicious_markers):
             warnings.append(f"Подозрительное имя файла, проверить вручную: {relative}")
 
-        if path.suffix.casefold() not in {".py", ".md", ".yml", ".yaml", ".sh", ".example", ".txt"}:
+        if path.suffix.casefold() not in TEXT_SUFFIXES:
             continue
         try:
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if "-----BEGIN PRIVATE KEY-----" in text or "-----BEGIN OPENSSH PRIVATE KEY-----" in text:
+
+        if (
+            "-----BEGIN PRIVATE KEY-----" in text
+            or "-----BEGIN OPENSSH PRIVATE KEY-----" in text
+        ):
             errors.append(f"В отслеживаемом файле найден приватный ключ: {relative}")
+
+        if relative_text == ".env.server.example":
+            # Placeholder assignments are validated separately.
+            continue
+
+        for label, pattern in LITERAL_SECRET_PATTERNS:
+            if pattern.search(text):
+                errors.append(f"В отслеживаемом файле найден {label}: {relative}")
 
     existing_legacy = sorted(
         name for name in LEGACY_COMPATIBILITY_FILES if (ROOT / name).is_file()
@@ -323,6 +413,7 @@ def main() -> int:
         check_systemd(errors)
         check_scripts(errors)
         check_environment_example(errors)
+        check_superseded_documentation(errors)
     check_repository_hygiene(errors, warnings)
 
     for warning in warnings:
