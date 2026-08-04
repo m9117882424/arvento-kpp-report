@@ -126,6 +126,19 @@ LITERAL_SECRET_PATTERNS = (
     ("AWS access key", re.compile(r"AKIA[0-9A-Z]{16}")),
 )
 
+# Build the markers from fragments so this checker does not flag its own
+# source code as if it contained an actual private key block.
+PRIVATE_KEY_MARKERS = (
+    "-----BEGIN " + "PRIVATE KEY-----",
+    "-----BEGIN OPENSSH " + "PRIVATE KEY-----",
+)
+
+EXPECTED_BACKUP_PATHS = {
+    "deploy/arvento-backup.sh",
+    "deploy/systemd/arvento-backup.service",
+    "deploy/systemd/arvento-backup.timer",
+}
+
 MAX_TRACKED_FILE_BYTES = 5 * 1024 * 1024
 
 
@@ -368,7 +381,10 @@ def check_repository_hygiene(errors: list[str], warnings: list[str]) -> None:
             "_backup",
             "-backup",
         )
-        if any(marker in lowered for marker in suspicious_markers):
+        if (
+            relative_text not in EXPECTED_BACKUP_PATHS
+            and any(marker in lowered for marker in suspicious_markers)
+        ):
             warnings.append(f"Подозрительное имя файла, проверить вручную: {relative}")
 
         if path.suffix.casefold() not in TEXT_SUFFIXES:
@@ -378,10 +394,7 @@ def check_repository_hygiene(errors: list[str], warnings: list[str]) -> None:
         except UnicodeDecodeError:
             continue
 
-        if (
-            "-----BEGIN PRIVATE KEY-----" in text
-            or "-----BEGIN OPENSSH PRIVATE KEY-----" in text
-        ):
+        if any(marker in text for marker in PRIVATE_KEY_MARKERS):
             errors.append(f"В отслеживаемом файле найден приватный ключ: {relative}")
 
         if relative_text == ".env.server.example":
