@@ -8,7 +8,8 @@ Wants=network-online.target
 Type=oneshot
 EnvironmentFile=-/etc/default/arvento-report
 ExecStart=/usr/local/sbin/arvento-backup
-TimeoutStartSec=45min
+# Includes pipeline-lock wait, pg_dump and verification stage limits.
+TimeoutStartSec=1h15min
 TimeoutStopSec=90s
 KillMode=control-group
 Nice=15
