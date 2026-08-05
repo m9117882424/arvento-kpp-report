@@ -30,6 +30,7 @@ class Point:
     lon: float
     odometer: Optional[float] = None
     source_distance: Optional[float] = None
+    prepared_distance: bool = False
     speed: Optional[float] = None
     region: str = ""
     address: str = ""
