@@ -93,7 +93,7 @@ def ensure_schema(connection: psycopg.Connection) -> None:
             weekday TEXT NOT NULL DEFAULT '',
             entry_time TIME,
             exit_time TIME,
-            worked_hours DOUBLE PRECISION NOT NULL DEFAULT 0,
+            worked_hours DOUBLE PRECISION,
             boundary_violation INTEGER NOT NULL DEFAULT 0,
             personal_use INTEGER NOT NULL DEFAULT 0,
             weekend_work INTEGER NOT NULL DEFAULT 0,
@@ -110,6 +110,10 @@ def ensure_schema(connection: psycopg.Connection) -> None:
             computed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             PRIMARY KEY (report_day, normalized_plate)
         )
+        """,
+        """
+        ALTER TABLE consolidated_report_cache
+            ALTER COLUMN worked_hours DROP NOT NULL
         """,
         """
         CREATE INDEX IF NOT EXISTS ix_consolidated_report_cache_plate_day
