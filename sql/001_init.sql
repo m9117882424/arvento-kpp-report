@@ -38,6 +38,24 @@ CREATE TABLE IF NOT EXISTS gps_points (
     UNIQUE (source_hash, event_time)
 ) PARTITION BY RANGE (event_time);
 
+CREATE TABLE IF NOT EXISTS vehicle_distance_daily (
+    report_day DATE NOT NULL,
+    device_no TEXT,
+    plate TEXT NOT NULL,
+    normalized_plate TEXT NOT NULL,
+    distance_km DOUBLE PRECISION NOT NULL,
+    initial_odometer_km DOUBLE PRECISION,
+    initial_odometer_time TIMESTAMPTZ,
+    last_odometer_km DOUBLE PRECISION,
+    last_odometer_time TIMESTAMPTZ,
+    driver TEXT,
+    source TEXT NOT NULL DEFAULT 'VehicleDistanceReport',
+    fetched_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (report_day, normalized_plate)
+);
+CREATE INDEX IF NOT EXISTS ix_vehicle_distance_daily_plate_day
+    ON vehicle_distance_daily (normalized_plate, report_day);
+
 CREATE TABLE IF NOT EXISTS sync_runs (
     id BIGSERIAL PRIMARY KEY,
     started_at TIMESTAMPTZ NOT NULL DEFAULT now(),
