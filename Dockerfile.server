@@ -38,6 +38,7 @@ RUN bash -n \
     && python /app/verify_repository.py \
     && python /app/verify_deployment.py \
     && python -m py_compile \
+        /app/arvento_vehicle_distance_sync.py \
         /app/central_roster_reports.py \
         /app/consolidated_cache.py \
         /app/consolidated_cache_portal.py \
