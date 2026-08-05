@@ -10,6 +10,7 @@ LOCK_FILE="/run/arvento-sync-and-cache.lock"
 CACHE_LOCK_FILE="/run/arvento-consolidated-cache.lock"
 INTRADAY_TIMEOUT="${PIPELINE_INTRADAY_TIMEOUT_SECONDS:-2700}"
 NIGHTLY_TIMEOUT="${PIPELINE_NIGHTLY_TIMEOUT_SECONDS:-7200}"
+DISTANCE_TIMEOUT="${PIPELINE_DISTANCE_TIMEOUT_SECONDS:-600}"
 CACHE_TIMEOUT="${PIPELINE_CACHE_TIMEOUT_SECONDS:-3600}"
 
 log() {
@@ -58,6 +59,11 @@ case "$MODE" in
         exit 2
         ;;
 esac
+
+DISTANCE_COMMAND=(
+    python arvento_vehicle_distance_sync.py
+    --date "$REPORT_DAY"
+)
 
 [[ -d "$ROOT" ]] || fail "каталог $ROOT не найден"
 [[ -f "$ROOT/.env" ]] || fail "файл $ROOT/.env не найден"
@@ -170,6 +176,22 @@ log "SYNC_RESULT: run_id=$SYNC_RUN_ID status=$SYNC_STATUS chunks=$CHUNKS_SUCCESS
 [[ "$SYNC_STATUS" == "SUCCESS" ]] || \
     fail "загрузка завершилась со статусом $SYNC_STATUS; кэш не рассчитывается"
 
+log "DISTANCE: VehicleDistanceReport за $REPORT_DAY timeout=${DISTANCE_TIMEOUT}s"
+
+if timeout --signal=TERM --kill-after=60 "$DISTANCE_TIMEOUT" \
+    "${COMPOSE[@]}" run \
+        --rm \
+        --no-deps \
+        report-portal \
+        "${DISTANCE_COMMAND[@]}"; then
+    DISTANCE_RC=0
+else
+    DISTANCE_RC=$?
+fi
+
+(( DISTANCE_RC == 0 )) || \
+    fail "VehicleDistanceReport завершился с rc=$DISTANCE_RC; кэш не рассчитывается"
+
 exec 8>"$CACHE_LOCK_FILE"
 if ! flock -n 8; then
     log "SKIP_CACHE: другой процесс расчёта сводного уже выполняется"
@@ -191,4 +213,4 @@ fi
 
 (( CACHE_RC == 0 )) || fail "расчёт кэша завершился с rc=$CACHE_RC"
 
-log "SUCCESS: загрузка и расчёт завершены; day=$REPORT_DAY run_id=$SYNC_RUN_ID"
+log "SUCCESS: загрузка, VehicleDistanceReport и расчёт завершены; day=$REPORT_DAY run_id=$SYNC_RUN_ID"
