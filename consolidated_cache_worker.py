@@ -29,6 +29,12 @@ from consolidated_incremental_cache import (
     refresh_pending_day,
 )
 from fuel_enriched_consolidated_report import generate_multi_roster_report
+from mileage_review_policy import (
+    apply_incremental_mileage_policy,
+    refresh_mileage_review_candidates,
+)
+
+apply_incremental_mileage_policy()
 
 TZ = ZoneInfo("Europe/Istanbul")
 ADVISORY_LOCK_KEY = 2026072901
@@ -79,6 +85,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                 total_cached = 0
                 total_fuel_liters = 0.0
                 total_queue_completed = 0
+                total_review_candidates = 0
                 run_ids: list[int] = []
 
                 for position, report_day in enumerate(days, start=1):
@@ -110,6 +117,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                     calculated_rows = int(stats.get("rows", 0))
                     cached_rows = int(cache_stats.get("rows", 0))
                     fuel_liters = float(stats.get("fuel_liters", 0) or 0)
+                    review_candidates = int(stats.get("mileage_review_candidates", 0) or 0)
                     run_id = cache_stats.get("run_id")
                     if run_id is not None:
                         run_ids.append(int(run_id))
@@ -117,6 +125,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                     total_cached += cached_rows
                     total_fuel_liters += fuel_liters
                     total_queue_completed += queue_completed
+                    total_review_candidates += review_candidates
                     print(
                         {
                             "status": "DONE_DAY",
@@ -126,6 +135,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                             "cache_run_id": run_id,
                             "queue_completed": queue_completed,
                             "fuel_liters": fuel_liters,
+                            "mileage_review_candidates": review_candidates,
                         },
                         flush=True,
                     )
@@ -141,6 +151,7 @@ def refresh(start_day: date, end_day: date, trigger_name: str) -> dict:
                     "cache_run_ids": run_ids,
                     "queue_completed": total_queue_completed,
                     "fuel_liters": round(total_fuel_liters, 1),
+                    "mileage_review_candidates": total_review_candidates,
                 }
                 print(result, flush=True)
                 return result
@@ -193,6 +204,12 @@ def refresh_pending(report_day: date, trigger_name: str) -> dict:
                     roster_paths,
                     trigger_name=trigger_name,
                 )
+            review_candidates = refresh_mileage_review_candidates(
+                url,
+                report_day,
+                report_day,
+            )
+            result["mileage_review_candidates"] = len(review_candidates)
             print(result, flush=True)
             return result
         finally:
