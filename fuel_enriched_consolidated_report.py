@@ -21,10 +21,15 @@ apply_consolidated_time_logic()
 from consolidated_mileage_logic import apply_consolidated_mileage_logic
 from consolidated_multi_report import generate_multi_roster_report as generate_base_report
 from consolidated_performance import apply_consolidated_performance
+from mileage_review_policy import (
+    annotate_mileage_review,
+    apply_authoritative_mileage_policy,
+)
 from roster_registry import normalize_plate
 
 apply_consolidated_performance()
 apply_consolidated_mileage_logic()
+apply_authoritative_mileage_policy()
 
 FUEL_HEADER = "Заправка, л"
 FUEL_SOURCE = "Fuel Monitor: public.fuel_events"
@@ -175,10 +180,11 @@ def add_fuel_column(
 
 
 def generate_multi_roster_report(**kwargs: Any) -> dict[str, Any]:
-    """Generate the existing report and enrich it with Fuel Monitor data."""
+    """Generate the report, enrich fuel and flag mileage-review candidates."""
     output_path = Path(kwargs["output_path"])
     start_day: date = kwargs["start_day"]
     end_day: date = kwargs["end_day"]
+    database_url = str(kwargs["database_url"])
     stats: dict[str, Any] = dict(generate_base_report(**kwargs))
 
     fuel_database_url = os.environ.get("FUEL_DATABASE_URL", "").strip()
@@ -188,9 +194,18 @@ def generate_multi_roster_report(**kwargs: Any) -> dict[str, Any]:
         totals,
         configured=bool(fuel_database_url),
     )
+    review_stats = annotate_mileage_review(
+        output_path,
+        database_url,
+        start_day,
+        end_day,
+        refresh=True,
+    )
     stats["fuel_liters"] = fuel_liters
     stats["fuel_rows"] = fuel_rows
     stats["fuel_configured"] = int(bool(fuel_database_url))
+    stats["mileage_review_candidates"] = review_stats["candidates"]
+    stats["mileage_review_rows"] = review_stats["flagged_rows"]
     return stats
 
 
