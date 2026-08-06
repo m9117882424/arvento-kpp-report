@@ -17,6 +17,7 @@ from database_status_patch import apply_database_status_patch
 from extended_roster_fields import apply_extended_roster_fields
 from fuel_enriched_consolidated_report import generate_multi_roster_report
 from kpp_preview_format import apply_kpp_preview_format
+from mileage_review_policy import apply_mileage_review_ui
 from portal_runtime_patch import apply_runtime_patch
 from responsible_roster_fields import apply_responsible_roster_fields
 from roster_management_portal import apply_roster_management_portal
@@ -34,9 +35,10 @@ apply_roster_management_portal()
 apply_extended_roster_fields()
 apply_responsible_roster_fields()
 apply_central_roster_reports()
-# Internal workbooks still keep diagnostics until cache writes finish. Only the
-# final downloadable consolidated workbook is reduced to one report sheet.
+# Internal workbooks still keep diagnostics until cache writes finish. The
+# final downloadable workbook keeps the report plus mileage-review sheet.
 apply_consolidated_export_portal()
+apply_mileage_review_ui(portal.implementation)
 apply_database_status_patch(
     portal.app,
     portal.implementation.db_url,
