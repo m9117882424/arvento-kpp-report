@@ -5,7 +5,8 @@ import argparse
 import hashlib
 import os
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
+from typing import Iterable, Sequence
 
 import psycopg
 import requests
@@ -14,6 +15,7 @@ from arvento_api_sync import HEADERS, build_params, fetch_chunk
 from arvento_api_parser import parse_rows
 
 TZ = timezone(timedelta(hours=3))
+STAGE_TABLE = "arvento_gps_stage"
 
 
 def env_int(name: str, default: int) -> int:
@@ -42,14 +44,15 @@ def ensure_schema(conn: psycopg.Connection) -> None:
     conn.commit()
 
 
-def ensure_partition(conn: psycopg.Connection, day) -> None:
+def ensure_partition(conn: psycopg.Connection, day: date) -> None:
     start = datetime.combine(day, datetime.min.time(), TZ)
     end = start + timedelta(days=1)
     name = f"gps_points_{day:%Y_%m_%d}"
     with conn.cursor() as cur:
         cur.execute(
             psycopg.sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points FOR VALUES FROM ({}) TO ({})"
+                "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points "
+                "FOR VALUES FROM ({}) TO ({})"
             ).format(
                 psycopg.sql.Identifier(name),
                 psycopg.sql.Literal(start),
@@ -76,83 +79,261 @@ def ensure_partition(conn: psycopg.Connection, day) -> None:
         )
 
 
-def insert_rows(conn: psycopg.Connection, rows, group_name: str) -> tuple[int, set[tuple[str, object]]]:
-    inserted = 0
-    affected: set[tuple[str, object]] = set()
+def partition_days(start: datetime, end: datetime) -> list[date]:
+    """Return local calendar days touched by the half-open interval [start, end)."""
+    if end <= start:
+        return []
+    first_day = start.astimezone(TZ).date()
+    last_day = (end.astimezone(TZ) - timedelta(microseconds=1)).date()
+    result: list[date] = []
+    current = first_day
+    while current <= last_day:
+        result.append(current)
+        current += timedelta(days=1)
+    return result
+
+
+def ensure_range_partitions(
+    conn: psycopg.Connection,
+    start: datetime,
+    end: datetime,
+) -> list[date]:
+    """Create/check every required daily partition exactly once per sync run."""
+    days = partition_days(start, end)
+    for day in days:
+        ensure_partition(conn, day)
+    conn.commit()
+    return days
+
+
+def ensure_stage_table(conn: psycopg.Connection) -> None:
+    """Create one session-local COPY staging table reused by all chunks."""
     with conn.cursor() as cur:
-        for row in rows:
-            event_time = row.timestamp.replace(tzinfo=TZ) if row.timestamp.tzinfo is None else row.timestamp
-            plate = normalize_plate(row.plate)
-            row_hash = source_hash(row)
-            ensure_partition(conn, event_time.date())
-            cur.execute(
-                """
-                INSERT INTO gps_points (
-                    device_no, plate, normalized_plate, event_time,
-                    latitude, longitude, position, speed_kmh, distance_km,
-                    address, event_type, driver, pause_duration,
-                    idling_duration, ignition_duration, region_name, source_hash
-                ) VALUES (
-                    %s,%s,%s,%s,%s,%s,
-                    ST_SetSRID(ST_MakePoint(%s,%s),4326)::geography,
-                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s
-                )
-                ON CONFLICT (source_hash, event_time) DO NOTHING
-                RETURNING 1
-                """,
-                (
-                    row.device_no or "", row.plate, plate, event_time,
-                    row.latitude, row.longitude, row.longitude, row.latitude,
-                    row.speed, row.distance, row.address, row.event_type,
-                    row.driver, row.pause_duration, row.idling_duration,
-                    row.ignition_duration, row.region_name, row_hash,
-                ),
-            )
-            result = cur.fetchone()
-            if result:
-                inserted += 1
-                affected.add((plate, event_time.date()))
-            elif row.region_name:
-                cur.execute(
-                    """
-                    UPDATE gps_points
-                    SET region_name = %s
-                    WHERE source_hash = %s
-                      AND event_time = %s
-                      AND COALESCE(region_name, '') = ''
-                    """,
-                    (row.region_name, row_hash, event_time),
-                )
+        cur.execute(
+            f"""
+            CREATE TEMP TABLE IF NOT EXISTS {STAGE_TABLE} (
+                device_no TEXT NOT NULL,
+                plate TEXT NOT NULL,
+                normalized_plate TEXT NOT NULL,
+                event_time TIMESTAMPTZ NOT NULL,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                speed_kmh DOUBLE PRECISION,
+                distance_km DOUBLE PRECISION,
+                address TEXT,
+                event_type TEXT,
+                driver TEXT,
+                pause_duration TEXT,
+                idling_duration TEXT,
+                ignition_duration TEXT,
+                region_name TEXT,
+                source_hash TEXT NOT NULL
+            ) ON COMMIT PRESERVE ROWS
+            """
+        )
+    conn.commit()
 
-            cur.execute(
-                """
-                INSERT INTO vehicles (
-                    device_no, plate, normalized_plate, driver, group_name,
-                    first_seen_at, last_seen_at
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s)
-                ON CONFLICT (device_no) DO UPDATE SET
-                    plate=EXCLUDED.plate,
-                    normalized_plate=EXCLUDED.normalized_plate,
-                    driver=EXCLUDED.driver,
-                    group_name=EXCLUDED.group_name,
-                    last_seen_at=GREATEST(vehicles.last_seen_at, EXCLUDED.last_seen_at),
-                    updated_at=now()
-                """,
-                (row.device_no or None, row.plate, plate, row.driver, group_name, event_time, event_time),
-            )
 
-        for plate, day in affected:
-            cur.execute(
-                """
-                INSERT INTO recalculation_queue (normalized_plate, day, reason)
-                VALUES (%s,%s,'new_gps_data')
-                ON CONFLICT (normalized_plate, day) DO UPDATE SET
-                    reason=EXCLUDED.reason,
-                    created_at=now(),
-                    completed_at=NULL
-                """,
-                (plate, day),
+def _event_time(row) -> datetime:
+    return row.timestamp.replace(tzinfo=TZ) if row.timestamp.tzinfo is None else row.timestamp
+
+
+def prepare_stage_rows(rows: Sequence[object]) -> list[tuple[object, ...]]:
+    prepared: list[tuple[object, ...]] = []
+    for row in rows:
+        prepared.append(
+            (
+                row.device_no or "",
+                row.plate,
+                normalize_plate(row.plate),
+                _event_time(row),
+                row.latitude,
+                row.longitude,
+                row.speed,
+                row.distance,
+                row.address,
+                row.event_type,
+                row.driver,
+                row.pause_duration,
+                row.idling_duration,
+                row.ignition_duration,
+                row.region_name,
+                source_hash(row),
             )
+        )
+    return prepared
+
+
+def _copy_stage_rows(cur: psycopg.Cursor, prepared: Iterable[tuple[object, ...]]) -> None:
+    cur.execute(f"TRUNCATE {STAGE_TABLE}")
+    with cur.copy(
+        f"""
+        COPY {STAGE_TABLE} (
+            device_no, plate, normalized_plate, event_time,
+            latitude, longitude, speed_kmh, distance_km,
+            address, event_type, driver, pause_duration,
+            idling_duration, ignition_duration, region_name, source_hash
+        ) FROM STDIN
+        """
+    ) as copy:
+        for values in prepared:
+            copy.write_row(values)
+
+
+def _insert_gps_and_queue(cur: psycopg.Cursor) -> tuple[int, set[tuple[str, date]]]:
+    cur.execute(
+        f"""
+        WITH inserted AS (
+            INSERT INTO gps_points (
+                device_no, plate, normalized_plate, event_time,
+                latitude, longitude, position, speed_kmh, distance_km,
+                address, event_type, driver, pause_duration,
+                idling_duration, ignition_duration, region_name, source_hash
+            )
+            SELECT
+                device_no,
+                plate,
+                normalized_plate,
+                event_time,
+                latitude,
+                longitude,
+                ST_SetSRID(ST_MakePoint(longitude, latitude),4326)::geography,
+                speed_kmh,
+                distance_km,
+                address,
+                event_type,
+                driver,
+                pause_duration,
+                idling_duration,
+                ignition_duration,
+                region_name,
+                source_hash
+            FROM {STAGE_TABLE}
+            ON CONFLICT (source_hash, event_time) DO NOTHING
+            RETURNING normalized_plate, event_time
+        ),
+        queued AS (
+            INSERT INTO recalculation_queue (
+                normalized_plate, day, reason
+            )
+            SELECT DISTINCT
+                normalized_plate,
+                (event_time AT TIME ZONE 'Europe/Istanbul')::date,
+                'new_gps_data'
+            FROM inserted
+            ON CONFLICT (normalized_plate, day) DO UPDATE SET
+                reason=EXCLUDED.reason,
+                created_at=now(),
+                completed_at=NULL
+            RETURNING normalized_plate, day
+        )
+        SELECT
+            (SELECT COUNT(*) FROM inserted) AS inserted_count,
+            COALESCE(
+                array_agg(normalized_plate || '|' || day::text)
+                    FILTER (WHERE normalized_plate IS NOT NULL),
+                ARRAY[]::text[]
+            ) AS affected
+        FROM queued
+        """
+    )
+    inserted_count, affected_values = cur.fetchone()
+    affected: set[tuple[str, date]] = set()
+    for value in affected_values or []:
+        plate, day_text = value.rsplit("|", 1)
+        affected.add((plate, date.fromisoformat(day_text)))
+    return int(inserted_count or 0), affected
+
+
+def _update_missing_regions(cur: psycopg.Cursor) -> int:
+    cur.execute(
+        f"""
+        UPDATE gps_points AS gps
+        SET region_name = stage.region_name
+        FROM (
+            SELECT DISTINCT ON (source_hash, event_time)
+                source_hash,
+                event_time,
+                region_name
+            FROM {STAGE_TABLE}
+            WHERE COALESCE(region_name, '') <> ''
+            ORDER BY source_hash, event_time, region_name DESC
+        ) AS stage
+        WHERE gps.source_hash = stage.source_hash
+          AND gps.event_time = stage.event_time
+          AND COALESCE(gps.region_name, '') = ''
+        """
+    )
+    return int(cur.rowcount or 0)
+
+
+def _upsert_vehicles(cur: psycopg.Cursor, group_name: str) -> int:
+    cur.execute(
+        f"""
+        WITH ranked AS (
+            SELECT
+                device_no,
+                plate,
+                normalized_plate,
+                driver,
+                MIN(event_time) OVER (PARTITION BY device_no) AS first_seen_at,
+                MAX(event_time) OVER (PARTITION BY device_no) AS last_seen_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY device_no
+                    ORDER BY event_time DESC, normalized_plate, plate
+                ) AS row_number
+            FROM {STAGE_TABLE}
+            WHERE COALESCE(device_no, '') <> ''
+        )
+        INSERT INTO vehicles (
+            device_no, plate, normalized_plate, driver, group_name,
+            first_seen_at, last_seen_at
+        )
+        SELECT
+            device_no,
+            plate,
+            normalized_plate,
+            driver,
+            %s,
+            first_seen_at,
+            last_seen_at
+        FROM ranked
+        WHERE row_number = 1
+        ON CONFLICT (device_no) DO UPDATE SET
+            plate=EXCLUDED.plate,
+            normalized_plate=EXCLUDED.normalized_plate,
+            driver=EXCLUDED.driver,
+            group_name=EXCLUDED.group_name,
+            first_seen_at=LEAST(
+                COALESCE(vehicles.first_seen_at, EXCLUDED.first_seen_at),
+                EXCLUDED.first_seen_at
+            ),
+            last_seen_at=GREATEST(
+                COALESCE(vehicles.last_seen_at, EXCLUDED.last_seen_at),
+                EXCLUDED.last_seen_at
+            ),
+            updated_at=now()
+        """,
+        (group_name,),
+    )
+    return int(cur.rowcount or 0)
+
+
+def insert_rows(
+    conn: psycopg.Connection,
+    rows: Sequence[object],
+    group_name: str,
+) -> tuple[int, set[tuple[str, date]]]:
+    """Bulk-load one API chunk without per-row SQL or partition DDL."""
+    if not rows:
+        return 0, set()
+
+    prepared = prepare_stage_rows(rows)
+    with conn.cursor() as cur:
+        _copy_stage_rows(cur, prepared)
+        inserted, affected = _insert_gps_and_queue(cur)
+        _update_missing_regions(cur)
+        _upsert_vehicles(cur, group_name)
     return inserted, affected
 
 
@@ -191,6 +372,13 @@ def sync_range(start: datetime, end: datetime) -> None:
     totals = {'chunks': 0, 'success': 0, 'received': 0, 'inserted': 0}
     with psycopg.connect(database_url) as conn, requests.Session() as session:
         ensure_schema(conn)
+        ensured_days = ensure_range_partitions(conn, start, end)
+        ensure_stage_table(conn)
+        print(
+            "Prepared GPS partitions: "
+            + ", ".join(day.isoformat() for day in ensured_days),
+            flush=True,
+        )
         session.headers.update(HEADERS)
         run_id = create_run(conn, start, end, group)
         conn.commit()
@@ -221,7 +409,11 @@ def sync_range(start: datetime, end: datetime) -> None:
                             (run_id, current, chunk_end, len(rows), inserted, time.monotonic() - started),
                         )
                     conn.commit()
-                    print(f"{current:%Y-%m-%d %H:%M}–{chunk_end:%H:%M}: received={len(rows)} inserted={inserted}", flush=True)
+                    print(
+                        f"{current:%Y-%m-%d %H:%M}–{chunk_end:%H:%M}: "
+                        f"received={len(rows)} inserted={inserted}",
+                        flush=True,
+                    )
                 except Exception as exc:
                     conn.rollback()
                     with conn.cursor() as cur:
