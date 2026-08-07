@@ -42,11 +42,11 @@ def check_partition_planning() -> None:
     assert connection.commits == 1
 
 
-def check_stage_preparation() -> None:
-    row = SimpleNamespace(
+def sample_row(timestamp: datetime) -> SimpleNamespace:
+    return SimpleNamespace(
         device_no="123",
         plate="33 BEK 663",
-        timestamp=datetime(2026, 7, 3, 12, 30),
+        timestamp=timestamp,
         latitude=36.1234567,
         longitude=33.7654321,
         speed=42.0,
@@ -59,6 +59,10 @@ def check_stage_preparation() -> None:
         ignition_duration=None,
         region_name="Akkuyu",
     )
+
+
+def check_stage_preparation() -> None:
+    row = sample_row(datetime(2026, 7, 3, 12, 30))
     prepared = sync.prepare_stage_rows([row])
     assert len(prepared) == 1
     values = prepared[0]
@@ -66,6 +70,22 @@ def check_stage_preparation() -> None:
     assert values[2] == "33BEK663"
     assert values[3].tzinfo is not None
     assert values[-1] == sync.source_hash(row)
+
+
+def check_half_open_chunk_filter() -> None:
+    start = datetime(2026, 7, 4, 22, 0, tzinfo=sync.TZ)
+    finish = datetime(2026, 7, 5, 0, 0, tzinfo=sync.TZ)
+    rows = [
+        sample_row(datetime(2026, 7, 4, 21, 59, 59)),
+        sample_row(datetime(2026, 7, 4, 22, 0, 0)),
+        sample_row(datetime(2026, 7, 4, 23, 59, 59)),
+        sample_row(datetime(2026, 7, 5, 0, 0, 0)),
+    ]
+    filtered = sync.filter_rows_to_half_open_interval(rows, start, finish)
+    assert [sync._event_time(row) for row in filtered] == [
+        datetime(2026, 7, 4, 22, 0, 0, tzinfo=sync.TZ),
+        datetime(2026, 7, 4, 23, 59, 59, tzinfo=sync.TZ),
+    ]
 
 
 def check_no_per_row_sql_or_ddl() -> None:
@@ -86,16 +106,18 @@ def check_no_per_row_sql_or_ddl() -> None:
 
     range_source = inspect.getsource(sync.sync_range)
     assert "ensure_range_partitions" in range_source
+    assert "filter_rows_to_half_open_interval" in range_source
     assert range_source.index("ensure_range_partitions") < range_source.index("while current < end")
 
 
 def main() -> int:
     check_partition_planning()
     check_stage_preparation()
+    check_half_open_chunk_filter()
     check_no_per_row_sql_or_ddl()
     print(
-        "OK: GPS sync prepares partitions once per range and uses COPY/batch SQL "
-        "for GPS, queue, regions and vehicles"
+        "OK: GPS sync prepares partitions once per range, enforces half-open "
+        "chunk boundaries and uses COPY/batch SQL for GPS, queue, regions and vehicles"
     )
     return 0
 
