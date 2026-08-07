@@ -56,6 +56,7 @@ RUN bash -n \
         /app/roster_management_portal.py \
         /app/speed_threshold_defaults.py \
         /app/sync_arvento_gps_to_postgres.py \
+        /app/verify_arvento_sync_batching.py \
         /app/verify_consolidated_export_layout.py \
         /app/verify_consolidated_mileage_logic.py \
         /app/verify_consolidated_performance.py \
@@ -63,6 +64,7 @@ RUN bash -n \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
     && python /app/verify_left_turn_runtime.py \
     && python /app/verify_kpp_preview.py \
+    && python /app/verify_arvento_sync_batching.py \
     && python /app/verify_consolidated_time_logic.py \
     && python /app/verify_consolidated_mileage_logic.py \
     && python /app/verify_consolidated_performance.py \
