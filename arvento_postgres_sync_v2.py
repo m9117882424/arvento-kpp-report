@@ -138,6 +138,20 @@ def _event_time(row) -> datetime:
     return row.timestamp.replace(tzinfo=TZ) if row.timestamp.tzinfo is None else row.timestamp
 
 
+def filter_rows_to_half_open_interval(
+    rows: Sequence[object],
+    start: datetime,
+    end: datetime,
+) -> list[object]:
+    """Keep only rows belonging to [start, end).
+
+    Arvento may include a point exactly at EndDate. Without this guard the final
+    chunk of a day can try to insert 00:00:00 of the following day into a
+    partition that intentionally was not prepared for the requested day.
+    """
+    return [row for row in rows if start <= _event_time(row) < end]
+
+
 def prepare_stage_rows(rows: Sequence[object]) -> list[tuple[object, ...]]:
     prepared: list[tuple[object, ...]] = []
     for row in rows:
@@ -395,7 +409,9 @@ def sync_range(start: datetime, end: datetime) -> None:
                     )
                     params["chkRegion"] = "1"
                     response = fetch_chunk(session, params, timeout, retries)
-                    rows = parse_rows(response.text)
+                    parsed_rows = parse_rows(response.text)
+                    rows = filter_rows_to_half_open_interval(parsed_rows, current, chunk_end)
+                    dropped_out_of_interval = len(parsed_rows) - len(rows)
                     inserted, _ = insert_rows(conn, rows, group)
                     totals['received'] += len(rows)
                     totals['inserted'] += inserted
@@ -409,9 +425,14 @@ def sync_range(start: datetime, end: datetime) -> None:
                             (run_id, current, chunk_end, len(rows), inserted, time.monotonic() - started),
                         )
                     conn.commit()
+                    suffix = (
+                        f" dropped_out_of_interval={dropped_out_of_interval}"
+                        if dropped_out_of_interval
+                        else ""
+                    )
                     print(
                         f"{current:%Y-%m-%d %H:%M}–{chunk_end:%H:%M}: "
-                        f"received={len(rows)} inserted={inserted}",
+                        f"received={len(rows)} inserted={inserted}{suffix}",
                         flush=True,
                     )
                 except Exception as exc:
