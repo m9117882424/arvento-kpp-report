@@ -85,8 +85,18 @@ REQUIRED_SUPPORT_MODULES = {
     "portal_entrypoint.py": (
         "import consolidated_portal as portal",
         "from portal_runtime_patch import apply_runtime_patch",
+        "from fleet_dashboard_api import apply_fleet_dashboard_api",
         "apply_runtime_patch()",
+        "apply_fleet_dashboard_api(portal.app, portal.implementation.db_url)",
         "app = portal.app",
+    ),
+    "fleet_dashboard_api.py": (
+        "FLEET_API_TOKEN",
+        '"/api/v1/fleet/dashboard"',
+        '"/api/v1/fleet/vehicles/{plate}"',
+        "consolidated_report_cache",
+        "public.fuel_events",
+        "apply_fleet_dashboard_api",
     ),
     "regional_speed_report.py": (
         "detect_regional_speed_violations",
@@ -173,6 +183,7 @@ OPERATIONAL_EXPECTATIONS = {
         "sync_arvento_gps_to_postgres.py",
         "verify_repository.py",
         "verify_runtime.py",
+        "verify_fleet_dashboard_api.py",
     ),
     "docker-compose.server.yml": (
         "name: arvento_report",
@@ -186,6 +197,15 @@ OPERATIONAL_EXPECTATIONS = {
         '"kpp": APP_DIR / "generate_first_entry_report.py"',
         '"efficiency": APP_DIR / "generate_kpp_summary_report.py"',
         '"violation": APP_DIR / "generate_prohibited_left_turn_report.py"',
+    ),
+    "deploy/nginx/arvento-report.conf.example": (
+        "location ^~ /api/v1/fleet/",
+        "auth_basic off;",
+    ),
+    ".env.server.example": (
+        "FLEET_API_TOKEN=",
+        "FLEET_API_MAX_PERIOD_DAYS=93",
+        "FLEET_API_STATEMENT_TIMEOUT_MS=15000",
     ),
     "geozones.json": (
         '"name": "Площадка АЭС АККУЮ"',

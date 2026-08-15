@@ -15,6 +15,7 @@ from consolidated_export_portal_patch import apply_consolidated_export_portal
 from consolidated_time_logic import apply_consolidated_date_preview
 from database_status_patch import apply_database_status_patch
 from extended_roster_fields import apply_extended_roster_fields
+from fleet_dashboard_api import apply_fleet_dashboard_api
 from fuel_enriched_consolidated_report import generate_multi_roster_report
 from kpp_preview_format import apply_kpp_preview_format
 from mileage_review_policy import apply_mileage_review_ui
@@ -44,6 +45,7 @@ apply_database_status_patch(
     portal.implementation.db_url,
     portal.implementation.TZ,
 )
+apply_fleet_dashboard_api(portal.app, portal.implementation.db_url)
 app = portal.app
 
 __all__ = ["app"]
