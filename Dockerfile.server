@@ -50,6 +50,7 @@ RUN bash -n \
         /app/consolidated_performance.py \
         /app/consolidated_time_logic.py \
         /app/extended_roster_fields.py \
+        /app/fleet_dashboard_api.py \
         /app/mileage_review_policy.py \
         /app/parse_arvento_general_report.py \
         /app/responsible_roster_fields.py \
@@ -60,6 +61,7 @@ RUN bash -n \
         /app/verify_consolidated_export_layout.py \
         /app/verify_consolidated_mileage_logic.py \
         /app/verify_consolidated_performance.py \
+        /app/verify_fleet_dashboard_api.py \
         /app/verify_mileage_review_policy.py \
     && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
     && python /app/verify_left_turn_runtime.py \
@@ -70,6 +72,7 @@ RUN bash -n \
     && python /app/verify_consolidated_performance.py \
     && python /app/verify_central_roster_reports.py \
     && python /app/verify_consolidated_export_layout.py \
+    && python /app/verify_fleet_dashboard_api.py \
     && python /app/verify_mileage_review_policy.py \
     && python /app/verify_speed_threshold_defaults.py
 

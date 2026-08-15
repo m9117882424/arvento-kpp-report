@@ -145,6 +145,8 @@ report-portal:   127.0.0.1:18084
 
 Пример reverse proxy с HTTPS и Basic Auth находится в `deploy/nginx/arvento-report.conf.example`. Порты 18083/18084 не требуется открывать в UFW.
 
+Защищённый JSON API для внешней панели легкового автопарка объединяет готовые показатели Arvento с топливом Fuel Monitor без формирования Excel. Контракт, переменные окружения и настройка отдельного Nginx path описаны в [`docs/fleet-dashboard-api.md`](docs/fleet-dashboard-api.md).
+
 ## Канонические исполняемые файлы
 
 - `sync_arvento_gps_to_postgres.py` — загрузка GPS в PostgreSQL/PostGIS;
