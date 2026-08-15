@@ -92,6 +92,7 @@ REQUIRED_SUPPORT_MODULES = {
     ),
     "fleet_dashboard_api.py": (
         "FLEET_API_TOKEN",
+        "FLEET_API_TOKEN_SHA256",
         '"/api/v1/fleet/dashboard"',
         '"/api/v1/fleet/vehicles/{plate}"',
         "consolidated_report_cache",
@@ -204,6 +205,7 @@ OPERATIONAL_EXPECTATIONS = {
     ),
     ".env.server.example": (
         "FLEET_API_TOKEN=",
+        "FLEET_API_TOKEN_SHA256=",
         "FLEET_API_MAX_PERIOD_DAYS=93",
         "FLEET_API_STATEMENT_TIMEOUT_MS=15000",
     ),

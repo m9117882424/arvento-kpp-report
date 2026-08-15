@@ -2,6 +2,7 @@
 """Deterministic checks for the fleet dashboard API contract."""
 from __future__ import annotations
 
+import hashlib
 import os
 from datetime import date, datetime, timedelta
 
@@ -10,6 +11,7 @@ from fastapi import FastAPI
 from fleet_dashboard_api import (
     apply_fleet_dashboard_api,
     authorization_matches,
+    authorization_matches_sha256,
     classify_vehicle_status,
     merge_dashboard_payload,
     validate_period,
@@ -28,6 +30,23 @@ def check_authorization_and_period() -> None:
     expect(not authorization_matches("Basic top-secret", "top-secret"), "Basic must be rejected")
     expect(not authorization_matches("Bearer wrong", "top-secret"), "wrong token must be rejected")
     expect(not authorization_matches(None, "top-secret"), "missing header must be rejected")
+    digest = hashlib.sha256(b"top-secret").hexdigest()
+    expect(
+        authorization_matches_sha256("Bearer top-secret", digest),
+        "Bearer token must match its SHA-256 digest",
+    )
+    expect(
+        authorization_matches_sha256("bearer top-secret", digest.upper()),
+        "SHA-256 digest matching is case-insensitive",
+    )
+    expect(
+        not authorization_matches_sha256("Bearer wrong", digest),
+        "wrong token digest must be rejected",
+    )
+    expect(
+        not authorization_matches_sha256("Bearer top-secret", "not-a-digest"),
+        "invalid configured digest must be rejected",
+    )
 
     previous = os.environ.pop("FLEET_API_MAX_PERIOD_DAYS", None)
     try:

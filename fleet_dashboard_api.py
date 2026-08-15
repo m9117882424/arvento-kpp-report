@@ -7,6 +7,7 @@ tracks or generating Excel workbooks on dashboard requests.
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import secrets
@@ -81,11 +82,33 @@ def authorization_matches(authorization: str | None, expected_token: str) -> boo
     )
 
 
+def authorization_matches_sha256(
+    authorization: str | None,
+    expected_sha256: str,
+) -> bool:
+    """Compare a Bearer token with a configured SHA-256 digest."""
+    if not authorization:
+        return False
+    scheme, separator, supplied = authorization.partition(" ")
+    digest = expected_sha256.strip().lower()
+    valid_digest = len(digest) == 64 and all(
+        character in "0123456789abcdef" for character in digest
+    )
+    if not separator or scheme.lower() != "bearer" or not supplied or not valid_digest:
+        return False
+    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+    return secrets.compare_digest(supplied_digest, digest)
+
+
 def require_fleet_token(authorization: str | None = Header(default=None)) -> None:
     expected = os.environ.get("FLEET_API_TOKEN", "").strip()
-    if not expected:
+    expected_sha256 = os.environ.get("FLEET_API_TOKEN_SHA256", "").strip()
+    if not expected and not expected_sha256:
         raise HTTPException(status_code=503, detail="Fleet API is not configured")
-    if not authorization_matches(authorization, expected):
+    if not (
+        authorization_matches(authorization, expected)
+        or authorization_matches_sha256(authorization, expected_sha256)
+    ):
         raise HTTPException(
             status_code=401,
             detail="Invalid fleet API token",
@@ -880,6 +903,7 @@ def apply_fleet_dashboard_api(
 __all__ = [
     "apply_fleet_dashboard_api",
     "authorization_matches",
+    "authorization_matches_sha256",
     "classify_vehicle_status",
     "load_arvento_snapshot",
     "load_fuel_events",
