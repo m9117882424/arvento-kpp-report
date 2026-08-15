@@ -20,17 +20,19 @@ API не запускает синхронизацию Arvento, не перес�
 
 ## Защита
 
-Каждый endpoint требует заголовок `Authorization: Bearer <token>`. Секрет задаётся только в production `.env`:
+Каждый endpoint требует заголовок `Authorization: Bearer <token>`. Рекомендуемый production-вариант хранит в `.env` только SHA-256 токена, а сам токен — только в server secret Sites:
 
 ```bash
-openssl rand -hex 32
+FLEET_TOKEN="$(openssl rand -hex 32)"
+printf '%s' "$FLEET_TOKEN" | sha256sum
 ```
 
 ```env
-FLEET_API_TOKEN=<отдельный случайный секрет>
+FLEET_API_TOKEN=
+FLEET_API_TOKEN_SHA256=<64-символьный SHA-256>
 ```
 
-При пустом `FLEET_API_TOKEN` API отвечает `503`. Токен нельзя добавлять в Git, JavaScript браузера или публичные переменные сайта. Внешний Sites-проект должен вызывать API только из серверного route/function и хранить токен в server secret.
+`FLEET_API_TOKEN` остаётся совместимым вариантом для миграции, но в production предпочтителен `FLEET_API_TOKEN_SHA256`: при проверке хэш присланного Bearer-токена сравнивается через `secrets.compare_digest`. Если обе настройки пусты, API отвечает `503`. Токен нельзя добавлять в Git, JavaScript браузера или публичные переменные сайта. Внешний Sites-проект должен вызывать API только из server-side route/function и хранить исходный токен в server secret.
 
 Ответы получают `Cache-Control: private, no-store`, поскольку содержат актуальные координаты автомобилей. CORS намеренно не включён.
 
@@ -72,6 +74,7 @@ GET /api/v1/fleet/vehicles/01ABC123?date_from=2026-08-01&date_to=2026-08-15
 
 ```env
 FLEET_API_TOKEN=
+FLEET_API_TOKEN_SHA256=
 FLEET_API_MAX_PERIOD_DAYS=93
 FLEET_API_STATEMENT_TIMEOUT_MS=15000
 FLEET_API_OFFLINE_MINUTES=180
@@ -107,7 +110,7 @@ sudo systemctl reload nginx
 
 ## Развёртывание и проверка
 
-В production `.env` заполнить `FLEET_API_TOKEN`, затем пересобрать только портал:
+В production `.env` заполнить `FLEET_API_TOKEN_SHA256` (или временно `FLEET_API_TOKEN` для обратной совместимости), затем пересобрать только портал:
 
 ```bash
 cd /opt/arvento_report
