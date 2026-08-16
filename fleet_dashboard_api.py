@@ -13,12 +13,14 @@ import os
 import secrets
 from collections import defaultdict
 from datetime import date, datetime, time, timedelta
-from typing import Any, Callable, Mapping, Sequence
+from typing import Annotated, Any, Callable, Literal, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import psycopg
 import psycopg.rows
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Response
+from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ConfigDict, Field
 
 from roster_registry import normalize_plate
 
@@ -30,6 +32,201 @@ DEFAULT_OFFLINE_MINUTES = 180
 DEFAULT_MOVING_SPEED_KMH = 3.0
 
 DatabaseUrlFactory = Callable[[], str]
+DateValue = date
+
+FLEET_API_TAG = "Fleet API"
+FLEET_API_TAG_DESCRIPTION = """
+Read-only API управленческой панели легкового автопарка.
+
+Пробег, работа, нарушения и последнее положение берутся из подготовленных
+данных Arvento. Литры, стоимость и топливные операции поступают из Fuel Monitor
+и сопоставляются по нормализованному госномеру.
+
+Все методы требуют Bearer-токен и запрещают кэширование ответа. Период
+включительный и по умолчанию ограничен 93 календарными днями.
+""".strip()
+
+FLEET_BEARER = HTTPBearer(
+    auto_error=False,
+    scheme_name="FleetBearerAuth",
+    bearerFormat="opaque token",
+    description=(
+        "Исходный Fleet API token. В Swagger нажмите Authorize и вставьте "
+        "только токен — префикс Bearer будет добавлен автоматически."
+    ),
+)
+
+
+class ApiErrorResponse(BaseModel):
+    """Standard FastAPI error envelope."""
+
+    detail: str = Field(description="Человекочитаемая причина ошибки")
+
+    model_config = ConfigDict(
+        json_schema_extra={"example": {"detail": "Invalid fleet API token"}}
+    )
+
+
+class FleetHealthResponse(BaseModel):
+    ok: bool = Field(description="API зарегистрирован и готов принимать запросы")
+    app: str = Field(description="Название API")
+    fuel_configured: bool = Field(
+        description="Настроено ли read-only подключение к Fuel Monitor"
+    )
+    time: datetime = Field(description="Текущее серверное время Europe/Istanbul")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "ok": True,
+                "app": "Arvento fleet dashboard API",
+                "fuel_configured": True,
+                "time": "2026-08-16T00:08:21+03:00",
+            }
+        }
+    )
+
+
+class FleetMeta(BaseModel):
+    date_from: date = Field(description="Начало включительного периода")
+    date_to: date = Field(description="Конец включительного периода")
+    generated_at: datetime = Field(description="Время формирования ответа")
+    timezone: str = Field(description="Часовой пояс расчётов")
+    cache_complete: bool = Field(description="Готов ли кэш за каждый день периода")
+    cache_success_days: int = Field(description="Количество успешно рассчитанных дней")
+    cache_expected_days: int = Field(description="Ожидаемое количество дней")
+    cache_refreshed_at: datetime | None = Field(
+        description="Последнее обновление суточного кэша"
+    )
+    fuel_status: Literal["ok", "unavailable", "unconfigured"] = Field(
+        description="Состояние контура Fuel Monitor"
+    )
+    fuel_latest_event_at: datetime | None = Field(
+        description="Время последней топливной операции в периоде"
+    )
+    cached_fuel_liters: float = Field(
+        description="Литры из кэша Arvento для контроля качества"
+    )
+    live_vs_cached_fuel_difference_liters: float | None = Field(
+        description="Разница live Fuel Monitor и кэшированных литров"
+    )
+    unmatched_fuel_liters: float = Field(
+        description="Литры операций с несопоставленными госномерами"
+    )
+    unmatched_fuel_transactions: int = Field(
+        description="Количество несопоставленных топливных операций"
+    )
+
+
+class FleetSummary(BaseModel):
+    vehicles_total: int = Field(description="Всего автомобилей")
+    moving: int = Field(description="Автомобили в движении")
+    parked: int = Field(description="Автомобили на стоянке")
+    offline: int = Field(description="Автомобили без актуальной телеметрии")
+    vehicles_without_mileage: int = Field(description="Автомобили без пробега в периоде")
+    total_mileage_km: float = Field(description="Общий пробег, км")
+    inside_km: float = Field(description="Пробег внутри площадки, км")
+    outside_km: float = Field(description="Пробег вне площадки, км")
+    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+    max_speed_kmh: float | None = Field(description="Максимальная скорость, км/ч")
+    boundary_violations: int = Field(description="Нарушения границы площадки")
+    personal_use_days: int = Field(description="Дни с признаками личного использования")
+    weekend_work_days: int = Field(description="Дни работы в выходные")
+    night_work_days: int = Field(description="Дни работы ночью")
+    average_mileage_km: float = Field(description="Средний пробег на автомобиль, км")
+    fuel_liters: float | None = Field(description="Сопоставленное топливо, л")
+    fuel_amount_try: float | None = Field(description="Стоимость топлива, TRY")
+    liters_per_100km: float | None = Field(description="Расход, л/100 км")
+
+
+class FleetDailyRow(BaseModel):
+    date: DateValue = Field(description="Календарная дата")
+    mileage_km: float = Field(description="Пробег автопарка, км")
+    fuel_liters: float | None = Field(description="Сопоставленное топливо, л")
+    fuel_amount_try: float | None = Field(description="Стоимость топлива, TRY")
+    liters_per_100km: float | None = Field(description="Расход, л/100 км")
+
+
+class FuelSourceSummary(BaseModel):
+    source: str = Field(description="Источник операции, например SHELL или TURPAK")
+    liters: float = Field(description="Объём топлива, л")
+    amount_try: float = Field(description="Стоимость, TRY")
+    transaction_count: int = Field(description="Количество операций")
+
+
+class FleetVehicle(BaseModel):
+    normalized_plate: str = Field(description="Госномер без пробелов и разделителей")
+    plate: str = Field(description="Отображаемый госномер")
+    driver: str = Field(description="Закреплённый или последний водитель")
+    company: str = Field(description="Компания или подразделение")
+    group_name: str = Field(description="Группа Arvento")
+    grade: str = Field(description="Категория автомобиля")
+    mileage_km: float = Field(description="Пробег за период, км")
+    inside_km: float = Field(description="Пробег внутри площадки, км")
+    outside_km: float = Field(description="Пробег вне площадки, км")
+    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+    max_speed_kmh: float | None = Field(description="Максимальная скорость, км/ч")
+    boundary_violations: int = Field(description="Количество нарушений границы")
+    personal_use_days: int = Field(description="Дни личного использования")
+    weekend_work_days: int = Field(description="Дни работы в выходные")
+    night_work_days: int = Field(description="Дни ночной работы")
+    fuel_liters: float | None = Field(description="Сопоставленное топливо, л")
+    fuel_amount_try: float | None = Field(description="Стоимость топлива, TRY")
+    fuel_transactions: int | None = Field(description="Количество топливных операций")
+    liters_per_100km: float | None = Field(description="Расход, л/100 км")
+    fuel_sources: list[FuelSourceSummary] = Field(description="Топливо по источникам")
+    status: Literal["moving", "parked", "offline"] = Field(
+        description="Оперативное состояние автомобиля"
+    )
+    last_seen_at: datetime | None = Field(description="Время последнего пакета телеметрии")
+    data_age_minutes: float | None = Field(description="Возраст телеметрии, мин")
+    speed_kmh: float = Field(description="Скорость в последнем пакете, км/ч")
+    latitude: float | None = Field(description="Последняя широта")
+    longitude: float | None = Field(description="Последняя долгота")
+
+
+class FleetDashboardResponse(BaseModel):
+    meta: FleetMeta
+    summary: FleetSummary
+    daily: list[FleetDailyRow]
+    fuel_by_source: list[FuelSourceSummary]
+    vehicles: list[FleetVehicle]
+
+
+class FleetVehicleDailyRow(FleetDailyRow):
+    inside_km: float = Field(description="Пробег внутри площадки, км")
+    outside_km: float = Field(description="Пробег вне площадки, км")
+    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+
+
+class FleetFuelEvent(BaseModel):
+    event_at: datetime | None = Field(description="Дата и время операции")
+    plate: str | None = Field(description="Госномер в Fuel Monitor")
+    source: str | None = Field(description="Источник операции")
+    fuel_type: str | None = Field(description="Нормализованный вид топлива")
+    liters: float = Field(description="Объём топлива, л")
+    amount_try: float = Field(description="Стоимость, TRY")
+    station_name: str | None = Field(description="Название АЗС")
+    station_city: str | None = Field(description="Город АЗС")
+
+
+class FleetVehicleDetailResponse(BaseModel):
+    meta: FleetMeta
+    vehicle: FleetVehicle
+    daily: list[FleetVehicleDailyRow]
+    fuel_events: list[FleetFuelEvent]
+
+
+COMMON_AUTH_RESPONSES: dict[int | str, dict[str, Any]] = {
+    401: {
+        "model": ApiErrorResponse,
+        "description": "Bearer-токен отсутствует или не прошёл проверку",
+    },
+    503: {
+        "model": ApiErrorResponse,
+        "description": "API не настроен или источник данных временно недоступен",
+    },
+}
 
 
 def _integer_setting(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -100,7 +297,17 @@ def authorization_matches_sha256(
     return secrets.compare_digest(supplied_digest, digest)
 
 
-def require_fleet_token(authorization: str | None = Header(default=None)) -> None:
+def require_fleet_token(
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Security(FLEET_BEARER),
+    ] = None,
+) -> None:
+    authorization = (
+        f"{credentials.scheme} {credentials.credentials}"
+        if credentials is not None
+        else None
+    )
     expected = os.environ.get("FLEET_API_TOKEN", "").strip()
     expected_sha256 = os.environ.get("FLEET_API_TOKEN_SHA256", "").strip()
     if not expected and not expected_sha256:
@@ -822,10 +1029,30 @@ def apply_fleet_dashboard_api(
     if getattr(app.state, "fleet_dashboard_api_applied", False):
         return
 
+    existing_tags = list(app.openapi_tags or [])
+    if not any(tag.get("name") == FLEET_API_TAG for tag in existing_tags):
+        existing_tags.append(
+            {"name": FLEET_API_TAG, "description": FLEET_API_TAG_DESCRIPTION}
+        )
+        app.openapi_tags = existing_tags
+
     dependencies = [Depends(require_fleet_token), Depends(prevent_fleet_caching)]
 
-    @app.get("/api/v1/fleet/health", dependencies=dependencies)
-    def fleet_health() -> dict[str, Any]:
+    @app.get(
+        "/api/v1/fleet/health",
+        dependencies=dependencies,
+        tags=[FLEET_API_TAG],
+        summary="Проверить готовность Fleet API",
+        description=(
+            "Проверяет регистрацию защищённого API и показывает, настроен ли "
+            "контур Fuel Monitor. Запрос не обращается к базам данных."
+        ),
+        response_description="API готов принимать защищённые запросы",
+        response_model=FleetHealthResponse,
+        responses=COMMON_AUTH_RESPONSES,
+        operation_id="fleet_health",
+    )
+    def fleet_health() -> FleetHealthResponse:
         return {
             "ok": True,
             "app": "Arvento fleet dashboard API",
@@ -833,11 +1060,39 @@ def apply_fleet_dashboard_api(
             "time": datetime.now(TZ).isoformat(),
         }
 
-    @app.get("/api/v1/fleet/dashboard", dependencies=dependencies)
+    @app.get(
+        "/api/v1/fleet/dashboard",
+        dependencies=dependencies,
+        tags=[FLEET_API_TAG],
+        summary="Получить сводную панель автопарка",
+        description=(
+            "Возвращает сводные показатели, дневную динамику и список автомобилей "
+            "за включительный период. Данные Arvento дополняются сопоставленными "
+            "операциями Fuel Monitor."
+        ),
+        response_description="Сводные показатели и автомобили за выбранный период",
+        response_model=FleetDashboardResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            400: {
+                "model": ApiErrorResponse,
+                "description": "Некорректный или слишком длинный период",
+            },
+        },
+        operation_id="fleet_dashboard",
+    )
     def fleet_dashboard(
-        date_from: date = Query(...),
-        date_to: date = Query(...),
-    ) -> dict[str, Any]:
+        date_from: date = Query(
+            ...,
+            description="Начальная дата включительно",
+            examples=["2026-08-01"],
+        ),
+        date_to: date = Query(
+            ...,
+            description="Конечная дата включительно",
+            examples=["2026-08-15"],
+        ),
+    ) -> FleetDashboardResponse:
         try:
             validate_period(date_from, date_to)
         except ValueError as exc:
@@ -856,12 +1111,50 @@ def apply_fleet_dashboard_api(
             fuel = _degraded_fuel_snapshot("unavailable")
         return merge_dashboard_payload(arvento, fuel, date_from, date_to)
 
-    @app.get("/api/v1/fleet/vehicles/{plate}", dependencies=dependencies)
+    @app.get(
+        "/api/v1/fleet/vehicles/{plate}",
+        dependencies=dependencies,
+        tags=[FLEET_API_TAG],
+        summary="Получить карточку автомобиля",
+        description=(
+            "Возвращает показатели выбранного автомобиля, дневную динамику и до "
+            "500 последних топливных операций за включительный период. Госномер "
+            "можно передавать с пробелами или без них."
+        ),
+        response_description="Карточка автомобиля и топливные операции",
+        response_model=FleetVehicleDetailResponse,
+        responses={
+            **COMMON_AUTH_RESPONSES,
+            400: {
+                "model": ApiErrorResponse,
+                "description": "Некорректный госномер или период",
+            },
+            404: {
+                "model": ApiErrorResponse,
+                "description": "Автомобиль не найден",
+            },
+        },
+        operation_id="fleet_vehicle_detail",
+    )
     def fleet_vehicle_detail(
-        plate: str,
-        date_from: date = Query(...),
-        date_to: date = Query(...),
-    ) -> dict[str, Any]:
+        plate: str = Path(
+            ...,
+            min_length=1,
+            max_length=32,
+            description="Госномер автомобиля",
+            examples=["01ABC123"],
+        ),
+        date_from: date = Query(
+            ...,
+            description="Начальная дата включительно",
+            examples=["2026-08-01"],
+        ),
+        date_to: date = Query(
+            ...,
+            description="Конечная дата включительно",
+            examples=["2026-08-15"],
+        ),
+    ) -> FleetVehicleDetailResponse:
         try:
             validate_period(date_from, date_to)
         except ValueError as exc:
@@ -902,9 +1195,13 @@ def apply_fleet_dashboard_api(
 
 __all__ = [
     "apply_fleet_dashboard_api",
+    "ApiErrorResponse",
     "authorization_matches",
     "authorization_matches_sha256",
     "classify_vehicle_status",
+    "FleetDashboardResponse",
+    "FleetHealthResponse",
+    "FleetVehicleDetailResponse",
     "load_arvento_snapshot",
     "load_fuel_events",
     "load_fuel_snapshot",
