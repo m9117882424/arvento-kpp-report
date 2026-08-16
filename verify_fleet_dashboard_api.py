@@ -9,6 +9,8 @@ from datetime import date, datetime, timedelta
 from fastapi import FastAPI
 
 from fleet_dashboard_api import (
+    FleetDashboardResponse,
+    FleetVehicleDetailResponse,
     apply_fleet_dashboard_api,
     authorization_matches,
     authorization_matches_sha256,
@@ -238,6 +240,7 @@ def check_merge_and_detail() -> None:
         date(2026, 8, 15),
         now=now,
     )
+    FleetDashboardResponse.model_validate(dashboard)
     summary = dashboard["summary"]
     expect(summary["vehicles_total"] == 2, "vehicle count")
     expect(summary["moving"] == 1 and summary["parked"] == 1, "live status counts")
@@ -288,6 +291,7 @@ def check_merge_and_detail() -> None:
         date(2026, 8, 15),
     )
     expect(detail is not None, "vehicle detail exists")
+    FleetVehicleDetailResponse.model_validate(detail)
     expect(detail["vehicle"]["fuel_liters"] == 15.0, "vehicle fuel total")
     expect(detail["daily"][0]["mileage_km"] == 100.0, "daily mileage")
     expect(detail["fuel_events"][0]["fuel_type"] == "DIESEL", "fuel event contract")
@@ -317,6 +321,39 @@ def check_route_registration() -> None:
         "/api/v1/fleet/vehicles/{plate}",
     ):
         expect(paths.count(expected) == 1, f"route must be registered once: {expected}")
+
+    schema = app.openapi()
+    security_scheme = schema["components"]["securitySchemes"]["FleetBearerAuth"]
+    expect(security_scheme["type"] == "http", "Swagger must expose HTTP auth")
+    expect(security_scheme["scheme"] == "bearer", "Swagger must expose Bearer auth")
+    expect(
+        any(tag["name"] == "Fleet API" for tag in schema.get("tags", [])),
+        "Fleet routes must have a documented OpenAPI tag",
+    )
+
+    expected_models = {
+        "/api/v1/fleet/health": "FleetHealthResponse",
+        "/api/v1/fleet/dashboard": "FleetDashboardResponse",
+        "/api/v1/fleet/vehicles/{plate}": "FleetVehicleDetailResponse",
+    }
+    for path, model_name in expected_models.items():
+        operation = schema["paths"][path]["get"]
+        expect(operation.get("summary"), f"Swagger summary missing: {path}")
+        expect(operation.get("description"), f"Swagger description missing: {path}")
+        expect(operation.get("tags") == ["Fleet API"], f"Swagger tag mismatch: {path}")
+        expect(
+            operation.get("security") == [{"FleetBearerAuth": []}],
+            f"Bearer security missing: {path}",
+        )
+        response_schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+        expect(
+            response_schema.get("$ref", "").endswith(f"/{model_name}"),
+            f"response model mismatch: {path}",
+        )
+
+    dashboard_parameters = schema["paths"]["/api/v1/fleet/dashboard"]["get"]["parameters"]
+    parameter_names = {parameter["name"] for parameter in dashboard_parameters}
+    expect(parameter_names == {"date_from", "date_to"}, "dashboard period parameters")
 
 
 def main() -> int:
