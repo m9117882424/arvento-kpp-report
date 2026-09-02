@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 import psycopg
+import psycopg.rows
 from fastapi import FastAPI
 
 
@@ -51,7 +52,9 @@ def run_migrations(
 ) -> list[str]:
     """Apply pending SQL files under one PostgreSQL advisory transaction lock."""
     applied_now: list[str] = []
-    with connection.cursor() as cursor:
+    # Callers may use dict_row (the cache reader does). Migration metadata is
+    # positional by design, so isolate the runner from the connection default.
+    with connection.cursor(row_factory=psycopg.rows.tuple_row) as cursor:
         cursor.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (LOCK_NAME,))
         cursor.execute(
             """
