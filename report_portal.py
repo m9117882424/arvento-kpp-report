@@ -15,8 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import psycopg
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
-from fastapi.concurrency import run_in_threadpool
+from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import HTMLResponse
 from openpyxl import load_workbook
 
@@ -193,6 +192,15 @@ function renderTable(columns, rows) {
   const body = `<tbody>${rows.map(row => `<tr>${row.map(value => `<td>${esc(value)}</td>`).join('')}</tr>`).join('')}</tbody>`;
   table.innerHTML = head + body;
 }
+async function readResponsePayload(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch (_) {
+    return {detail: text};
+  }
+}
 form.addEventListener('submit', async event => {
   event.preventDefault();
   excelBase64 = '';
@@ -207,7 +215,7 @@ form.addEventListener('submit', async event => {
   if (!data.has('consider_previous_exits')) data.append('consider_previous_exits', 'false');
   try {
     const response = await fetch('/api/generate', {method: 'POST', body: data});
-    const payload = await response.json();
+    const payload = await readResponsePayload(response);
     if (!response.ok) throw new Error(payload.detail || 'Ошибка формирования отчёта');
     excelBase64 = payload.excel_base64 || '';
     excelFilename = payload.filename;

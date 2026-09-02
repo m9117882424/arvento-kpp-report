@@ -32,6 +32,19 @@ def migration_checksum(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _validate_applied_migration(
+    version: str,
+    filename: str,
+    checksum: str,
+    existing: tuple[str, str] | None,
+) -> bool:
+    if existing is None:
+        return False
+    if existing != (filename, checksum):
+        raise RuntimeError(f"Применённая миграция {version} была изменена: {filename}")
+    return True
+
+
 def run_migrations(
     connection: psycopg.Connection,
     folder: Path = MIGRATIONS_DIR,
@@ -60,21 +73,45 @@ def run_migrations(
             version = path.name.split("_", 1)[0]
             checksum = migration_checksum(path)
             existing = applied.get(version)
-            if existing is not None:
-                if existing != (path.name, checksum):
-                    raise RuntimeError(
-                        f"Применённая миграция {version} была изменена: {path.name}"
-                    )
+            if _validate_applied_migration(version, path.name, checksum, existing):
                 continue
 
-            cursor.execute(path.read_text(encoding="utf-8"))
+            # Claim the version before executing its SQL. ON CONFLICT is a
+            # second line of defence if several application processes start
+            # together or a caller enters with an older transaction snapshot.
             cursor.execute(
                 """
                 INSERT INTO schema_migrations(version, filename, checksum_sha256)
                 VALUES (%s,%s,%s)
+                ON CONFLICT (version) DO NOTHING
+                RETURNING version
                 """,
                 (version, path.name, checksum),
             )
+            claimed = cursor.fetchone()
+            if claimed is None:
+                cursor.execute(
+                    """
+                    SELECT filename, checksum_sha256
+                    FROM schema_migrations
+                    WHERE version=%s
+                    """,
+                    (version,),
+                )
+                concurrent = cursor.fetchone()
+                if concurrent is None:
+                    raise RuntimeError(
+                        f"Не удалось зарегистрировать миграцию {version}: {path.name}"
+                    )
+                _validate_applied_migration(
+                    version,
+                    path.name,
+                    checksum,
+                    (str(concurrent[0]), str(concurrent[1])),
+                )
+                continue
+
+            cursor.execute(path.read_text(encoding="utf-8"))
             applied_now.append(path.name)
     return applied_now
 
@@ -100,6 +137,7 @@ __all__ = [
     "MIGRATIONS_DIR",
     "discover_migrations",
     "migration_checksum",
+    "_validate_applied_migration",
     "register_database_migrations",
     "run_migrations",
 ]
