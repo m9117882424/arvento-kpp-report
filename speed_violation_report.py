@@ -20,15 +20,21 @@ from typing import Any, Sequence
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
+
+from business_rules import (
+    DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+    DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+    MAX_ACCELERATION_MPS2,
+    MIN_SPEED_EVENT_DURATION_SECONDS,
+)
 
 from arvento_analysis import EVENT_COOLDOWN_SECONDS, crossing_fraction, near_gate, side
 from arvento_io import Point
-from geozone_registry import Registry
+from geozone_registry import Registry, suppress_speed_in_exclusions
 
 SITE_SPEED_LIMIT_KMH = 30.0
 OUTSIDE_SPEED_LIMIT_KMH = 95.0
-DEFAULT_SITE_SPEED_THRESHOLD_KMH = 33.0
-DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH = 104.5
 MIN_SITE_THRESHOLD_KMH = 5.0
 MAX_SITE_THRESHOLD_KMH = 200.0
 MIN_OUTSIDE_THRESHOLD_KMH = 20.0
@@ -37,9 +43,7 @@ MAX_VALID_GPS_SPEED_KMH = 250.0
 
 # Anti-spike validation. A valid event must be sustained and smooth.
 MIN_SPEED_EVENT_POINTS = 3
-MIN_SPEED_EVENT_DURATION_SECONDS = 10
 MAX_SPEED_EVENT_GAP_SECONDS = 5 * 60
-MAX_ACCELERATION_MPS2 = 5.0
 MAX_LOCAL_SPEED_DEVIATION_KMH = 25.0
 
 TURN_SHEET_NAME = "Запрещённый поворот"
@@ -242,6 +246,7 @@ def detect_speed_violations(
         site_threshold_kmh,
         outside_threshold_kmh,
     )
+    track = suppress_speed_in_exclusions(track, registry)
     site_violations: list[SpeedViolation] = []
     outside_violations: list[SpeedViolation] = []
     active: dict[str, Any] | None = None
@@ -508,4 +513,4 @@ def append_speed_sheets(
         settings.append(["Нарушений скорости на площадке", len(site_violations)])
         settings.append(["Нарушений скорости вне площадки", len(outside_violations)])
 
-    workbook.save(workbook_path)
+    save_report_workbook(workbook, workbook_path)

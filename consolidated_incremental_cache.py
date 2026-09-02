@@ -20,10 +20,13 @@ from zoneinfo import ZoneInfo
 import psycopg
 
 from arvento_io import Point
+from cache_freshness import load_source_watermark
+from business_rules import CONSOLIDATED_CALCULATION_VERSION
 from consolidated_cache import ensure_schema
 from fuel_enriched_consolidated_report import load_fuel_totals
 import consolidated_report as core
 from consolidated_multi_report import has_night_site_mileage, load_rosters, select_roster
+from geozone_registry import suppress_speed_in_exclusions
 from roster_registry import normalize_plate
 
 TZ = ZoneInfo("Europe/Istanbul")
@@ -172,7 +175,7 @@ def calculate_incremental_rows(
     registry = core.load_registry(core.DEFAULT_GEOZONES)
     site_zone = core.find_site_boundary(registry)
     site_polygon = list(site_zone.points or [])
-    route_polygon = core.load_kml_polygon(core.DEFAULT_ROUTE_KML)
+    route_polygon = registry.route_polygon or core.load_kml_polygon(core.DEFAULT_ROUTE_KML)
 
     fuel_database_url = os.environ.get("FUEL_DATABASE_URL", "").strip()
     fuel_totals = load_fuel_totals(fuel_database_url, report_day, report_day)
@@ -180,10 +183,11 @@ def calculate_incremental_rows(
     rows: list[IncrementalCacheRow] = []
     for display_plate, points in iter_database_tracks(database_url, report_day, plates):
         roster = select_roster(rosters, report_day)
+        analysis_points = suppress_speed_in_exclusions(points, registry)
         item = core.analyze_track(
             report_day,
             display_plate,
-            points,
+            analysis_points,
             roster.vehicles,
             site_polygon,
             route_polygon,
@@ -192,7 +196,9 @@ def calculate_incremental_rows(
             continue
         item = replace(
             item,
-            night_work=int(has_night_site_mileage(report_day, points, site_polygon)),
+            night_work=int(
+                has_night_site_mileage(report_day, analysis_points, site_polygon)
+            ),
         )
         normalized = normalize_plate(display_plate)
         rows.append(
@@ -366,28 +372,44 @@ def upsert_incremental_rows(
                 )
                 day_row_count = int(cursor.fetchone()[0])
 
-                start_at = datetime.combine(report_day, time.min, tzinfo=TZ)
-                finish_at = start_at + timedelta(days=1)
-                cursor.execute(
-                    "SELECT MAX(event_time) FROM gps_points WHERE event_time >= %s AND event_time < %s",
-                    (start_at, finish_at),
-                )
-                gps_max = cursor.fetchone()[0]
+                watermark = load_source_watermark(cursor, report_day)
+                status = "SUCCESS" if day_row_count else "EMPTY"
 
                 cursor.execute(
                     """
                     INSERT INTO consolidated_cache_days(
                         report_day, status, row_count, gps_max_event_time,
+                        gps_max_received_at, distance_max_fetched_at,
+                        roster_loaded_at, calculation_version,
+                        geofence_updated_at, source_vehicle_count,
                         refresh_run_id, refreshed_at
-                    ) VALUES (%s,'SUCCESS',%s,%s,%s,now())
+                    ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
                     ON CONFLICT (report_day) DO UPDATE SET
-                        status='SUCCESS',
+                        status=EXCLUDED.status,
                         row_count=EXCLUDED.row_count,
                         gps_max_event_time=EXCLUDED.gps_max_event_time,
+                        gps_max_received_at=EXCLUDED.gps_max_received_at,
+                        distance_max_fetched_at=EXCLUDED.distance_max_fetched_at,
+                        roster_loaded_at=EXCLUDED.roster_loaded_at,
+                        geofence_updated_at=EXCLUDED.geofence_updated_at,
+                        calculation_version=EXCLUDED.calculation_version,
+                        source_vehicle_count=EXCLUDED.source_vehicle_count,
                         refresh_run_id=EXCLUDED.refresh_run_id,
                         refreshed_at=now()
                     """,
-                    (report_day, day_row_count, gps_max, run_id),
+                    (
+                        report_day,
+                        status,
+                        day_row_count,
+                        watermark.gps_max_event_time,
+                        watermark.gps_max_received_at,
+                        watermark.distance_max_fetched_at,
+                        watermark.roster_loaded_at,
+                        CONSOLIDATED_CALCULATION_VERSION,
+                        watermark.geofence_updated_at,
+                        watermark.source_vehicle_count,
+                        run_id,
+                    ),
                 )
                 cursor.execute(
                     """

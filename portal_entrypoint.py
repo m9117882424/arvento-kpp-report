@@ -14,6 +14,7 @@ from consolidated_cache_portal import apply_cache_portal
 from consolidated_export_portal_patch import apply_consolidated_export_portal
 from consolidated_time_logic import apply_consolidated_date_preview
 from database_status_patch import apply_database_status_patch
+from database_migrations import register_database_migrations
 from extended_roster_fields import apply_extended_roster_fields
 from fleet_dashboard_api import apply_fleet_dashboard_api
 from fuel_enriched_consolidated_report import generate_multi_roster_report
@@ -21,6 +22,7 @@ from kpp_preview_format import apply_kpp_preview_format
 from mileage_review_policy import apply_mileage_review_ui
 from portal_runtime_patch import apply_runtime_patch
 from responsible_roster_fields import apply_responsible_roster_fields
+from download_store import apply_download_routes
 from roster_management_portal import apply_roster_management_portal
 
 # The consolidated report builder is resolved from the portal module at request time.
@@ -46,6 +48,8 @@ apply_database_status_patch(
     portal.implementation.TZ,
 )
 apply_fleet_dashboard_api(portal.app, portal.implementation.db_url)
+apply_download_routes(portal.app)
 app = portal.app
+register_database_migrations(app, portal.implementation.db_url)
 
 __all__ = ["app"]

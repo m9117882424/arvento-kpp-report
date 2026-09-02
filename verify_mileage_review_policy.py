@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from openpyxl import Workbook, load_workbook
 
 from arvento_io import Point
+from consolidated_export_layout import finalize_consolidated_workbook
 from mileage_review_policy import (
     MileageReviewCandidate,
     REVIEW_HEADER,
@@ -89,6 +90,9 @@ def check_workbook_annotation() -> None:
         workbook.save(output_path)
         workbook.close()
 
+        # Production finalization first removes internal sheets; mileage review
+        # must then restore exactly the second user-facing sheet.
+        finalize_consolidated_workbook(output_path, {})
         stats = annotate_mileage_review_workbook(
             output_path,
             {(REPORT_DAY, "34PKY310"): candidate},
@@ -98,7 +102,7 @@ def check_workbook_annotation() -> None:
 
         result = load_workbook(output_path, read_only=True, data_only=True)
         try:
-            assert REVIEW_SHEET in result.sheetnames, result.sheetnames
+            assert result.sheetnames == ["Сводный отчет", REVIEW_SHEET], result.sheetnames
             report = result["Сводный отчет"]
             headers = [str(cell.value or "") for cell in report[1]]
             review_column = headers.index(REVIEW_HEADER) + 1

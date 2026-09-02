@@ -109,9 +109,13 @@ REQUIRED_SUPPORT_MODULES = {
         "_round_speed_sheet",
     ),
     "sitecustomize.py": (
-        "_install_speed_exclusions",
-        "_install_excel_rounding",
+        "Intentionally empty",
+        "must not depend on Python startup hooks",
+    ),
+    "excel_formatting.py": (
+        "apply_one_decimal_metrics",
         "detect_header_row",
+        "save_report_workbook",
         'cell.number_format = "0.0"',
         'cell.number_format = "0.0%"',
     ),
@@ -167,6 +171,9 @@ REQUIRED_SUPPORT_MODULES = {
         'SITE_BOUNDARY_PURPOSE = "site_boundary"',
         "find_site_boundary",
         "point_in_zone",
+        "load_database_registry",
+        "suppress_speed_in_exclusions",
+        'source_mode = os.environ.get("GEOFENCE_SOURCE", "auto")',
     ),
     "verify_runtime.py": (
         "portal_entrypoint",

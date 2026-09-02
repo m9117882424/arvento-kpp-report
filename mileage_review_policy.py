@@ -21,6 +21,7 @@ import psycopg
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 import consolidated_mileage_logic as mileage
 import consolidated_report as core
@@ -592,7 +593,7 @@ def annotate_mileage_review_workbook(
                 cell.alignment = Alignment(vertical="center", wrap_text=True)
 
         sheet.auto_filter.ref = sheet.dimensions
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
         return {
             "candidates": len(candidates),
             "flagged_rows": flagged_rows,

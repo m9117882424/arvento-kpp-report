@@ -163,7 +163,7 @@ def sample_snapshots() -> tuple[dict, dict, datetime]:
                 "total_km": 0,
                 "inside_km": 0,
                 "outside_km": 0,
-                "worked_hours": 0,
+                "worked_hours": None,
                 "boundary_violation": 0,
                 "personal_use": 0,
                 "weekend_work": 0,
@@ -247,6 +247,10 @@ def check_merge_and_detail() -> None:
     expect(summary["total_mileage_km"] == 150.0, "Arvento mileage total")
     expect(summary["inside_km"] == 60.0 and summary["outside_km"] == 90.0, "mileage split")
     expect(summary["worked_hours"] == 8.0, "worked hours")
+    second_vehicle = next(
+        item for item in dashboard["vehicles"] if item["normalized_plate"] == "34XYZ987"
+    )
+    expect(second_vehicle["worked_hours"] is None, "unknown worked hours stay null")
     expect(summary["max_speed_kmh"] == 90.0, "maximum speed")
     expect(summary["boundary_violations"] == 1, "boundary violations")
     expect(summary["fuel_liters"] == 15.0, "matched Fuel Monitor liters")
@@ -295,6 +299,20 @@ def check_merge_and_detail() -> None:
     expect(detail["vehicle"]["fuel_liters"] == 15.0, "vehicle fuel total")
     expect(detail["daily"][0]["mileage_km"] == 100.0, "daily mileage")
     expect(detail["fuel_events"][0]["fuel_type"] == "DIESEL", "fuel event contract")
+    unknown_hours_detail = vehicle_detail_payload(
+        dashboard,
+        arvento,
+        fuel,
+        "34XYZ987",
+        [],
+        date(2026, 8, 14),
+        date(2026, 8, 15),
+    )
+    expect(unknown_hours_detail is not None, "second vehicle detail exists")
+    expect(
+        all(item["worked_hours"] is None for item in unknown_hours_detail["daily"]),
+        "unknown daily worked hours stay null",
+    )
     expect(
         vehicle_detail_payload(
             dashboard,

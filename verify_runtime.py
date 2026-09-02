@@ -14,6 +14,7 @@ from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from excel_formatting import save_report_workbook
 
 import consolidated_report
 from arvento_first_entry_report import ReportFilters
@@ -33,6 +34,7 @@ from geozone_registry import (
     load_registry,
     point_in_polygon,
     point_in_zone,
+    suppress_speed_in_exclusions,
 )
 from map_links import google_maps_url, parse_coordinate_pair
 from regional_speed_report import (
@@ -199,7 +201,7 @@ def check_regional_speed_runtime(registry, route_polygon) -> None:
     ) == "region"
 
     site, route, region = detect_regional_speed_violations(
-        track_at(site_lat, site_lon, 40, 42, 44),
+        track_at(site_lat, site_lon, 55, 57, 59),
         registry,
     )
     assert (len(site), len(route), len(region)) == (1, 0, 0)
@@ -244,7 +246,7 @@ def check_regional_speed_runtime(registry, route_polygon) -> None:
         row = consolidated_report.analyze_track(
             date(2026, 1, 1),
             "TEST",
-            consolidated_track,
+            suppress_speed_in_exclusions(consolidated_track, registry),
             {},
             list(find_site_boundary(registry).points or []),
             route_polygon,
@@ -261,7 +263,7 @@ def check_excel_rounding() -> None:
         sheet.append(["Показатель", "Широта", "Процент"])
         sheet.append([33.700001, 36.1234567, 0.32654])
         sheet["C2"].number_format = "0.000%"
-        workbook.save(path)
+        save_report_workbook(workbook, path)
         workbook.close()
 
         check = load_workbook(path, data_only=True)
@@ -404,7 +406,12 @@ def main() -> None:
     rosters = [roster_22, roster_24]
     assert select_roster(rosters, date(2026, 7, 24)) is roster_24
     assert select_roster(rosters, date(2026, 7, 23)) is roster_22
-    assert select_roster(rosters, date(2026, 7, 20)) is roster_22
+    try:
+        select_roster(rosters, date(2026, 7, 20))
+    except ValueError as exc:
+        assert "нет разнарядки с этой или более ранней датой" in str(exc)
+    else:
+        raise AssertionError("Будущая разнарядка не должна применяться назад")
 
     route_polygon = load_kml_polygon(Path(__file__).resolve().parent / "route_akkuyu_tasucu.kml")
     assert len(route_polygon) >= 3
@@ -468,7 +475,7 @@ def main() -> None:
     assert _event_is_smooth(points(40, 45, 50))
     assert not _event_is_smooth(points(40, 120, 42))
     assert not _event_is_smooth(points(40, 45))
-    assert not _event_is_smooth(points(40, 45, 50, seconds=4))
+    assert not _event_is_smooth(points(40, 45, 50, seconds=1))
 
     assert validate_speed_thresholds(33, 104.5) == (33.0, 104.5)
     try:

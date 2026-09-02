@@ -21,9 +21,12 @@ from typing import Iterable, Sequence
 
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from excel_formatting import save_report_workbook
 
 import consolidated_report as core
 from arvento_io import Point
+from roster_selection import select_effective_roster
+from geozone_registry import suppress_speed_in_exclusions
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,13 +67,7 @@ def load_rosters(paths: Iterable[Path]) -> list[DatedRoster]:
 
 
 def select_roster(rosters: list[DatedRoster], report_day: date) -> DatedRoster:
-    exact = [item for item in rosters if item.day == report_day]
-    if exact:
-        return exact[-1]
-    previous = [item for item in rosters if item.day <= report_day]
-    if previous:
-        return previous[-1]
-    return rosters[0]
+    return select_effective_roster(rosters, report_day, lambda item: item.day)
 
 
 def validate_period(start_day: date, end_day: date) -> None:
@@ -154,6 +151,7 @@ def annotate_roster_usage(
     output_path: Path,
     rosters: list[DatedRoster],
     selected_by_day: dict[date, DatedRoster],
+    registry: Any | None = None,
 ) -> None:
     workbook = load_workbook(output_path)
     try:
@@ -194,6 +192,12 @@ def annotate_roster_usage(
             ])
             parameters.cell(parameters.max_row, 1).number_format = "dd.mm.yyyy"
 
+        if registry is not None:
+            parameters.append([])
+            parameters.append(["Источник геозон", registry.source])
+            if registry.version_refs:
+                parameters.append(["Версии геозон", ", ".join(registry.version_refs)])
+
         diagnostics = workbook["Диагностика"]
         diagnostics.cell(1, 8).value = "Дата разнарядки"
         diagnostics.cell(1, 9).value = "Файл разнарядки"
@@ -217,7 +221,7 @@ def annotate_roster_usage(
         diagnostics.column_dimensions["H"].width = 18
         diagnostics.column_dimensions["I"].width = 42
 
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
     finally:
         workbook.close()
 
@@ -232,14 +236,14 @@ def generate_multi_roster_report(
     source_path: Path | None = None,
     route_kml: Path = core.DEFAULT_ROUTE_KML,
     geozones: Path = core.DEFAULT_GEOZONES,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     validate_period(start_day, end_day)
     rosters = load_rosters(roster_paths)
 
     registry = core.load_registry(geozones)
     site_zone = core.find_site_boundary(registry)
     site_polygon = list(site_zone.points or [])
-    route_polygon = core.load_kml_polygon(route_kml)
+    route_polygon = registry.route_polygon or core.load_kml_polygon(route_kml)
 
     if source_path is not None:
         if not source_path.exists():
@@ -258,16 +262,19 @@ def generate_multi_roster_report(
     for report_day, plate, points in tracks:
         roster = select_roster(rosters, report_day)
         selected_by_day[report_day] = roster
+        analysis_points = suppress_speed_in_exclusions(points, registry)
         item = core.analyze_track(
             report_day,
             plate,
-            points,
+            analysis_points,
             roster.vehicles,
             site_polygon,
             route_polygon,
         )
         if item is not None:
-            night_work = int(has_night_site_mileage(report_day, points, site_polygon))
+            night_work = int(
+                has_night_site_mileage(report_day, analysis_points, site_polygon)
+            )
             item = replace(item, night_work=night_work)
             rows.append(item)
         processed += 1
@@ -280,19 +287,21 @@ def generate_multi_roster_report(
         rows,
         rosters[0].path,
         rosters[0].day,
-        route_kml,
+        Path("PostGIS: ROUTE") if registry.route_polygon else route_kml,
         site_zone,
         start_day,
         end_day,
         source_description,
     )
-    annotate_roster_usage(output_path, rosters, selected_by_day)
+    annotate_roster_usage(output_path, rosters, selected_by_day, registry)
     return {
         "rows": len(rows),
         "processed_vehicle_days": processed,
         "missing_roster_rows": sum(not row.in_roster for row in rows),
         "rosters": len(rosters),
         "report_days": len(selected_by_day),
+        "geofence_source": registry.source,
+        "geofence_versions": len(registry.version_refs),
     }
 
 

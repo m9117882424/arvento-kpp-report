@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from openpyxl import load_workbook
+from excel_formatting import save_report_workbook
 
 from consolidated_report import DEFAULT_ROUTE_KML, load_kml_polygon
 from geozone_registry import Registry, find_site_boundary, point_in_polygon, point_in_zone
@@ -138,7 +139,7 @@ def detect_regional_speed_violations(
         site_threshold_kmh,
         outside_threshold_kmh,
     )
-    route_polygon = load_kml_polygon(route_kml)
+    route_polygon = registry.route_polygon or load_kml_polygon(route_kml)
     categories = classify_speed_categories(track, registry, route_polygon)
     result: dict[str, list[RegionalSpeedViolation]] = {
         "site": [],
@@ -334,6 +335,6 @@ def append_regional_speed_sheets(
             sheet.append(["Нарушений скорости на площадке", len(site_violations)])
             sheet.append(["Нарушений скорости Ташуджу - Аккую", len(route_violations)])
             sheet.append(["Нарушений скорости вне региона", len(region_violations)])
-        workbook.save(workbook_path)
+        save_report_workbook(workbook, workbook_path)
     finally:
         workbook.close()

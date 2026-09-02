@@ -16,6 +16,7 @@ import consolidated_portal as portal
 import extended_roster_fields as roster_store
 import portal_runtime_patch as runtime_patch
 from consolidated_cache import cache_complete, upsert_cache_from_workbook
+from roster_selection import missing_roster_message
 
 _BASE_REPORT_GENERATOR: Callable[..., dict[str, Any]] | None = None
 _ORIGINAL_CONSOLIDATED_GENERATOR = cache_portal._ORIGINAL_GENERATE
@@ -24,7 +25,7 @@ _PATCHED = False
 
 
 def _select_roster_day(database_url: str, target_day: date) -> date:
-    """Select exact, otherwise latest previous, otherwise earliest saved roster."""
+    """Select exact or latest previous roster; never use future data."""
     with psycopg.connect(database_url) as connection:
         roster_store.ensure_schema(connection)
         connection.commit()
@@ -33,20 +34,15 @@ def _select_roster_day(database_url: str, target_day: date) -> date:
                 """
                 SELECT roster_day
                 FROM consolidated_roster_snapshots
-                ORDER BY
-                    CASE WHEN roster_day <= %s THEN 0 ELSE 1 END,
-                    CASE WHEN roster_day <= %s THEN roster_day END DESC,
-                    CASE WHEN roster_day > %s THEN roster_day END ASC
+                WHERE roster_day <= %s
+                ORDER BY roster_day DESC
                 LIMIT 1
                 """,
-                (target_day, target_day, target_day),
+                (target_day,),
             )
             row = cursor.fetchone()
     if row is None:
-        raise ValueError(
-            "В центральной базе нет разнарядок. "
-            "Сначала загрузите файл на странице «Разнарядки»."
-        )
+        raise ValueError(missing_roster_message(target_day))
     return row[0]
 
 

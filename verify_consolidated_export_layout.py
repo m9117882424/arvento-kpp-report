@@ -110,7 +110,7 @@ def main() -> int:
             result.close()
 
     print(
-        "OK: consolidated download keeps one sheet, appends roster columns, "
+        "OK: base export removes service sheets, appends roster columns, "
         "and uses Birim sorumlusu rather than generic Sorumlu"
     )
     return 0

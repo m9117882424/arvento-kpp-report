@@ -27,6 +27,10 @@ import psycopg
 
 import consolidated_report as core
 from arvento_io import Point
+from business_rules import (
+    MILEAGE_REVIEW_ABSOLUTE_GAP_KM as HYBRID_ABSOLUTE_GAP_KM,
+    MILEAGE_REVIEW_RATIO as HYBRID_RATIO,
+)
 
 
 GPS_JITTER_RADIUS_M = max(
@@ -45,15 +49,6 @@ MAX_REASONABLE_COORDINATE_SPEED_KMH = max(
     1.0,
     float(os.environ.get("CONSOLIDATED_MAX_COORDINATE_SPEED_KMH", "180")),
 )
-HYBRID_ABSOLUTE_GAP_KM = max(
-    0.0,
-    float(os.environ.get("CONSOLIDATED_HYBRID_ABSOLUTE_GAP_KM", "10")),
-)
-HYBRID_RATIO = max(
-    1.0,
-    float(os.environ.get("CONSOLIDATED_HYBRID_RATIO", "1.20")),
-)
-
 _ORIGINAL_ITER_DATABASE_TRACKS = core.iter_database_tracks
 _PATCHED = False
 
