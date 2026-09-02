@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -27,6 +28,7 @@ app = ui.app
 
 MAX_ROSTER_FILES = 31
 MAX_TOTAL_ROSTER_BYTES = 100 * 1024 * 1024
+LOGGER = logging.getLogger(__name__)
 
 
 def replace_once(old: str, new: str, label: str) -> None:
@@ -271,6 +273,12 @@ async def api_generate_v3(
         raise
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        LOGGER.exception("Не удалось сформировать отчёт типа %s", report_type)
+        raise HTTPException(
+            status_code=500,
+            detail="Внутренняя ошибка формирования отчёта. Подробности сохранены в журнале.",
+        ) from exc
 
 
 __all__ = ["app"]

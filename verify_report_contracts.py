@@ -61,6 +61,8 @@ def check_routes() -> None:
     assert routes[("/api/generate", "POST")].deprecated is True
     assert routes[("/api/generate-v2", "POST")].deprecated is True
     assert routes[("/api/generate-v3", "POST")].deprecated is None
+    assert "readResponsePayload" in portal_entrypoint.portal.implementation.HTML
+    assert "return {detail: text};" in portal_entrypoint.portal.implementation.HTML
 
 
 def check_v1_delegation() -> None:
