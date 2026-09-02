@@ -22,6 +22,7 @@ from fastapi import Depends, FastAPI, HTTPException, Path, Query, Response, Secu
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field
 
+from cache_freshness import load_cache_coverage
 from roster_registry import normalize_plate
 
 
@@ -127,7 +128,9 @@ class FleetSummary(BaseModel):
     total_mileage_km: float = Field(description="Общий пробег, км")
     inside_km: float = Field(description="Пробег внутри площадки, км")
     outside_km: float = Field(description="Пробег вне площадки, км")
-    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+    worked_hours: float | None = Field(
+        description="Подтверждённое время работы, ч; null — невозможно определить"
+    )
     max_speed_kmh: float | None = Field(description="Максимальная скорость, км/ч")
     boundary_violations: int = Field(description="Нарушения границы площадки")
     personal_use_days: int = Field(description="Дни с признаками личного использования")
@@ -164,7 +167,9 @@ class FleetVehicle(BaseModel):
     mileage_km: float = Field(description="Пробег за период, км")
     inside_km: float = Field(description="Пробег внутри площадки, км")
     outside_km: float = Field(description="Пробег вне площадки, км")
-    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+    worked_hours: float | None = Field(
+        description="Подтверждённое время работы, ч; null — невозможно определить"
+    )
     max_speed_kmh: float | None = Field(description="Максимальная скорость, км/ч")
     boundary_violations: int = Field(description="Количество нарушений границы")
     personal_use_days: int = Field(description="Дни личного использования")
@@ -196,7 +201,9 @@ class FleetDashboardResponse(BaseModel):
 class FleetVehicleDailyRow(FleetDailyRow):
     inside_km: float = Field(description="Пробег внутри площадки, км")
     outside_km: float = Field(description="Пробег вне площадки, км")
-    worked_hours: float = Field(description="Подтверждённое время работы, ч")
+    worked_hours: float | None = Field(
+        description="Подтверждённое время работы, ч; null — невозможно определить"
+    )
 
 
 class FleetFuelEvent(BaseModel):
@@ -436,6 +443,7 @@ def load_arvento_snapshot(
             """,
             (start_day, end_day),
         ).fetchone()
+        coverage = load_cache_coverage(connection, start_day, end_day)
         current_rows = list(
             connection.execute(
                 """
@@ -472,13 +480,12 @@ def load_arvento_snapshot(
         )
 
     expected_days = (end_day - start_day).days + 1
-    success_days = _as_int((cache_row or {}).get("success_days"))
     return {
         "daily_rows": daily_rows,
         "current_rows": current_rows,
         "cache_refreshed_at": (cache_row or {}).get("refreshed_at"),
-        "cache_complete": success_days == expected_days,
-        "cache_success_days": success_days,
+        "cache_complete": coverage.complete,
+        "cache_success_days": coverage.ready_days,
         "cache_expected_days": expected_days,
     }
 
@@ -613,6 +620,7 @@ def merge_dashboard_payload(
                 "inside_km": 0.0,
                 "outside_km": 0.0,
                 "worked_hours": 0.0,
+                "worked_hours_known_days": 0,
                 "max_speed_kmh": None,
                 "boundary_violations": 0,
                 "personal_use_days": 0,
@@ -630,7 +638,10 @@ def merge_dashboard_payload(
         vehicle["mileage_km"] += total_km
         vehicle["inside_km"] += inside_km
         vehicle["outside_km"] += outside_km
-        vehicle["worked_hours"] += _as_float(row.get("worked_hours"))
+        worked_hours = row.get("worked_hours")
+        if worked_hours is not None:
+            vehicle["worked_hours"] += _as_float(worked_hours)
+            vehicle["worked_hours_known_days"] += 1
         speed = row.get("max_speed")
         if speed is not None:
             vehicle["max_speed_kmh"] = max(
@@ -662,6 +673,7 @@ def merge_dashboard_payload(
                 "inside_km": 0.0,
                 "outside_km": 0.0,
                 "worked_hours": 0.0,
+                "worked_hours_known_days": 0,
                 "max_speed_kmh": None,
                 "boundary_violations": 0,
                 "personal_use_days": 0,
@@ -762,13 +774,18 @@ def merge_dashboard_payload(
                 }
                 for source, values in sorted(fuel_bucket["sources"].items())
             ]
+        known_worked_days = int(vehicle.pop("worked_hours_known_days", 0))
         vehicle_rows.append(
             {
                 **vehicle,
                 "mileage_km": _rounded(mileage, 1),
                 "inside_km": _rounded(_as_float(vehicle["inside_km"]), 1),
                 "outside_km": _rounded(_as_float(vehicle["outside_km"]), 1),
-                "worked_hours": _rounded(_as_float(vehicle["worked_hours"]), 1),
+                "worked_hours": (
+                    _rounded(_as_float(vehicle["worked_hours"]), 1)
+                    if known_worked_days
+                    else None
+                ),
                 "max_speed_kmh": _rounded(vehicle.get("max_speed_kmh"), 1),
                 "fuel_liters": fuel_liters,
                 "fuel_amount_try": fuel_amount,
@@ -877,9 +894,13 @@ def merge_dashboard_payload(
                 1,
             ),
             "worked_hours": _rounded(
-                sum(_as_float(vehicle["worked_hours"]) for vehicle in vehicle_rows),
+                sum(
+                    _as_float(vehicle["worked_hours"])
+                    for vehicle in vehicle_rows
+                    if vehicle["worked_hours"] is not None
+                ),
                 1,
-            ),
+            ) if any(vehicle["worked_hours"] is not None for vehicle in vehicle_rows) else None,
             "max_speed_kmh": _rounded(fleet_max_speed, 1),
             "boundary_violations": sum(
                 _as_int(vehicle["boundary_violations"]) for vehicle in vehicle_rows
@@ -935,12 +956,12 @@ def vehicle_detail_payload(
     if vehicle is None:
         return None
 
-    arvento_by_day: defaultdict[date, dict[str, float]] = defaultdict(
+    arvento_by_day: defaultdict[date, dict[str, Any]] = defaultdict(
         lambda: {
             "mileage_km": 0.0,
             "inside_km": 0.0,
             "outside_km": 0.0,
-            "worked_hours": 0.0,
+            "worked_hours": None,
         }
     )
     for row in arvento.get("daily_rows", []):
@@ -951,7 +972,12 @@ def vehicle_detail_payload(
         arvento_by_day[report_day]["mileage_km"] += _as_float(row.get("total_km"))
         arvento_by_day[report_day]["inside_km"] += _as_float(row.get("inside_km"))
         arvento_by_day[report_day]["outside_km"] += _as_float(row.get("outside_km"))
-        arvento_by_day[report_day]["worked_hours"] += _as_float(row.get("worked_hours"))
+        worked_hours = row.get("worked_hours")
+        if worked_hours is not None:
+            current_hours = arvento_by_day[report_day]["worked_hours"]
+            arvento_by_day[report_day]["worked_hours"] = (
+                _as_float(current_hours) + _as_float(worked_hours)
+            )
 
     fuel_by_day: defaultdict[date, dict[str, float]] = defaultdict(
         lambda: {"liters": 0.0, "amount_try": 0.0}

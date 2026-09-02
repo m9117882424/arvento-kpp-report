@@ -19,6 +19,8 @@ from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
 )
+from download_store import materialize_download
+from generation_control import run_with_generation_slot
 
 implementation = ui.implementation
 app = ui.app
@@ -204,6 +206,8 @@ def generate_consolidated_web(
                 "Дней с данными": stats["report_days"],
                 "Автомобилей-дней": stats["rows"],
                 "Нет в разнарядке": stats["missing_roster_rows"],
+                "Источник геозон": stats["geofence_source"],
+                "Версий геозон": stats["geofence_versions"],
             },
             "log": "",
         }
@@ -225,40 +229,44 @@ async def api_generate_v3(
     outside_speed_threshold: str = Form(default=str(DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH)),
 ) -> dict[str, Any]:
     try:
-        if report_type != "consolidated":
-            return await current.api_generate_v2(
-                report_type=report_type,
-                report_date=report_date,
-                report_end_date=report_end_date,
-                roster=roster,
-                grade_from=grade_from,
-                grade_to=grade_to,
-                time_from=time_from,
-                time_to=time_to,
-                consider_previous_exits=consider_previous_exits,
-                site_speed_threshold=site_speed_threshold,
-                outside_speed_threshold=outside_speed_threshold,
+        async def generate_current() -> dict[str, Any]:
+            if report_type != "consolidated":
+                return await current.api_generate_v2(
+                    report_type=report_type,
+                    report_date=report_date,
+                    report_end_date=report_end_date,
+                    roster=roster,
+                    grade_from=grade_from,
+                    grade_to=grade_to,
+                    time_from=time_from,
+                    time_to=time_to,
+                    consider_previous_exits=consider_previous_exits,
+                    site_speed_threshold=site_speed_threshold,
+                    outside_speed_threshold=outside_speed_threshold,
+                )
+
+            start_day = implementation.parse_report_date(report_date)
+            end_day = (
+                implementation.parse_report_date(report_end_date)
+                if report_end_date.strip()
+                else start_day
+            )
+            if end_day < start_day:
+                raise ValueError("Дата окончания раньше даты начала")
+            if (end_day - start_day).days + 1 > implementation.MAX_REPORT_DAYS:
+                raise ValueError(
+                    f"Период сводного отчёта не должен превышать {implementation.MAX_REPORT_DAYS} дней"
+                )
+            uploads = await read_roster_uploads(rosters)
+            return await run_in_threadpool(
+                generate_consolidated_web,
+                start_day,
+                end_day,
+                uploads,
             )
 
-        start_day = implementation.parse_report_date(report_date)
-        end_day = (
-            implementation.parse_report_date(report_end_date)
-            if report_end_date.strip()
-            else start_day
-        )
-        if end_day < start_day:
-            raise ValueError("Дата окончания раньше даты начала")
-        if (end_day - start_day).days + 1 > implementation.MAX_REPORT_DAYS:
-            raise ValueError(
-                f"Период сводного отчёта не должен превышать {implementation.MAX_REPORT_DAYS} дней"
-            )
-        uploads = await read_roster_uploads(rosters)
-        return await run_in_threadpool(
-            generate_consolidated_web,
-            start_day,
-            end_day,
-            uploads,
-        )
+        result = await run_with_generation_slot(generate_current)
+        return materialize_download(result)
     except HTTPException:
         raise
     except (ValueError, RuntimeError) as exc:

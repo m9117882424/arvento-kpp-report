@@ -11,6 +11,13 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from operational_geofences import (
+    ALLOWED_TYPES,
+    POLYGON_TYPES,
+    ensure_geofence_schema,
+    seed_static_operational_geofences,
+)
+
 BASE_DIR = Path(__file__).resolve().parent
 DATABASE_URL = os.environ["DATABASE_URL"]
 GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
@@ -33,38 +40,12 @@ class GeofencePayload(BaseModel):
 
 
 def ensure_schema() -> None:
-    with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS geofences (
-                id BIGSERIAL PRIMARY KEY,
-                code TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                geofence_type TEXT NOT NULL,
-                is_active BOOLEAN NOT NULL DEFAULT TRUE,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
-            );
-
-            CREATE TABLE IF NOT EXISTS geofence_versions (
-                id BIGSERIAL PRIMARY KEY,
-                geofence_id BIGINT NOT NULL REFERENCES geofences(id) ON DELETE CASCADE,
-                version INTEGER NOT NULL,
-                geometry geometry(Geometry, 4326) NOT NULL,
-                valid_from TIMESTAMPTZ NOT NULL DEFAULT now(),
-                valid_to TIMESTAMPTZ,
-                comment TEXT,
-                created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-                UNIQUE (geofence_id, version)
-            );
-
-            CREATE INDEX IF NOT EXISTS ix_geofence_versions_geometry
-            ON geofence_versions USING GIST (geometry);
-
-            CREATE UNIQUE INDEX IF NOT EXISTS ux_geofence_versions_current
-            ON geofence_versions (geofence_id)
-            WHERE valid_to IS NULL;
-            """
+    with psycopg.connect(DATABASE_URL) as conn:
+        ensure_geofence_schema(conn)
+        seed_static_operational_geofences(
+            conn,
+            BASE_DIR / "geozones.json",
+            BASE_DIR / "route_akkuyu_tasucu.kml",
         )
         conn.commit()
 
@@ -130,7 +111,7 @@ def list_geofences() -> dict[str, Any]:
     return {"type": "FeatureCollection", "features": features}
 
 
-def validate_geometry(cur: psycopg.Cursor, geometry: dict[str, Any]) -> None:
+def validate_geometry(cur: psycopg.Cursor, geometry: dict[str, Any]) -> str:
     geojson = json.dumps(geometry)
     cur.execute(
         """
@@ -144,12 +125,45 @@ def validate_geometry(cur: psycopg.Cursor, geometry: dict[str, Any]) -> None:
         raise HTTPException(status_code=422, detail="Некорректная или пустая геометрия")
     if geometry_type not in {"POINT", "LINESTRING", "POLYGON", "MULTIPOLYGON"}:
         raise HTTPException(status_code=422, detail=f"Неподдерживаемый тип геометрии: {geometry_type}")
+    return geometry_type
+
+
+def validate_geofence_role(
+    cur: psycopg.Cursor,
+    payload: GeofencePayload,
+    geometry_type: str,
+    exclude_id: int | None = None,
+) -> str:
+    feature_type = payload.geofence_type.strip().upper()
+    if feature_type not in ALLOWED_TYPES:
+        raise HTTPException(status_code=422, detail=f"Неподдерживаемое назначение геозоны: {feature_type}")
+    if feature_type == "GATE" and geometry_type != "LINESTRING":
+        raise HTTPException(status_code=422, detail="Для КПП требуется линия")
+    if feature_type in POLYGON_TYPES and geometry_type not in {"POLYGON", "MULTIPOLYGON"}:
+        raise HTTPException(status_code=422, detail=f"Для типа {feature_type} требуется полигон")
+    if payload.is_active and feature_type in {"SITE", "ROUTE"}:
+        cur.execute(
+            """
+            SELECT id FROM geofences
+            WHERE is_active AND upper(geofence_type)=%s
+              AND (%s::bigint IS NULL OR id <> %s::bigint)
+            LIMIT 1
+            """,
+            (feature_type, exclude_id, exclude_id),
+        )
+        if cur.fetchone():
+            raise HTTPException(
+                status_code=409,
+                detail=f"Может быть только одна активная геозона типа {feature_type}",
+            )
+    return feature_type
 
 
 @app.post("/api/geofences", status_code=201)
 def create_geofence(payload: GeofencePayload) -> dict[str, Any]:
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
-        validate_geometry(cur, payload.geometry)
+        geometry_type = validate_geometry(cur, payload.geometry)
+        feature_type = validate_geofence_role(cur, payload, geometry_type)
         try:
             cur.execute(
                 """
@@ -157,7 +171,7 @@ def create_geofence(payload: GeofencePayload) -> dict[str, Any]:
                 VALUES(%s, %s, %s, %s)
                 RETURNING id
                 """,
-                (payload.code.strip(), payload.name.strip(), payload.geofence_type.strip().upper(), payload.is_active),
+                (payload.code.strip(), payload.name.strip(), feature_type, payload.is_active),
             )
             geofence_id = cur.fetchone()[0]
             cur.execute(
@@ -177,17 +191,18 @@ def create_geofence(payload: GeofencePayload) -> dict[str, Any]:
 @app.put("/api/geofences/{geofence_id}")
 def update_geofence(geofence_id: int, payload: GeofencePayload) -> dict[str, Any]:
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
-        validate_geometry(cur, payload.geometry)
+        geometry_type = validate_geometry(cur, payload.geometry)
         cur.execute("SELECT id FROM geofences WHERE id=%s FOR UPDATE", (geofence_id,))
         if not cur.fetchone():
             raise HTTPException(status_code=404, detail="Геозона не найдена")
+        feature_type = validate_geofence_role(cur, payload, geometry_type, geofence_id)
         cur.execute(
             """
             UPDATE geofences
             SET code=%s, name=%s, geofence_type=%s, is_active=%s, updated_at=now()
             WHERE id=%s
             """,
-            (payload.code.strip(), payload.name.strip(), payload.geofence_type.strip().upper(), payload.is_active, geofence_id),
+            (payload.code.strip(), payload.name.strip(), feature_type, payload.is_active, geofence_id),
         )
         cur.execute("UPDATE geofence_versions SET valid_to=now() WHERE geofence_id=%s AND valid_to IS NULL", (geofence_id,))
         cur.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM geofence_versions WHERE geofence_id=%s", (geofence_id,))

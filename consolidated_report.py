@@ -24,10 +24,28 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 from arvento_analysis import segment_distance
 from arvento_io import Point, load_points
-from geozone_registry import Geozone, find_site_boundary, load_registry, point_in_polygon
+from business_rules import (
+    ENTRY_EXIT_TIME_FROM,
+    ENTRY_EXIT_TIME_TO,
+    GEOFENCE_VIOLATION_KM,
+    NIGHT_END,
+    NIGHT_START,
+    MIN_SPEED_EVENT_DURATION_SECONDS,
+    PERSONAL_USE_DISTANCE_DIFF_KM,
+    PERSONAL_USE_PERCENT_DIFF,
+    TIMEZONE_NAME,
+)
+from geozone_registry import (
+    Geozone,
+    find_site_boundary,
+    load_registry,
+    point_in_polygon,
+    suppress_speed_in_exclusions,
+)
 from roster_registry import normalize_plate, parse_date_value
 from speed_violation_report import (
     MAX_SPEED_EVENT_GAP_SECONDS,
@@ -35,7 +53,7 @@ from speed_violation_report import (
     _event_is_smooth,
 )
 
-TZ = ZoneInfo("Europe/Istanbul")
+TZ = ZoneInfo(TIMEZONE_NAME)
 APP_DIR = Path(__file__).resolve().parent
 DEFAULT_ROUTE_KML = APP_DIR / "route_akkuyu_tasucu.kml"
 DEFAULT_GEOZONES = APP_DIR / "geozones.json"
@@ -43,13 +61,6 @@ DEFAULT_GEOZONES = APP_DIR / "geozones.json"
 MOVEMENT_SPEED_KMH = 3.0
 MOVEMENT_SEGMENT_KM = 0.02
 POSITION_OUTLIER_SPEED_KMH = 300.0
-GEOFENCE_VIOLATION_KM = 80.0
-PERSONAL_USE_DISTANCE_DIFF_KM = 10.0
-PERSONAL_USE_PERCENT_DIFF = 0.10
-ENTRY_EXIT_TIME_FROM = time(5, 0)
-ENTRY_EXIT_TIME_TO = time(23, 0)
-NIGHT_START = time(22, 0)
-NIGHT_END = time(5, 0)
 MAX_REPORT_DAYS = 31
 
 COMPANY_ALIASES = (
@@ -761,11 +772,19 @@ def save_report(
         ("Граница АЭС", site_zone.name),
         ("Полигон маршрута", str(route_path)),
         ("Максимально допустимая GPS-скорость", f"{MAX_VALID_GPS_SPEED_KMH:g} км/ч"),
-        ("Проверка максимальной скорости", "минимум 3 плавные точки и не менее 10 секунд; одиночные скачки исключаются"),
+        (
+            "Проверка максимальной скорости",
+            f"минимум 3 плавные точки и не менее {MIN_SPEED_EVENT_DURATION_SECONDS} секунд; "
+            "одиночные скачки исключаются",
+        ),
         ("Начало движения", f"скорость ≥ {MOVEMENT_SPEED_KMH:g} км/ч или сегмент ≥ {MOVEMENT_SEGMENT_KM:g} км"),
         ("Допустимое время Прибыл/Убыл", "05:00–23:00"),
         ("Нарушение геозоны", f"удаление от границы АЭС более {GEOFENCE_VIOLATION_KM:g} км"),
-        ("Личное использование", "внешний пробег больше внутреннего >10 км или >10 процентных пунктов"),
+        (
+            "Личное использование",
+            f"внешний пробег больше внутреннего >{PERSONAL_USE_DISTANCE_DIFF_KM:g} км "
+            f"или >{PERSONAL_USE_PERCENT_DIFF * 100:g} процентных пунктов",
+        ),
         ("Разница пробегов", "пробег вне площадки минус пробег внутри площадки"),
         ("Разница процентов", "процент вне площадки минус процент внутри площадки"),
         ("Работа ночью", "есть пробег внутри АЭС в интервале 22:00–05:00"),
@@ -784,7 +803,7 @@ def save_report(
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    workbook.save(output_path)
+    save_report_workbook(workbook, output_path)
 
 
 def parse_day(value: str) -> date:
@@ -829,7 +848,7 @@ def main() -> None:
     registry = load_registry(args.geozones)
     site_zone = find_site_boundary(registry)
     site_polygon = list(site_zone.points or [])
-    route_polygon = load_kml_polygon(args.route_kml)
+    route_polygon = registry.route_polygon or load_kml_polygon(args.route_kml)
 
     if args.source:
         if not args.source.exists():
@@ -845,7 +864,10 @@ def main() -> None:
     result: list[ReportRow] = []
     processed = 0
     for day, plate, points in tracks:
-        item = analyze_track(day, plate, points, roster, site_polygon, route_polygon)
+        analysis_points = suppress_speed_in_exclusions(points, registry)
+        item = analyze_track(
+            day, plate, analysis_points, roster, site_polygon, route_polygon
+        )
         if item is not None:
             result.append(item)
         processed += 1

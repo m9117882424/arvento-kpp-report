@@ -18,7 +18,11 @@ from zoneinfo import ZoneInfo
 
 import psycopg
 from openpyxl import Workbook, load_workbook
+from excel_formatting import save_report_workbook
 
+from cache_freshness import load_cache_coverage, load_source_watermark
+from business_rules import CONSOLIDATED_CALCULATION_VERSION
+from database_migrations import run_migrations
 import consolidated_report as core
 from consolidated_multi_report import load_rosters
 from fuel_enriched_consolidated_report import FUEL_HEADER, add_fuel_column
@@ -33,6 +37,7 @@ def day_range(start_day: date, end_day: date) -> list[date]:
 
 
 def ensure_schema(connection: psycopg.Connection) -> None:
+    run_migrations(connection)
     statements = (
         """
         CREATE TABLE IF NOT EXISTS consolidated_roster_snapshots (
@@ -129,9 +134,24 @@ def ensure_schema(connection: psycopg.Connection) -> None:
             status TEXT NOT NULL,
             row_count INTEGER NOT NULL DEFAULT 0,
             gps_max_event_time TIMESTAMPTZ,
+            gps_max_received_at TIMESTAMPTZ,
+            distance_max_fetched_at TIMESTAMPTZ,
+            roster_loaded_at TIMESTAMPTZ,
+            geofence_updated_at TIMESTAMPTZ,
+            calculation_version TEXT,
+            source_vehicle_count INTEGER NOT NULL DEFAULT 0,
             refresh_run_id BIGINT REFERENCES consolidated_cache_runs(id),
             refreshed_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )
+        """,
+        """
+        ALTER TABLE consolidated_cache_days
+            ADD COLUMN IF NOT EXISTS gps_max_received_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS distance_max_fetched_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS roster_loaded_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS geofence_updated_at TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS calculation_version TEXT,
+            ADD COLUMN IF NOT EXISTS source_vehicle_count INTEGER NOT NULL DEFAULT 0
         """,
     )
     with connection.cursor() as cursor:
@@ -227,7 +247,7 @@ def export_stored_rosters(database_url: str, target_dir: Path) -> list[Path]:
         for values in grouped[roster_day]:
             sheet.append(values)
         path = target_dir / f"roster_{roster_day.isoformat()}.xlsx"
-        workbook.save(path)
+        save_report_workbook(workbook, path)
         workbook.close()
         result.append(path)
     return result
@@ -263,6 +283,15 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return float(value) if value is not None and value != "" else default
     except (TypeError, ValueError):
         return default
+
+
+def _as_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _as_int(value: Any, default: int = 0) -> int:
@@ -348,7 +377,7 @@ def upsert_cache_from_workbook(
                 str(_cell(sheet, row_index, headers, "День недели", "") or ""),
                 _cell(sheet, row_index, headers, "Прибыл / Giriş"),
                 _cell(sheet, row_index, headers, "Убыл / Çıkış"),
-                _as_float(_cell(sheet, row_index, headers, "Всего отработано часов")),
+                _as_optional_float(_cell(sheet, row_index, headers, "Всего отработано часов")),
                 _as_int(_cell(sheet, row_index, headers, "Нарушение геозоны / Sınır ihlali")),
                 _as_int(_cell(sheet, row_index, headers, "Использование ТС в личных целях")),
                 _as_int(_cell(sheet, row_index, headers, "Hafta sonu çalışmaları / Работа в выходные дни")),
@@ -442,27 +471,43 @@ def upsert_cache_from_workbook(
                     cursor.execute(insert_sql, (*record, run_id))
 
                 for report_day in day_range(start_day, end_day):
-                    start_at = datetime.combine(report_day, time.min, TZ)
-                    finish_at = start_at + timedelta(days=1)
-                    cursor.execute(
-                        "SELECT MAX(event_time) FROM gps_points WHERE event_time >= %s AND event_time < %s",
-                        (start_at, finish_at),
-                    )
-                    gps_max = cursor.fetchone()[0]
+                    watermark = load_source_watermark(cursor, report_day)
+                    status = "SUCCESS" if counts.get(report_day, 0) else "EMPTY"
                     cursor.execute(
                         """
                         INSERT INTO consolidated_cache_days(
                             report_day, status, row_count, gps_max_event_time,
+                            gps_max_received_at, distance_max_fetched_at,
+                            roster_loaded_at, calculation_version,
+                            geofence_updated_at, source_vehicle_count,
                             refresh_run_id, refreshed_at
-                        ) VALUES (%s,'SUCCESS',%s,%s,%s,now())
+                        ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,now())
                         ON CONFLICT (report_day) DO UPDATE SET
-                            status='SUCCESS',
+                            status=EXCLUDED.status,
                             row_count=EXCLUDED.row_count,
                             gps_max_event_time=EXCLUDED.gps_max_event_time,
+                            gps_max_received_at=EXCLUDED.gps_max_received_at,
+                            distance_max_fetched_at=EXCLUDED.distance_max_fetched_at,
+                            roster_loaded_at=EXCLUDED.roster_loaded_at,
+                            geofence_updated_at=EXCLUDED.geofence_updated_at,
+                            calculation_version=EXCLUDED.calculation_version,
+                            source_vehicle_count=EXCLUDED.source_vehicle_count,
                             refresh_run_id=EXCLUDED.refresh_run_id,
                             refreshed_at=now()
                         """,
-                        (report_day, counts.get(report_day, 0), gps_max, run_id),
+                        (
+                            report_day,
+                            status,
+                            counts.get(report_day, 0),
+                            watermark.gps_max_event_time,
+                            watermark.gps_max_received_at,
+                            watermark.distance_max_fetched_at,
+                            watermark.roster_loaded_at,
+                            CONSOLIDATED_CALCULATION_VERSION,
+                            watermark.geofence_updated_at,
+                            watermark.source_vehicle_count,
+                            run_id,
+                        ),
                     )
                 cursor.execute(
                     """
@@ -496,20 +541,11 @@ def upsert_cache_from_workbook(
 
 
 def cache_complete(database_url: str, start_day: date, end_day: date) -> bool:
-    days = day_range(start_day, end_day)
     with psycopg.connect(database_url) as connection:
         ensure_schema(connection)
-        with connection.cursor() as cursor:
-            cursor.execute(
-                """
-                SELECT report_day
-                FROM consolidated_cache_days
-                WHERE report_day BETWEEN %s AND %s AND status='SUCCESS'
-                """,
-                (start_day, end_day),
-            )
-            existing = {row[0] for row in cursor.fetchall()}
-    return all(day in existing for day in days)
+        connection.commit()
+        coverage = load_cache_coverage(connection, start_day, end_day)
+    return coverage.complete
 
 
 def load_cached_rows(database_url: str, start_day: date, end_day: date) -> tuple[list[dict[str, Any]], datetime | None]:
@@ -609,7 +645,7 @@ def write_cached_workbook(
         parameters.append([])
         parameters.append(["Режим формирования", "готовые строки из consolidated_report_cache без повторного расчёта GPS"])
         parameters.append(["Последнее обновление кэша", refreshed_at.astimezone(TZ).replace(tzinfo=None) if refreshed_at else "не определено"])
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
     finally:
         workbook.close()
 

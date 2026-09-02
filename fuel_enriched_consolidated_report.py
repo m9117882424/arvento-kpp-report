@@ -13,6 +13,7 @@ import psycopg
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 from consolidated_time_logic import apply_consolidated_time_logic
 
@@ -173,7 +174,7 @@ def add_fuel_column(
             for cell in row:
                 cell.alignment = Alignment(vertical="top", wrap_text=True)
 
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
         return round(total_liters, 1), matched_rows
     finally:
         workbook.close()

@@ -19,6 +19,7 @@ import psycopg
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 from responsible_roster_fields import ensure_schema
 from roster_registry import normalize_plate
@@ -256,7 +257,7 @@ def finalize_consolidated_workbook(
             if sheet_name != REPORT_SHEET:
                 del workbook[sheet_name]
         workbook.active = 0
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
 
         return {
             "rows": max(0, sheet.max_row - 1),

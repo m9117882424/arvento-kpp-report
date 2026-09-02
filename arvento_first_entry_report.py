@@ -43,6 +43,7 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.datetime import from_excel
+from excel_formatting import save_report_workbook
 
 warnings.filterwarnings(
     "ignore",
@@ -778,7 +779,7 @@ def create_report(
         for cell in row:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
 
-    workbook.save(output_path)
+    save_report_workbook(workbook, output_path)
 
 
 def choose_file(title: str, optional: bool = False) -> Optional[Path]:

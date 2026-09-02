@@ -8,6 +8,7 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 
 DECIMAL_PLACES = 1
@@ -186,7 +187,7 @@ def save_daily_book(path: Path, daily: dict[date, list[dict[str, Any]]]) -> None
         for item in daily[day]:
             sheet.append(summary_row(item))
         format_summary_sheet(sheet)
-    workbook.save(path)
+    save_report_workbook(workbook, path)
 
 
 def save_summary_book(
@@ -244,4 +245,4 @@ def save_summary_book(
         row[3].number_format = "[h]:mm:ss"
     style_sheet(zone_summary)
 
-    workbook.save(path)
+    save_report_workbook(workbook, path)

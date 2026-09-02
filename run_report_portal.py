@@ -55,7 +55,7 @@ implementation.HTML = implementation.HTML.replace(
                  min="20" max="250" step="0.1" value="{DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH:g}">
         </div>
         <div class="violation-only hidden" style="grid-column: span 2">
-          <div class="note">Нарушение засчитывается только по плавной последовательности минимум из трёх GPS-точек продолжительностью не менее 10 секунд. Одиночные скачки скорости исключаются.</div>
+          <div class="note">Нарушение засчитывается только по плавной последовательности минимум из трёх GPS-точек продолжительностью не менее 3 секунд. Одиночные скачки скорости исключаются.</div>
         </div>
         <div class="kpp-only"><label for="gradeFrom">Грейд от</label>''',
 )
@@ -519,7 +519,7 @@ def database_status() -> dict[str, Any]:
     }
 
 
-@app.post("/api/generate-v2")
+@app.post("/api/generate-v2", deprecated=True)
 async def api_generate_v2(
     report_type: str = Form(...),
     report_date: str = Form(...),
@@ -533,6 +533,29 @@ async def api_generate_v2(
     site_speed_threshold: str = Form(default=str(DEFAULT_SITE_SPEED_THRESHOLD_KMH)),
     outside_speed_threshold: str = Form(default=str(DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH)),
 ) -> dict[str, Any]:
+    if report_type == "consolidated":
+        # v2 predates consolidated reports. Preserve the route for clients but
+        # execute the same current pipeline as the UI and v3 API.
+        import consolidated_portal as current_portal
+
+        result = await current_portal.api_generate_v3(
+            report_type=report_type,
+            report_date=report_date,
+            report_end_date=report_end_date,
+            roster=roster,
+            rosters=[roster] if roster is not None and roster.filename else None,
+            grade_from=grade_from,
+            grade_to=grade_to,
+            time_from=time_from,
+            time_to=time_to,
+            consider_previous_exits=consider_previous_exits,
+            site_speed_threshold=site_speed_threshold,
+            outside_speed_threshold=outside_speed_threshold,
+        )
+        from download_store import restore_legacy_base64
+
+        return restore_legacy_base64(result)
+
     try:
         day = implementation.parse_report_date(report_date)
         end_day = (

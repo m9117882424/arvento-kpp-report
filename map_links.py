@@ -8,6 +8,7 @@ from typing import Any
 from urllib.parse import quote
 
 from openpyxl import load_workbook
+from excel_formatting import save_report_workbook
 
 GOOGLE_MAPS_SEARCH_URL = "https://www.google.com/maps/search/?api=1&query="
 SPEED_SHEETS = (
@@ -104,7 +105,7 @@ def add_violation_map_links(workbook_path: Path) -> int:
                 "Ссылки на карту",
                 f"Google Maps, добавлено ссылок: {links}",
             ])
-        workbook.save(workbook_path)
+        save_report_workbook(workbook, workbook_path)
     finally:
         workbook.close()
     return links

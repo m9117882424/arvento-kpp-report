@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 from openpyxl import load_workbook
 
+from roster_selection import select_effective_roster
+
 ROSTER_ALIASES = {
     "plate": ("Гос рег знак", "PLAKA", "Госномер", "Номерной знак"),
     "grade": ("Грейд", "SCALA", "Grade"),
@@ -183,13 +185,9 @@ def discover_rosters(folder: Path, source: Optional[Path] = None) -> list[Roster
 
 
 def select_roster(rosters: list[Roster], report_day: date) -> Optional[Roster]:
-    exact = [item for item in rosters if item.day == report_day]
-    if exact:
-        return exact[-1]
-    previous = [item for item in rosters if item.day <= report_day]
-    if previous:
-        return previous[-1]
-    return rosters[-1] if rosters else None
+    if not rosters:
+        return None
+    return select_effective_roster(rosters, report_day, lambda item: item.day)
 
 
 def enrich_daily_with_rosters(daily: dict[date, list[dict[str, Any]]], rosters: list[Roster]) -> None:

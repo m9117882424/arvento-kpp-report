@@ -26,6 +26,7 @@ from typing import Iterable
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 from sqlite_store import import_source_to_sqlite
 
@@ -382,7 +383,7 @@ def save_report(
         settings.append([f"Точка осевой линии {index}", f"{lat}, {lon}"])
     settings.append(["Количество нарушений", len(violations)])
     style_sheet(settings)
-    workbook.save(path)
+    save_report_workbook(workbook, path)
 
 
 def main() -> None:

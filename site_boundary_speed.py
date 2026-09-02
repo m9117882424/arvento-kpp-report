@@ -14,9 +14,15 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from openpyxl import load_workbook
+from excel_formatting import save_report_workbook
 
 from arvento_io import Point
-from geozone_registry import Registry, find_site_boundary, point_in_zone
+from geozone_registry import (
+    Registry,
+    find_site_boundary,
+    point_in_zone,
+    suppress_speed_in_exclusions,
+)
 from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
@@ -78,6 +84,7 @@ def detect_speed_violations_by_polygon(
         site_threshold_kmh,
         outside_threshold_kmh,
     )
+    track = suppress_speed_in_exclusions(track, registry)
     site_violations: list[SpeedViolation] = []
     outside_violations: list[SpeedViolation] = []
     active: dict[str, Any] | None = None
@@ -154,6 +161,6 @@ def write_site_boundary_metadata(workbook_path: Path, registry: Registry) -> Non
             sheet.append(["Разделение площадка/вне площадки", f"по полигону «{boundary.name}»"])
         sheet.append(["Назначение геозоны", "site_boundary"])
         sheet.append(["Точек в полигоне площадки", len(boundary.points or [])])
-        workbook.save(workbook_path)
+        save_report_workbook(workbook, workbook_path)
     finally:
         workbook.close()

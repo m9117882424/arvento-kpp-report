@@ -10,13 +10,16 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from openpyxl import load_workbook
+from excel_formatting import save_report_workbook
 
 import consolidated_report as core
 from arvento_io import Point
+from business_rules import (
+    ENTRY_EXIT_TIME_FROM as WINDOW_START,
+    ENTRY_EXIT_TIME_TO as WINDOW_END,
+    SITE_EXIT_DISTANCE_THRESHOLD_KM,
+)
 
-WINDOW_START = time(5, 0)
-WINDOW_END = time(23, 0)
-SITE_EXIT_DISTANCE_THRESHOLD_KM = 10.0
 PREFERRED_COMPANY_HEADER = "Эксплуатирующая фирма / ÇALIŞTIĞI FİRMA"
 
 _ORIGINAL_ANALYZE_TRACK = core.analyze_track
@@ -361,7 +364,7 @@ def save_report_with_date_only(*args: Any, **kwargs: Any) -> None:
             "суммарное время внутри площадки между подтверждёнными въездом и выездом; "
             "без пробега внутри либо без одного из двух событий поле остаётся пустым",
         ])
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
     finally:
         workbook.close()
 

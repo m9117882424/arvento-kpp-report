@@ -20,6 +20,11 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse
 from openpyxl import load_workbook
 
+from business_rules import (
+    DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+    DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+)
+
 APP_DIR = Path(__file__).resolve().parent
 TZ = ZoneInfo("Europe/Istanbul")
 MAX_ROSTER_BYTES = 25 * 1024 * 1024
@@ -139,6 +144,7 @@ const table = document.getElementById('resultTable');
 const previewNote = document.getElementById('previewNote');
 let excelBase64 = '';
 let excelFilename = '';
+let downloadUrl = '';
 
 function esc(value) {
   return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[ch]));
@@ -191,6 +197,7 @@ form.addEventListener('submit', async event => {
   event.preventDefault();
   excelBase64 = '';
   excelFilename = '';
+  downloadUrl = '';
   downloadBtn.classList.add('hidden');
   resultCard.classList.add('hidden');
   statusBox.className = 'status';
@@ -202,8 +209,9 @@ form.addEventListener('submit', async event => {
     const response = await fetch('/api/generate', {method: 'POST', body: data});
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.detail || 'Ошибка формирования отчёта');
-    excelBase64 = payload.excel_base64;
+    excelBase64 = payload.excel_base64 || '';
     excelFilename = payload.filename;
+    downloadUrl = payload.download_url || '';
     renderStats(payload.summary);
     renderTable(payload.columns, payload.rows);
     previewNote.textContent = payload.preview_truncated ? `Показаны первые ${payload.rows.length} строк. Полный результат находится в Excel.` : `Показано строк: ${payload.rows.length}.`;
@@ -219,6 +227,15 @@ form.addEventListener('submit', async event => {
   }
 });
 downloadBtn.addEventListener('click', () => {
+  if (downloadUrl) {
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = excelFilename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    return;
+  }
   if (!excelBase64) return;
   const raw = atob(excelBase64);
   const bytes = new Uint8Array(raw.length);
@@ -470,7 +487,7 @@ def available_dates() -> dict[str, list[str]]:
     return {"dates": [row[0].isoformat() for row in rows if row[0] is not None]}
 
 
-@app.post("/api/generate")
+@app.post("/api/generate", deprecated=True)
 async def api_generate(
     report_type: str = Form(...),
     report_date: str = Form(...),
@@ -482,34 +499,26 @@ async def api_generate(
     time_to: str = Form(default=""),
     consider_previous_exits: bool = Form(default=False),
 ) -> dict[str, Any]:
-    try:
-        day = parse_report_date(report_date)
-        end_day = parse_report_date(report_end_date) if report_end_date.strip() else None
-        roster_bytes: bytes | None = None
-        roster_filename = "roster.xlsx"
-        roster_suffix = ".xlsx"
-        if roster is not None and roster.filename:
-            roster_filename = Path(roster.filename).name
-            roster_suffix = Path(roster_filename).suffix.lower()
-            if roster_suffix not in {".xlsx", ".xlsm"}:
-                raise ValueError("Разнарядка должна быть в формате XLSX или XLSM")
-            roster_bytes = await roster.read(MAX_ROSTER_BYTES + 1)
-            if len(roster_bytes) > MAX_ROSTER_BYTES:
-                raise ValueError("Размер разнарядки превышает 25 МБ")
+    """Backward-compatible alias for the current v3 generation contract."""
+    # Import at request time to avoid a circular import while the ASGI layers
+    # are assembled. Production startup has already initialized v3 and all of
+    # its central-roster/cache/final-export wrappers before requests arrive.
+    import consolidated_portal as current_portal
 
-        return await run_in_threadpool(
-            generate_report,
-            report_type,
-            day,
-            end_day,
-            roster_bytes,
-            roster_filename,
-            roster_suffix,
-            grade_from,
-            grade_to,
-            time_from,
-            time_to,
-            consider_previous_exits,
-        )
-    except (ValueError, RuntimeError) as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    result = await current_portal.api_generate_v3(
+        report_type=report_type,
+        report_date=report_date,
+        report_end_date=report_end_date,
+        roster=roster,
+        rosters=[roster] if roster is not None and roster.filename else None,
+        grade_from=grade_from,
+        grade_to=grade_to,
+        time_from=time_from,
+        time_to=time_to,
+        consider_previous_exits=consider_previous_exits,
+        site_speed_threshold=str(DEFAULT_SITE_SPEED_THRESHOLD_KMH),
+        outside_speed_threshold=str(DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH),
+    )
+    from download_store import restore_legacy_base64
+
+    return restore_legacy_base64(result)

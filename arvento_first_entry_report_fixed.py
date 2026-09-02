@@ -21,6 +21,7 @@ from typing import Any, Literal
 from openpyxl import load_workbook
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
+from excel_formatting import save_report_workbook
 
 import arvento_first_entry_report as base
 
@@ -330,7 +331,7 @@ def create_report_without_map_column(*args: Any, **kwargs: Any) -> None:
             sheet.column_dimensions[get_column_letter(index)].width = width
         sheet.column_dimensions["K"].hidden = True
 
-        workbook.save(output_path)
+        save_report_workbook(workbook, output_path)
     finally:
         workbook.close()
 
