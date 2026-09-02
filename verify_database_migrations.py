@@ -2,10 +2,13 @@
 """Offline repository checks for transactional SQL migrations."""
 from __future__ import annotations
 
+import inspect
+
 from database_migrations import (
     _validate_applied_migration,
     discover_migrations,
     migration_checksum,
+    run_migrations,
 )
 import portal_entrypoint
 
@@ -34,6 +37,7 @@ def main() -> None:
     )
     assert "ON CONFLICT (version) DO NOTHING" in runner_source
     assert "RETURNING version" in runner_source
+    assert "row_factory=psycopg.rows.tuple_row" in inspect.getsource(run_migrations)
     sql = migrations[0].read_text(encoding="utf-8")
     for column in (
         "gps_max_received_at",
