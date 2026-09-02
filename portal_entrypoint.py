@@ -18,6 +18,7 @@ from database_migrations import register_database_migrations
 from extended_roster_fields import apply_extended_roster_fields
 from fleet_dashboard_api import apply_fleet_dashboard_api
 from fuel_enriched_consolidated_report import generate_multi_roster_report
+from generation_jobs import apply_generation_jobs
 from kpp_preview_format import apply_kpp_preview_format
 from mileage_review_policy import apply_mileage_review_ui
 from portal_runtime_patch import apply_runtime_patch
@@ -49,6 +50,7 @@ apply_database_status_patch(
 )
 apply_fleet_dashboard_api(portal.app, portal.implementation.db_url)
 apply_download_routes(portal.app)
+apply_generation_jobs(portal.app)
 app = portal.app
 register_database_migrations(app, portal.implementation.db_url)
 

@@ -61,8 +61,14 @@ def check_routes() -> None:
     assert routes[("/api/generate", "POST")].deprecated is True
     assert routes[("/api/generate-v2", "POST")].deprecated is True
     assert routes[("/api/generate-v3", "POST")].deprecated is None
+    assert ("/api/generation-jobs", "POST") in routes
+    assert ("/api/generation-jobs/{job_id}", "GET") in routes
     assert "readResponsePayload" in portal_entrypoint.portal.implementation.HTML
     assert "return {detail: text};" in portal_entrypoint.portal.implementation.HTML
+    assert "waitForGenerationJob" in portal_entrypoint.portal.implementation.HTML
+    assert "fetch('/api/generation-jobs'" in portal_entrypoint.portal.implementation.HTML
+    assert "resumeGenerationJob();" in portal_entrypoint.portal.implementation.HTML
+    assert "localStorage.setItem(generationJobStorageKey" in portal_entrypoint.portal.implementation.HTML
 
 
 def check_v1_delegation() -> None:
