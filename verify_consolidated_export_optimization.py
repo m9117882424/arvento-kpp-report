@@ -105,6 +105,7 @@ def main() -> int:
         assert review["candidates"] == 1
         assert review["flagged_rows"] == 1
         assert total_rows == 1
+        assert rows[0][columns.index("Дата")] == "02.09.2026"
         assert rows and rows[0][columns.index(FUEL_HEADER)] == 12.3
         assert rows[0][columns.index(REVIEW_HEADER)] == REVIEW_VALUE
 
