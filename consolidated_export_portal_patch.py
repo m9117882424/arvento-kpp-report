@@ -10,8 +10,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import consolidated_portal as portal
-from consolidated_export_layout import finalize_consolidated_export
-from mileage_review_policy import annotate_mileage_review
+from consolidated_export_optimization import (
+    apply_cached_workbook_optimization,
+    finalize_consolidated_output_fast,
+)
 
 _BASE_GENERATOR: Callable[..., dict[str, Any]] | None = None
 _PATCHED = False
@@ -26,7 +28,7 @@ def _requested_period(args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[da
 
 
 def generate_final_consolidated_download(*args: Any, **kwargs: Any) -> dict[str, Any]:
-    """Run the established generator, then prepare the downloadable XLSX."""
+    """Run the established generator, then finalize XLSX in one workbook pass."""
     if _BASE_GENERATOR is None:
         raise RuntimeError("Генератор сводного отчёта не инициализирован")
 
@@ -41,21 +43,18 @@ def generate_final_consolidated_download(*args: Any, **kwargs: Any) -> dict[str,
         output_path = Path(temp_name) / filename
         output_path.write_bytes(base64.b64decode(excel_base64))
 
-        # First remove internal service sheets and append central roster fields.
-        layout_stats = finalize_consolidated_export(
-            output_path,
-            portal.implementation.db_url(),
-        )
-        # Then restore the user-facing mileage-review column and dedicated sheet.
-        review_stats = annotate_mileage_review(
+        stats = finalize_consolidated_output_fast(
             output_path,
             portal.implementation.db_url(),
             start_day,
             end_day,
-            refresh=False,
         )
+        layout_stats = stats["layout"]
+        review_stats = stats["review"]
+        columns = stats["columns"]
+        rows = stats["rows"]
+        total_rows = stats["total_rows"]
 
-        columns, rows, total_rows = portal.implementation.workbook_preview(output_path)
         result["excel_base64"] = base64.b64encode(output_path.read_bytes()).decode("ascii")
         result["columns"] = columns
         result["rows"] = rows
@@ -69,11 +68,12 @@ def generate_final_consolidated_download(*args: Any, **kwargs: Any) -> dict[str,
 
 
 def apply_consolidated_export_portal() -> None:
-    """Wrap the final central-roster consolidated generator once."""
+    """Wrap the final central-roster generator and optimize cached XLSX I/O."""
     global _BASE_GENERATOR, _PATCHED
     if _PATCHED:
         return
 
+    apply_cached_workbook_optimization()
     _BASE_GENERATOR = portal.generate_consolidated_web
     portal.generate_consolidated_web = generate_final_consolidated_download
     _PATCHED = True
