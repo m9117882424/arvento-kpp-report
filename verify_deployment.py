@@ -22,9 +22,13 @@ REQUIRED_FILES = (
     "SERVER_DEPLOY.md",
     "verify_all.py",
     "verify_healthcheck.py",
+    "verify_release_workflow.py",
     "consolidated_incremental_cache.py",
     "deploy/arvento-backup.sh",
     "deploy/arvento-healthcheck.sh",
+    "deploy/post-deploy-smoke.sh",
+    "deploy/release.sh",
+    "deploy/restore-drill.sh",
     "deploy/arvento-sync-and-cache.sh",
     "deploy/install.sh",
     "deploy/nginx/arvento-report.conf.example",
@@ -197,6 +201,8 @@ def check_dockerfile_references(errors: list[str]) -> None:
         "python /app/verify_all.py --runtime",
         "python -m compileall -q /app",
         "USER app",
+        "ARG ARVENTO_COMMIT_SHA=unknown",
+        "org.opencontainers.image.revision=$ARVENTO_COMMIT_SHA",
     )
     for token in required_tokens:
         if token not in dockerfile:
@@ -218,6 +224,7 @@ def check_compose(errors: list[str]) -> None:
         "127.0.0.1:${REPORT_PORTAL_PORT:-18084}:8080",
         "max-size:",
         "max-file:",
+        "ARVENTO_COMMIT_SHA: ${ARVENTO_COMMIT_SHA:-unknown}",
     )
     for token in required_tokens:
         if token not in compose:
@@ -312,9 +319,61 @@ def check_scripts(errors: list[str]) -> None:
         "arvento-intraday-pipeline.timer",
         "arvento-nightly-correction.timer",
         "arvento-backup.timer",
+        "INSTALL_SKIP_BUILD",
+        "/usr/local/sbin/arvento-release",
+        "/usr/local/sbin/arvento-restore-drill",
     ):
         if token not in installer:
             errors.append(f"deploy/install.sh: отсутствует {token}")
+
+    release = read_text("deploy/release.sh")
+    for token in (
+        "/run/arvento-release.lock",
+        "git-$TARGET_SHA",
+        "rollback-$TIMESTAMP",
+        "arvento-backup.service",
+        "ROLLBACK_REQUIRED=1",
+        "post-deploy-smoke.sh",
+        "ARVENTO_IMAGE_TAG",
+        "org.opencontainers.image.revision",
+    ):
+        if token not in release:
+            errors.append(f"deploy/release.sh: отсутствует {token}")
+
+    smoke = read_text("deploy/post-deploy-smoke.sh")
+    for token in (
+        "EXPECTED_TAG",
+        "org.opencontainers.image.revision",
+        "/usr/local/sbin/arvento-healthcheck",
+        "POST_DEPLOY_SMOKE OK",
+    ):
+        if token not in smoke:
+            errors.append(f"deploy/post-deploy-smoke.sh: отсутствует {token}")
+
+    restore = read_text("deploy/restore-drill.sh")
+    for token in (
+        "/run/arvento-restore-drill.lock",
+        "/run/arvento-sync-and-cache.lock",
+        "pg_restore --list",
+        "arvento_restore_drill_",
+        "--exit-on-error",
+        "dropdb",
+        "RESTORE_DRILL OK",
+    ):
+        if token not in restore:
+            errors.append(f"deploy/restore-drill.sh: отсутствует {token}")
+
+    for script in sorted((ROOT / "deploy").glob("*.sh")):
+        completed = subprocess.run(
+            ["bash", "-n", str(script)],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            errors.append(
+                f"{script.relative_to(ROOT)}: bash -n: {completed.stderr.strip()}"
+            )
 
 
 def check_environment_example(errors: list[str]) -> None:
@@ -334,6 +393,8 @@ def check_environment_example(errors: list[str]) -> None:
         "HEALTHCHECK_MAX_SYNC_AGE_MINUTES=",
         "HEALTHCHECK_MAX_BACKUP_AGE_HOURS=",
         "HEALTHCHECK_STALE_RUNNING_MINUTES=",
+        "RESTORE_DRILL_LOCK_WAIT_SECONDS=",
+        "RESTORE_DRILL_TIMEOUT_SECONDS=",
     )
     for token in required_keys:
         if token not in content:

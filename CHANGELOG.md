@@ -1,5 +1,12 @@
 # История изменений
 
+## 03.09.2026 — безопасный release и проверка восстановления
+
+- production image получает неизменяемый тег и OCI revision по commit SHA;
+- release автоматически создаёт backup, выполняет smoke-test и возвращает
+  предыдущий image при ошибке;
+- добавлен restore drill в отдельной временной БД и единый release checklist.
+
 ## 03.09.2026 — изоляция проверки healthcheck
 
 - сценарный тест healthcheck больше не читает production-настройки из

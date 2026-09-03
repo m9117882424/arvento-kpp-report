@@ -5,6 +5,7 @@ ROOT="${1:-/opt/arvento_report}"
 COMPOSE_FILE="$ROOT/docker-compose.server.yml"
 ENV_FILE="$ROOT/.env"
 ENABLE_TIMERS="${INSTALL_ENABLE_TIMERS:-1}"
+SKIP_BUILD="${INSTALL_SKIP_BUILD:-0}"
 
 log() {
     printf '%s | %s\n' "$(date '+%F %T %z')" "$*"
@@ -93,11 +94,16 @@ install -d -m 0750 -o 10001 -g 10001 \
     "$ROOT/reports" \
     "$ROOT/input"
 
-log "Сборка проверенного server image"
-docker compose \
-    --project-directory "$ROOT" \
-    -f "$COMPOSE_FILE" \
-    build --pull report-portal
+if [[ "$SKIP_BUILD" == "1" ]]; then
+    log "Использование ранее проверенного server image: ${ARVENTO_IMAGE_TAG:-local}"
+    docker image inspect "arvento-report:${ARVENTO_IMAGE_TAG:-local}" >/dev/null
+else
+    log "Сборка проверенного server image: ${ARVENTO_IMAGE_TAG:-local}"
+    docker compose \
+        --project-directory "$ROOT" \
+        -f "$COMPOSE_FILE" \
+        build --pull report-portal
+fi
 
 log "Запуск core stack без legacy gps-sync daemon"
 docker compose \
@@ -149,6 +155,12 @@ install -m 0755 "$ROOT/deploy/arvento-backup.sh" \
     /usr/local/sbin/arvento-backup
 install -m 0755 "$ROOT/deploy/arvento-healthcheck.sh" \
     /usr/local/sbin/arvento-healthcheck
+install -m 0755 "$ROOT/deploy/post-deploy-smoke.sh" \
+    /usr/local/sbin/arvento-post-deploy-smoke
+install -m 0755 "$ROOT/deploy/release.sh" \
+    /usr/local/sbin/arvento-release
+install -m 0755 "$ROOT/deploy/restore-drill.sh" \
+    /usr/local/sbin/arvento-restore-drill
 
 log "Установка актуальных systemd units"
 install -m 0644 "$ROOT"/deploy/systemd/*.service /etc/systemd/system/
@@ -205,6 +217,12 @@ result = {
     ),
     "HEALTHCHECK_STALE_RUNNING_MINUTES": values.get(
         "HEALTHCHECK_STALE_RUNNING_MINUTES", "240"
+    ),
+    "RESTORE_DRILL_LOCK_WAIT_SECONDS": values.get(
+        "RESTORE_DRILL_LOCK_WAIT_SECONDS", "600"
+    ),
+    "RESTORE_DRILL_TIMEOUT_SECONDS": values.get(
+        "RESTORE_DRILL_TIMEOUT_SECONDS", "5400"
     ),
 }
 for key, value in result.items():
