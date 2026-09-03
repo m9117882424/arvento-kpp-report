@@ -20,6 +20,7 @@ STATIC_CHECKS = (
     "verify_repository.py",
     "verify_deployment.py",
     "verify_healthcheck.py",
+    "verify_release_workflow.py",
 )
 
 RUNTIME_CHECKS = (

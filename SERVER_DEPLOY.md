@@ -207,6 +207,15 @@ ls -lh /opt/arvento_backups
 
 Перед восстановлением остановите timers, создайте дополнительный backup и проверьте имя базы/пользователя в `.env`. После восстановления включите timers обратно.
 
+Проверяемое восстановление в отдельную временную БД выполняется без изменения
+production database:
+
+```bash
+sudo /usr/local/sbin/arvento-restore-drill
+```
+
+Полный регламент: [`docs/RELEASE_AND_RESTORE.md`](docs/RELEASE_AND_RESTORE.md).
+
 ## 10. Nginx
 
 Сервисы слушают только localhost:
@@ -232,26 +241,28 @@ deploy/nginx/arvento-report.conf.example
 sudo systemctl start arvento-backup.service
 ```
 
-Обновление:
+Каноническое обновление с версионированным image, smoke-test и автоматическим
+rollback:
 
 ```bash
 cd /opt/arvento_report
 git fetch origin
 git status --short --branch
 git pull --ff-only origin main
-sudo bash deploy/install.sh /opt/arvento_report
+sudo bash deploy/release.sh /opt/arvento_report
 ```
 
-Rollback к известному commit:
+Для планового возврата к известному commit используется тот же release-контур:
 
 ```bash
 cd /opt/arvento_report
 git fetch origin
 git checkout --detach <COMMIT_SHA>
-sudo bash deploy/install.sh /opt/arvento_report
+sudo bash deploy/release.sh /opt/arvento_report
 ```
 
-Installer не удаляет PostgreSQL volume.
+При ошибке новый release автоматически возвращает предыдущий сохранённый image.
+Release и rollback не удаляют PostgreSQL volume.
 
 ## 12. Репозиторные проверки
 

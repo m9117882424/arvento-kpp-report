@@ -114,10 +114,12 @@ flock -n /run/arvento-sync-and-cache.lock \
 cd /opt/arvento_report
 git fetch origin
 git pull --ff-only origin main
-sudo bash deploy/install.sh /opt/arvento_report
+sudo bash deploy/release.sh /opt/arvento_report
 ```
 
-`install.sh` повторяемый: он пересобирает проверенный image, обновляет units и сохраняет существующий PostgreSQL volume.
+Release создаёт контрольный backup, использует immutable image tag по commit SHA,
+выполняет smoke-test и автоматически возвращает предыдущий image при ошибке.
+Подробный регламент: [`docs/RELEASE_AND_RESTORE.md`](docs/RELEASE_AND_RESTORE.md).
 
 ## Резервные копии
 

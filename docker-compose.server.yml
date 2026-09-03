@@ -4,6 +4,8 @@ x-app-service: &app-service
   build:
     context: .
     dockerfile: Dockerfile.server
+    args:
+      ARVENTO_COMMIT_SHA: ${ARVENTO_COMMIT_SHA:-unknown}
   image: arvento-report:${ARVENTO_IMAGE_TAG:-local}
   init: true
   env_file:

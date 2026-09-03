@@ -1,5 +1,8 @@
 FROM python:3.12-slim-bookworm
 
+ARG ARVENTO_COMMIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$ARVENTO_COMMIT_SHA
+
 ARG APP_UID=10001
 ARG APP_GID=10001
 
@@ -34,6 +37,9 @@ RUN bash -n \
         /app/deploy/arvento-backup.sh \
         /app/deploy/arvento-healthcheck.sh \
         /app/deploy/arvento-sync-and-cache.sh \
+        /app/deploy/post-deploy-smoke.sh \
+        /app/deploy/release.sh \
+        /app/deploy/restore-drill.sh \
         /app/deploy/install.sh \
     && python /app/verify_all.py --static \
     && python -m compileall -q /app \
