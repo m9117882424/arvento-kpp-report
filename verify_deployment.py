@@ -293,6 +293,7 @@ def check_scripts(errors: list[str]) -> None:
 
     healthcheck = read_text("deploy/arvento-healthcheck.sh")
     for token in (
+        "ARVENTO_DEFAULTS_FILE",
         'section "LAST JOB RESULTS"',
         'section "BACKUP FRESHNESS"',
         "HEALTHCHECK_MAX_SYNC_AGE_MINUTES",

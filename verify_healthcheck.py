@@ -100,6 +100,7 @@ def run_scenario(
     environment.update(
         {
             "PATH": f"{bin_dir}:{environment['PATH']}",
+            "ARVENTO_DEFAULTS_FILE": str(folder / "missing-defaults"),
             "ARVENTO_ROOT": str(root),
             "BACKUP_DIR": str(backup_dir),
             "FAKE_SYNC_STATUS": sync_status,
