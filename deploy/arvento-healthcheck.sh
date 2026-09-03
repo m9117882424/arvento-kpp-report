@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-[[ -r /etc/default/arvento-report ]] && . /etc/default/arvento-report
+DEFAULTS_FILE="${ARVENTO_DEFAULTS_FILE:-/etc/default/arvento-report}"
+[[ -r "$DEFAULTS_FILE" ]] && . "$DEFAULTS_FILE"
 
 ROOT="${ARVENTO_ROOT:-/opt/arvento_report}"
 COMPOSE_FILE="$ROOT/docker-compose.server.yml"
