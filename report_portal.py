@@ -15,7 +15,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 import psycopg
-from fastapi import FastAPI, File, Form, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import HTMLResponse
 from openpyxl import load_workbook
 
@@ -477,9 +477,14 @@ def index() -> str:
 def health() -> dict[str, str]:
     try:
         validate_canonical_scripts()
-    except RuntimeError as exc:
-        return {"status": "error", "detail": str(exc)}
-    return {"status": "ok"}
+        with psycopg.connect(db_url(), connect_timeout=5) as connection:
+            connection.execute("SELECT 1").fetchone()
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Report portal is not ready",
+        ) from exc
+    return {"status": "ok", "database": "ok"}
 
 
 @app.get("/api/dates")

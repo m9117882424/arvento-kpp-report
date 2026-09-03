@@ -79,8 +79,7 @@ PY
 cd "$ROOT"
 
 log "Статическая проверка репозитория"
-python3 verify_repository.py
-python3 verify_deployment.py
+python3 verify_all.py --static
 
 log "Проверка Docker Compose"
 docker compose \
@@ -198,6 +197,15 @@ result = {
     "REPORT_PORTAL_PORT": values.get("REPORT_PORTAL_PORT", "18084"),
     "GEOFENCE_EDITOR_PORT": values.get("GEOFENCE_EDITOR_PORT", "18083"),
     "MIN_FREE_DISK_PERCENT": values.get("MIN_FREE_DISK_PERCENT", "10"),
+    "HEALTHCHECK_MAX_SYNC_AGE_MINUTES": values.get(
+        "HEALTHCHECK_MAX_SYNC_AGE_MINUTES", "180"
+    ),
+    "HEALTHCHECK_MAX_BACKUP_AGE_HOURS": values.get(
+        "HEALTHCHECK_MAX_BACKUP_AGE_HOURS", "30"
+    ),
+    "HEALTHCHECK_STALE_RUNNING_MINUTES": values.get(
+        "HEALTHCHECK_STALE_RUNNING_MINUTES", "240"
+    ),
 }
 for key, value in result.items():
     print(f"{key}={shlex.quote(value)}")

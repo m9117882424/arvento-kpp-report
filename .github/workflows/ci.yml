@@ -48,8 +48,7 @@ jobs:
 
       - name: Verify repository and deployment manifests
         run: |
-          python verify_repository.py
-          python verify_deployment.py
+          python verify_all.py --static
           docker compose -f docker-compose.server.yml config --quiet
 
       - name: Build verified server image

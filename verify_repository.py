@@ -201,10 +201,9 @@ REQUIRED_SUPPORT_MODULES = {
 
 OPERATIONAL_EXPECTATIONS = {
     "Dockerfile.server": (
-        "sync_arvento_gps_to_postgres.py",
-        "verify_repository.py",
-        "verify_runtime.py",
-        "verify_fleet_dashboard_api.py",
+        "verify_all.py --static",
+        "python -m compileall -q /app",
+        "verify_all.py --runtime",
     ),
     "docker-compose.server.yml": (
         "name: arvento_report",
