@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -19,17 +18,13 @@ from business_rules import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
 )
+from runtime_settings import report_runtime_settings
 
 
 LOGGER = logging.getLogger(__name__)
-JOB_TTL_SECONDS = max(
-    300,
-    int(os.environ.get("REPORT_GENERATION_JOB_TTL_SECONDS", "3600")),
-)
-JOB_MAX_ENTRIES = max(
-    1,
-    int(os.environ.get("REPORT_GENERATION_JOB_MAX_ENTRIES", "50")),
-)
+_SETTINGS = report_runtime_settings()
+JOB_TTL_SECONDS = _SETTINGS.generation_job_ttl_seconds
+JOB_MAX_ENTRIES = _SETTINGS.generation_job_max_entries
 
 
 @dataclass(slots=True)

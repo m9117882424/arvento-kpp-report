@@ -34,48 +34,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 chmod 0600 "$ENV_FILE"
 
-log "Проверка обязательных переменных"
-python3 - "$ENV_FILE" <<'PY'
-from __future__ import annotations
-
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-values: dict[str, str] = {}
-for raw_line in path.read_text(encoding="utf-8").splitlines():
-    line = raw_line.strip()
-    if not line or line.startswith("#") or "=" not in line:
-        continue
-    key, value = line.split("=", 1)
-    values[key.strip()] = value.strip()
-
-required = (
-    "POSTGRES_DB",
-    "POSTGRES_USER",
-    "POSTGRES_PASSWORD",
-    "DATABASE_URL",
-    "ARVENTO_USER",
-    "ARVENTO_PIN1",
-    "ARVENTO_PIN2",
-    "ARVENTO_GROUP",
-)
-missing = [key for key in required if not values.get(key)]
-if missing:
-    raise SystemExit("Не заполнены переменные: " + ", ".join(missing))
-
-if "CHANGE_ME" in values["POSTGRES_PASSWORD"] or "CHANGE_ME" in values["DATABASE_URL"]:
-    raise SystemExit("Замените CHANGE_ME в POSTGRES_PASSWORD и DATABASE_URL")
-
-if "@postgres:5432/" not in values["DATABASE_URL"]:
-    raise SystemExit("DATABASE_URL внутри Docker должен использовать host postgres:5432")
-
-if any(character in values["POSTGRES_PASSWORD"] for character in "@:/?#[]"):
-    raise SystemExit(
-        "POSTGRES_PASSWORD содержит символы, требующие URL-кодирования. "
-        "Для чистой установки используйте URL-safe пароль: openssl rand -hex 32"
-    )
-PY
+log "Проверка production-конфигурации"
+python3 "$ROOT/validate_environment.py" "$ENV_FILE"
 
 cd "$ROOT"
 

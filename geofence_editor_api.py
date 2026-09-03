@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 from typing import Any
 
@@ -17,15 +16,17 @@ from operational_geofences import (
     ensure_geofence_schema,
     seed_static_operational_geofences,
 )
+from runtime_settings import geofence_editor_settings
 
 BASE_DIR = Path(__file__).resolve().parent
-DATABASE_URL = os.environ["DATABASE_URL"]
-GOOGLE_MAPS_API_KEY = os.environ.get("GOOGLE_MAPS_API_KEY", "").strip()
-DEFAULT_MAP_PROVIDER = os.environ.get("DEFAULT_MAP_PROVIDER", "google").strip().lower()
-OSM_FALLBACK_ENABLED = os.environ.get("OSM_FALLBACK_ENABLED", "true").lower() in {"1", "true", "yes", "on"}
-MAP_CENTER_LAT = float(os.environ.get("MAP_CENTER_LAT", "36.145"))
-MAP_CENTER_LON = float(os.environ.get("MAP_CENTER_LON", "33.535"))
-MAP_DEFAULT_ZOOM = int(os.environ.get("MAP_DEFAULT_ZOOM", "15"))
+_SETTINGS = geofence_editor_settings()
+DATABASE_URL = _SETTINGS.database_url
+GOOGLE_MAPS_API_KEY = _SETTINGS.google_maps_api_key
+DEFAULT_MAP_PROVIDER = _SETTINGS.default_map_provider
+OSM_FALLBACK_ENABLED = _SETTINGS.osm_fallback_enabled
+MAP_CENTER_LAT = _SETTINGS.map_center_lat
+MAP_CENTER_LON = _SETTINGS.map_center_lon
+MAP_DEFAULT_ZOOM = _SETTINGS.map_default_zoom
 
 app = FastAPI(title="Arvento Geofence Editor", version="1.0.0")
 

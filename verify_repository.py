@@ -50,6 +50,11 @@ CANONICAL_FILES = {
 }
 
 REQUIRED_SUPPORT_MODULES = {
+    "runtime_settings.py": (
+        "class ReportRuntimeSettings",
+        "class GeofenceEditorSettings",
+        "validate_server_environment",
+    ),
     "portal_table_ui.py": (
         "import run_report_portal as portal",
         'id="plateFilter" type="text"',

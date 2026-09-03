@@ -23,6 +23,9 @@ REQUIRED_FILES = (
     "verify_all.py",
     "verify_healthcheck.py",
     "verify_release_workflow.py",
+    "verify_configuration.py",
+    "validate_environment.py",
+    "runtime_settings.py",
     "consolidated_incremental_cache.py",
     "deploy/arvento-backup.sh",
     "deploy/arvento-healthcheck.sh",
@@ -320,6 +323,7 @@ def check_scripts(errors: list[str]) -> None:
         "arvento-nightly-correction.timer",
         "arvento-backup.timer",
         "INSTALL_SKIP_BUILD",
+        'validate_environment.py" "$ENV_FILE"',
         "/usr/local/sbin/arvento-release",
         "/usr/local/sbin/arvento-restore-drill",
     ):
