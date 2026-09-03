@@ -32,6 +32,7 @@ class CacheCoverage:
     expected_days: int
     ready_days: int
     stale_days: tuple[date, ...]
+    stale_reasons: tuple[tuple[date, tuple[str, ...]], ...] = ()
 
     @property
     def complete(self) -> bool:
@@ -99,8 +100,14 @@ def _covers(cached: datetime | None, source: datetime | None) -> bool:
     return source is None or (cached is not None and cached >= source)
 
 
-def cache_day_is_fresh(row: dict[str, Any]) -> bool:
-    """Return whether one cache-day row covers the current source state."""
+def cache_day_stale_reasons(row: dict[str, Any]) -> tuple[str, ...]:
+    """Explain why one cached day cannot be reused.
+
+    Roster revisions are intentionally not a cache-invalidation reason. Roster
+    attributes are lightweight reference data and are overlaid from the current
+    central roster when cached GPS metrics are rendered.
+    """
+    reasons: list[str] = []
     source_vehicle_count = int(row.get("source_vehicle_count") or 0)
     row_count = int(row.get("row_count") or 0)
     status = str(row.get("status") or "")
@@ -110,38 +117,50 @@ def cache_day_is_fresh(row: dict[str, Any]) -> bool:
     else:
         status_matches = status == "SUCCESS" and row_count > 0
     if not status_matches:
-        return False
-    if row.get("source_roster_loaded_at") is None:
-        return False
-    if row.get("cached_calculation_version") != CONSOLIDATED_CALCULATION_VERSION:
-        return False
-    if int(row.get("cached_source_vehicle_count") or 0) != source_vehicle_count:
-        return False
+        reasons.append("status")
 
-    return all(
-        (
-            _covers(row.get("cached_gps_max_event_time"), row.get("source_gps_max_event_time")),
-            _covers(row.get("cached_gps_max_received_at"), row.get("source_gps_max_received_at")),
-            _covers(
-                row.get("cached_distance_max_fetched_at"),
-                row.get("source_distance_max_fetched_at"),
-            ),
-            _covers(
-                row.get("cached_roster_loaded_at"),
-                row.get("source_roster_loaded_at"),
-            ),
-            _covers(
-                row.get("cached_geofence_updated_at"),
-                row.get("source_geofence_updated_at"),
-            ),
-        )
-    )
+    # A central roster must exist for the report date, but replacing that roster
+    # does not invalidate expensive GPS/geofence calculations.
+    if row.get("source_roster_loaded_at") is None:
+        reasons.append("missing_roster")
+    if row.get("cached_calculation_version") != CONSOLIDATED_CALCULATION_VERSION:
+        reasons.append("algorithm")
+    if int(row.get("cached_source_vehicle_count") or 0) != source_vehicle_count:
+        reasons.append("vehicle_count")
+
+    if not _covers(
+        row.get("cached_gps_max_event_time"),
+        row.get("source_gps_max_event_time"),
+    ):
+        reasons.append("gps_event")
+    if not _covers(
+        row.get("cached_gps_max_received_at"),
+        row.get("source_gps_max_received_at"),
+    ):
+        reasons.append("gps_received")
+    if not _covers(
+        row.get("cached_distance_max_fetched_at"),
+        row.get("source_distance_max_fetched_at"),
+    ):
+        reasons.append("vehicle_distance")
+    if not _covers(
+        row.get("cached_geofence_updated_at"),
+        row.get("source_geofence_updated_at"),
+    ):
+        reasons.append("geofence")
+
+    return tuple(reasons)
+
+
+def cache_day_is_fresh(row: dict[str, Any]) -> bool:
+    """Return whether one cache-day row covers the current calculation sources."""
+    return not cache_day_stale_reasons(row)
 
 
 def load_cache_coverage(
     connection: psycopg.Connection[Any], start_day: date, end_day: date
 ) -> CacheCoverage:
-    """Compare stored cache watermarks with current GPS and VDR sources."""
+    """Compare stored cache watermarks with current heavy calculation sources."""
     query = """
         WITH requested AS (
             SELECT generate_series(%s::date, %s::date, interval '1 day')::date AS report_day
@@ -207,11 +226,18 @@ def load_cache_coverage(
             (start_day, end_day, start_day, end_day, start_day, end_day),
         )
         rows = list(cursor.fetchall())
-    stale_days = tuple(row["report_day"] for row in rows if not cache_day_is_fresh(row))
+
+    stale_reasons = tuple(
+        (row["report_day"], reasons)
+        for row in rows
+        if (reasons := cache_day_stale_reasons(row))
+    )
+    stale_days = tuple(report_day for report_day, _reasons in stale_reasons)
     return CacheCoverage(
         expected_days=len(rows),
         ready_days=len(rows) - len(stale_days),
         stale_days=stale_days,
+        stale_reasons=stale_reasons,
     )
 
 
@@ -219,6 +245,7 @@ __all__ = [
     "CacheCoverage",
     "SourceWatermark",
     "cache_day_is_fresh",
+    "cache_day_stale_reasons",
     "load_cache_coverage",
     "load_source_watermark",
 ]
