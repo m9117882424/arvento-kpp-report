@@ -134,7 +134,7 @@ trap on_exit EXIT
 if [[ "${ARVENTO_RELEASE_SKIP_ROOT_CHECK:-0}" != "1" ]]; then
     [[ "${EUID:-$(id -u)}" -eq 0 ]] || fail "запустите release от root"
 fi
-for command in docker git curl python3 systemctl install flock timeout; do
+for command in docker git python3 systemctl install flock; do
     command -v "$command" >/dev/null || fail "не установлена команда: $command"
 done
 exec 8>"$RELEASE_LOCK_FILE"

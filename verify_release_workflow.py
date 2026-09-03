@@ -66,6 +66,7 @@ exit 0
         binary / "systemctl",
         "#!/bin/sh\nprintf 'systemctl %s\\n' \"$*\" >> \"$TEST_LOG\"\nexit 0\n",
     )
+    executable(binary / "flock", "#!/bin/sh\nexit 0\n")
     executable(
         binary / "bash",
         """#!/bin/sh
