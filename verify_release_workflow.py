@@ -36,10 +36,12 @@ def scenario(folder: Path, *, install_fails: bool) -> subprocess.CompletedProces
     )
     defaults.write_text("ARVENTO_ROOT=/previous\n", encoding="utf-8")
     executable(sbin / "arvento-healthcheck", "#!/bin/sh\nexit 0\n")
-    executable(
-        folder / "smoke",
+    smoke = folder / "smoke"
+    smoke.write_text(
         "#!/bin/sh\nprintf 'smoke %s\\n' \"$*\" >> \"$TEST_LOG\"\nexit 0\n",
+        encoding="utf-8",
     )
+    smoke.chmod(0o644)
     executable(
         binary / "git",
         f"""#!/bin/sh
@@ -71,6 +73,9 @@ exit 0
         binary / "bash",
         """#!/bin/sh
 printf 'bash %s\n' "$*" >> "$TEST_LOG"
+case "$1" in
+  */smoke) exec /bin/sh "$@" ;;
+esac
 if [ "${TEST_INSTALL_FAIL:-0}" = 1 ]; then exit 23; fi
 exit 0
 """,
@@ -101,6 +106,7 @@ exit 0
     )
     env_text = (checkout / ".env").read_text(encoding="utf-8")
     commands = log.read_text(encoding="utf-8")
+    assert "smoke " in commands
     if install_fails:
         assert result.returncode == 23, result.stdout + result.stderr
         assert "ARVENTO_IMAGE_TAG=rollback-" in env_text
