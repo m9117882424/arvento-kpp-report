@@ -4,19 +4,17 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from typing import Awaitable, Callable, TypeVar
 
 from fastapi import HTTPException
 
+from runtime_settings import report_runtime_settings
+
 
 T = TypeVar("T")
-MAX_CONCURRENT_GENERATIONS = max(
-    1, int(os.environ.get("REPORT_MAX_CONCURRENT_GENERATIONS", "1"))
-)
-GENERATION_QUEUE_TIMEOUT_SECONDS = max(
-    0.1, float(os.environ.get("REPORT_GENERATION_QUEUE_TIMEOUT_SECONDS", "5"))
-)
+_SETTINGS = report_runtime_settings()
+MAX_CONCURRENT_GENERATIONS = _SETTINGS.max_concurrent_generations
+GENERATION_QUEUE_TIMEOUT_SECONDS = _SETTINGS.generation_queue_timeout_seconds
 _SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_GENERATIONS)
 
 

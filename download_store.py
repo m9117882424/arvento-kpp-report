@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import base64
-import os
 import secrets
 import threading
 import time
@@ -15,17 +14,14 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Path as ApiPath
 from fastapi.responses import FileResponse
 
+from runtime_settings import report_runtime_settings
 
-DOWNLOAD_DIR = Path(os.environ.get("REPORT_DOWNLOAD_DIR", "/tmp/arvento-report-downloads"))
-DOWNLOAD_TTL_SECONDS = max(60, int(os.environ.get("REPORT_DOWNLOAD_TTL_SECONDS", "1800")))
-DOWNLOAD_MAX_FILES = max(1, int(os.environ.get("REPORT_DOWNLOAD_MAX_FILES", "20")))
-_DEFAULT_DOWNLOAD_MAX_BYTES = int(
-    float(os.environ.get("REPORT_DOWNLOAD_MAX_TOTAL_MB", "150")) * 1024 * 1024
-)
-DOWNLOAD_MAX_BYTES = max(
-    1,
-    int(os.environ.get("REPORT_DOWNLOAD_MAX_BYTES", str(_DEFAULT_DOWNLOAD_MAX_BYTES))),
-)
+
+_SETTINGS = report_runtime_settings()
+DOWNLOAD_DIR = _SETTINGS.download_dir
+DOWNLOAD_TTL_SECONDS = _SETTINGS.download_ttl_seconds
+DOWNLOAD_MAX_FILES = _SETTINGS.download_max_files
+DOWNLOAD_MAX_BYTES = _SETTINGS.download_max_bytes
 
 
 @dataclass(frozen=True, slots=True)
