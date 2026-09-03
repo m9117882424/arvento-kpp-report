@@ -92,7 +92,9 @@ def check_health_readiness() -> None:
             return FakeResult()
 
     original_connect = report_portal.psycopg.connect
+    original_db_url = report_portal.db_url
     report_portal.psycopg.connect = lambda *args, **kwargs: FakeConnection()
+    report_portal.db_url = lambda: "postgresql://unused"
     try:
         assert report_portal.health() == {"status": "ok", "database": "ok"}
         report_portal.psycopg.connect = lambda *args, **kwargs: (_ for _ in ()).throw(
@@ -106,6 +108,7 @@ def check_health_readiness() -> None:
             raise AssertionError("Unavailable database must make readiness fail")
     finally:
         report_portal.psycopg.connect = original_connect
+        report_portal.db_url = original_db_url
 
 
 def check_v1_delegation() -> None:
