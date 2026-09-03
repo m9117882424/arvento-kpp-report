@@ -99,7 +99,7 @@ report-portal
 ## 5. Расписание
 
 ```text
-arvento-intraday-pipeline.timer   каждые 30 минут, 05:00–23:30 Europe/Istanbul
+arvento-intraday-pipeline.timer   каждые 30 минут, 01:00–23:30 Europe/Istanbul
 arvento-nightly-correction.timer  ежедневно в 00:10 Europe/Istanbul
 arvento-backup.timer              ежедневно в 03:30 Europe/Istanbul
 ```
@@ -110,7 +110,7 @@ arvento-backup.timer              ежедневно в 03:30 Europe/Istanbul
 systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly|backup)'
 ```
 
-Внутридневный pipeline загружает последние шесть часов и пересчитывает текущий день только после статуса `SUCCESS`. Ночная коррекция загружает предыдущие сутки. Backup создаётся в custom-format и проверяется командой `pg_restore --list`.
+Внутридневный pipeline загружает последний час с перекрытием соседних циклов и пересчитывает текущий день только после статуса `SUCCESS`. Ночная коррекция загружает предыдущие сутки. Backup создаётся в custom-format и проверяется командой `pg_restore --list`.
 
 ## 6. Защита от зависаний
 
@@ -136,6 +136,11 @@ PIPELINE_CACHE_TIMEOUT_SECONDS=3600
 ```bash
 sudo /usr/local/sbin/arvento-healthcheck
 ```
+
+Healthcheck возвращает ненулевой код, если последний pipeline завершился с
+ошибкой, успешная синхронизация или backup устарели, осталась зависшая запись
+`RUNNING`, недоступен HTTP/контейнер либо заканчивается диск. Пороговые значения
+задаются переменными `HEALTHCHECK_*` в `.env.server.example`.
 
 Дополнительно:
 
@@ -251,8 +256,7 @@ Installer не удаляет PostgreSQL volume.
 ## 12. Репозиторные проверки
 
 ```bash
-python3 verify_repository.py
-python3 verify_deployment.py
+python3 verify_all.py --static
 docker compose -f docker-compose.server.yml config --quiet
 docker build -f Dockerfile.server -t arvento-report:test .
 ```

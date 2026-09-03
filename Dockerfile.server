@@ -35,67 +35,9 @@ RUN bash -n \
         /app/deploy/arvento-healthcheck.sh \
         /app/deploy/arvento-sync-and-cache.sh \
         /app/deploy/install.sh \
-    && python /app/verify_repository.py \
-    && python /app/verify_deployment.py \
-    && python -m py_compile \
-        /app/arvento_vehicle_distance_sync.py \
-        /app/central_roster_reports.py \
-        /app/business_rules.py \
-        /app/cache_freshness.py \
-        /app/consolidated_cache.py \
-        /app/consolidated_cache_portal.py \
-        /app/consolidated_cache_worker.py \
-        /app/consolidated_export_layout.py \
-        /app/consolidated_export_portal_patch.py \
-        /app/consolidated_incremental_cache.py \
-        /app/consolidated_mileage_logic.py \
-        /app/consolidated_performance.py \
-        /app/consolidated_time_logic.py \
-        /app/database_migrations.py \
-        /app/download_store.py \
-        /app/extended_roster_fields.py \
-        /app/excel_formatting.py \
-        /app/fleet_dashboard_api.py \
-        /app/generation_control.py \
-        /app/generation_jobs.py \
-        /app/operational_geofences.py \
-        /app/mileage_review_policy.py \
-        /app/parse_arvento_general_report.py \
-        /app/responsible_roster_fields.py \
-        /app/roster_management_portal.py \
-        /app/roster_selection.py \
-        /app/speed_threshold_defaults.py \
-        /app/sync_arvento_gps_to_postgres.py \
-        /app/verify_arvento_sync_batching.py \
-        /app/verify_consolidated_export_layout.py \
-        /app/verify_consolidated_mileage_logic.py \
-        /app/verify_consolidated_performance.py \
-        /app/verify_fleet_dashboard_api.py \
-        /app/verify_mileage_review_policy.py \
-        /app/verify_cache_freshness.py \
-        /app/verify_database_migrations.py \
-        /app/verify_download_delivery.py \
-        /app/verify_operational_geofences.py \
-        /app/verify_report_contracts.py \
-        /app/verify_generation_jobs.py \
-    && ARVENTO_RUNTIME_CHECK_STRICT=1 python /app/verify_runtime.py \
-    && python /app/verify_left_turn_runtime.py \
-    && python /app/verify_kpp_preview.py \
-    && python /app/verify_arvento_sync_batching.py \
-    && python /app/verify_consolidated_time_logic.py \
-    && python /app/verify_consolidated_mileage_logic.py \
-    && python /app/verify_consolidated_performance.py \
-    && python /app/verify_central_roster_reports.py \
-    && python /app/verify_consolidated_export_layout.py \
-    && python /app/verify_fleet_dashboard_api.py \
-    && python /app/verify_mileage_review_policy.py \
-    && python /app/verify_cache_freshness.py \
-    && python /app/verify_database_migrations.py \
-    && python /app/verify_download_delivery.py \
-    && python /app/verify_operational_geofences.py \
-    && python /app/verify_report_contracts.py \
-    && python /app/verify_generation_jobs.py \
-    && python /app/verify_speed_threshold_defaults.py
+    && python /app/verify_all.py --static \
+    && python -m compileall -q /app \
+    && python /app/verify_all.py --runtime
 
 USER app
 

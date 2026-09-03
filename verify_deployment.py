@@ -20,6 +20,8 @@ REQUIRED_FILES = (
     "Dockerfile.server",
     "docker-compose.server.yml",
     "SERVER_DEPLOY.md",
+    "verify_all.py",
+    "verify_healthcheck.py",
     "consolidated_incremental_cache.py",
     "deploy/arvento-backup.sh",
     "deploy/arvento-healthcheck.sh",
@@ -191,9 +193,9 @@ def check_dockerfile_references(errors: list[str]) -> None:
     required_tokens = (
         "FROM python:3.12-slim-bookworm",
         "COPY --chown=app:app . /app",
-        "python /app/verify_repository.py",
-        "python /app/verify_deployment.py",
-        "/app/consolidated_incremental_cache.py",
+        "python /app/verify_all.py --static",
+        "python /app/verify_all.py --runtime",
+        "python -m compileall -q /app",
         "USER app",
     )
     for token in required_tokens:
@@ -289,11 +291,22 @@ def check_scripts(errors: list[str]) -> None:
             "deploy/arvento-sync-and-cache.sh: set +e нельзя использовать вместе с ERR trap"
         )
 
+    healthcheck = read_text("deploy/arvento-healthcheck.sh")
+    for token in (
+        'section "LAST JOB RESULTS"',
+        'section "BACKUP FRESHNESS"',
+        "HEALTHCHECK_MAX_SYNC_AGE_MINUTES",
+        "HEALTHCHECK_MAX_BACKUP_AGE_HOURS",
+        "HEALTHCHECK_STALE_RUNNING_MINUTES",
+        "Последний завершённый sync",
+    ):
+        if token not in healthcheck:
+            errors.append(f"deploy/arvento-healthcheck.sh: отсутствует {token}")
+
     installer = read_text("deploy/install.sh")
     for token in (
         "docker compose",
-        "verify_repository.py",
-        "verify_deployment.py",
+        "verify_all.py --static",
         "systemctl daemon-reload",
         "arvento-intraday-pipeline.timer",
         "arvento-nightly-correction.timer",
@@ -317,6 +330,9 @@ def check_environment_example(errors: list[str]) -> None:
         "PIPELINE_NIGHTLY_TIMEOUT_SECONDS=",
         "PIPELINE_CACHE_TIMEOUT_SECONDS=",
         "BACKUP_RETENTION_DAYS=",
+        "HEALTHCHECK_MAX_SYNC_AGE_MINUTES=",
+        "HEALTHCHECK_MAX_BACKUP_AGE_HOURS=",
+        "HEALTHCHECK_STALE_RUNNING_MINUTES=",
     )
     for token in required_keys:
         if token not in content:

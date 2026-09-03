@@ -60,6 +60,9 @@ Installer:
 
 Полная инструкция: [`SERVER_DEPLOY.md`](SERVER_DEPLOY.md).
 
+План перехода к удобно сопровождаемому продукту:
+[`docs/MAINTENANCE_ROADMAP.md`](docs/MAINTENANCE_ROADMAP.md).
+
 ## Проверка после установки
 
 ```bash
@@ -163,8 +166,7 @@ report-portal:   127.0.0.1:18084
 ## Репозиторные проверки
 
 ```bash
-python3 verify_repository.py
-python3 verify_deployment.py
+python3 verify_all.py --static
 docker compose -f docker-compose.server.yml config --quiet
 docker build -f Dockerfile.server -t arvento-report:test .
 ```

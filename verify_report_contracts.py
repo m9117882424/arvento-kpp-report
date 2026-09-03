@@ -7,6 +7,8 @@ import asyncio
 from datetime import date
 from pathlib import Path
 
+from fastapi import HTTPException
+
 import business_rules
 import consolidated_portal
 import portal_entrypoint
@@ -69,6 +71,41 @@ def check_routes() -> None:
     assert "fetch('/api/generation-jobs'" in portal_entrypoint.portal.implementation.HTML
     assert "resumeGenerationJob();" in portal_entrypoint.portal.implementation.HTML
     assert "localStorage.setItem(generationJobStorageKey" in portal_entrypoint.portal.implementation.HTML
+
+
+def check_health_readiness() -> None:
+    class FakeResult:
+        @staticmethod
+        def fetchone():
+            return (1,)
+
+    class FakeConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        @staticmethod
+        def execute(query: str):
+            assert query == "SELECT 1"
+            return FakeResult()
+
+    original_connect = report_portal.psycopg.connect
+    report_portal.psycopg.connect = lambda *args, **kwargs: FakeConnection()
+    try:
+        assert report_portal.health() == {"status": "ok", "database": "ok"}
+        report_portal.psycopg.connect = lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("database unavailable")
+        )
+        try:
+            report_portal.health()
+        except HTTPException as exc:
+            assert exc.status_code == 503
+        else:
+            raise AssertionError("Unavailable database must make readiness fail")
+    finally:
+        report_portal.psycopg.connect = original_connect
 
 
 def check_v1_delegation() -> None:
@@ -136,6 +173,7 @@ def main() -> None:
     check_business_rules()
     check_roster_policy()
     check_routes()
+    check_health_readiness()
     check_v1_delegation()
     check_v2_consolidated_delegation()
     print("OK: report contracts, current API delegation, and roster policy verified")
