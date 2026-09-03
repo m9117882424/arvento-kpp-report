@@ -23,6 +23,7 @@ from kpp_preview_format import apply_kpp_preview_format
 from mileage_review_policy import apply_mileage_review_ui
 from portal_runtime_patch import apply_runtime_patch
 from responsible_roster_fields import apply_responsible_roster_fields
+from roster_cache_policy import apply_roster_cache_policy
 from download_store import apply_download_routes
 from roster_management_portal import apply_roster_management_portal
 
@@ -38,6 +39,9 @@ apply_roster_management_portal()
 # store with the optional responsible field and make it the only roster source.
 apply_extended_roster_fields()
 apply_responsible_roster_fields()
+# Roster revisions are lightweight metadata changes. Keep heavy GPS metrics in
+# cache and overlay the currently effective central roster at export time.
+apply_roster_cache_policy()
 apply_central_roster_reports()
 # Internal workbooks still keep diagnostics until cache writes finish. The
 # final downloadable workbook keeps the report plus mileage-review sheet.
