@@ -334,6 +334,7 @@ def check_scripts(errors: list[str]) -> None:
         "arvento-backup.service",
         "ROLLBACK_REQUIRED=1",
         "post-deploy-smoke.sh",
+        'bash "$SMOKE_SCRIPT"',
         "ARVENTO_IMAGE_TAG",
         "org.opencontainers.image.revision",
     ):

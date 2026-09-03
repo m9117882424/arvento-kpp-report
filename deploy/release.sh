@@ -110,7 +110,7 @@ rollback_release() {
     docker compose --project-directory "$ROOT" -f "$COMPOSE_FILE" \
         up -d --no-build --force-recreate geofence-editor report-portal
     systemctl start "${TIMERS[@]}"
-    "$SMOKE_SCRIPT" "$ROOT" "$ROLLBACK_TAG" ""
+    bash "$SMOKE_SCRIPT" "$ROOT" "$ROLLBACK_TAG" ""
     rollback_rc=$?
     if (( rollback_rc == 0 )); then
         log "ROLLBACK OK: production возвращён на сохранённый image"
@@ -191,7 +191,7 @@ INSTALL_ENABLE_TIMERS=0 INSTALL_SKIP_BUILD="$SKIP_BUILD" \
 systemctl start "${TIMERS[@]}"
 
 log "SMOKE: проверка новой версии"
-"$SMOKE_SCRIPT" "$ROOT" "$TARGET_TAG" "$TARGET_SHA"
+bash "$SMOKE_SCRIPT" "$ROOT" "$TARGET_TAG" "$TARGET_SHA"
 
 cat > "$STATE_ROOT/current.env" <<EOF
 CURRENT_COMMIT_SHA=$TARGET_SHA
