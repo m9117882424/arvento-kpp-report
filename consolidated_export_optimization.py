@@ -61,10 +61,12 @@ def _as_day(value: Any) -> date | None:
     return None
 
 
-def _json_cell(value: Any) -> Any:
+def _json_cell(value: Any, *, date_only: bool = False) -> Any:
     if value is None:
         return ""
     if isinstance(value, datetime):
+        if date_only:
+            return value.strftime("%d.%m.%Y")
         return value.strftime("%d.%m.%Y %H:%M:%S")
     if isinstance(value, date):
         return value.strftime("%d.%m.%Y")
@@ -498,6 +500,9 @@ def _preview_loaded(workbook) -> tuple[list[str], list[list[Any]], int]:
     sheet = workbook.worksheets[0]
     iterator = sheet.iter_rows(values_only=True)
     columns = [str(value or "") for value in next(iterator, tuple())]
+    date_indexes = {
+        index for index, name in enumerate(columns) if name.strip() == "Дата"
+    }
     rows: list[list[Any]] = []
     total = 0
     for row in iterator:
@@ -505,7 +510,10 @@ def _preview_loaded(workbook) -> tuple[list[str], list[list[Any]], int]:
             continue
         total += 1
         if len(rows) < PREVIEW_ROWS:
-            rows.append([_json_cell(value) for value in row])
+            rows.append([
+                _json_cell(value, date_only=index in date_indexes)
+                for index, value in enumerate(row)
+            ])
     return columns, rows, total
 
 
