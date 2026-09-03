@@ -32,6 +32,7 @@ RUNTIME_CHECKS = (
     "verify_consolidated_performance.py",
     "verify_central_roster_reports.py",
     "verify_consolidated_export_layout.py",
+    "verify_consolidated_export_optimization.py",
     "verify_fleet_dashboard_api.py",
     "verify_mileage_review_policy.py",
     "verify_cache_freshness.py",
