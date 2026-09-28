@@ -78,6 +78,23 @@ def validate_period(start_day: date, end_day: date) -> None:
         raise ValueError(f"Период не должен превышать {core.MAX_REPORT_DAYS} дней")
 
 
+def empty_vehicle_row(report_day: date, vehicle: core.RosterVehicle) -> core.ReportRow:
+    """Keep a roster vehicle visible when GPS has no usable track that day."""
+    return core.ReportRow(
+        day=report_day, company=vehicle.company, plate=vehicle.plate,
+        user=vehicle.user, grade=vehicle.grade,
+        max_speed=None, route_max_speed=None, site_max_speed=None,
+        total_km=0.0, inside_km=0.0, outside_km=0.0,
+        distance_difference_km=0.0, inside_percent=0.0,
+        outside_percent=0.0, percent_difference=0.0,
+        departure=None, arrival=None, weekday=core.WEEKDAYS_RU[report_day.weekday()],
+        entry_time=None, exit_time=None, worked_hours=0.0,
+        boundary_violation=0, personal_use=0, weekend_work=0, night_work=0,
+        in_roster=True, raw_points=0, retained_points=0,
+        valid_speed_points=0, max_distance_from_site_km=0.0,
+    )
+
+
 def intervals_overlap(
     start: datetime,
     finish: datetime,
@@ -258,6 +275,7 @@ def generate_multi_roster_report(
 
     rows: list[core.ReportRow] = []
     selected_by_day: dict[date, DatedRoster] = {}
+    included: set[tuple[date, str]] = set()
     processed = 0
     for report_day, plate, points in tracks:
         roster = select_roster(rosters, report_day)
@@ -277,7 +295,16 @@ def generate_multi_roster_report(
             )
             item = replace(item, night_work=night_work)
             rows.append(item)
+            included.add((report_day, core.normalize_plate(plate)))
         processed += 1
+
+    for offset in range((end_day - start_day).days + 1):
+        report_day = start_day + timedelta(days=offset)
+        roster = select_roster(rosters, report_day)
+        selected_by_day[report_day] = roster
+        for normalized, vehicle in roster.vehicles.items():
+            if (report_day, normalized) not in included:
+                rows.append(empty_vehicle_row(report_day, vehicle))
 
     if not rows:
         raise ValueError("За выбранный период нет пригодных данных для отчёта")
