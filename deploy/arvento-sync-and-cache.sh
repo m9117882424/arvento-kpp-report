@@ -12,6 +12,7 @@ INTRADAY_TIMEOUT="${PIPELINE_INTRADAY_TIMEOUT_SECONDS:-2700}"
 NIGHTLY_TIMEOUT="${PIPELINE_NIGHTLY_TIMEOUT_SECONDS:-7200}"
 DISTANCE_TIMEOUT="${PIPELINE_DISTANCE_TIMEOUT_SECONDS:-600}"
 CACHE_TIMEOUT="${PIPELINE_CACHE_TIMEOUT_SECONDS:-3600}"
+CACHE_RUN_ARGS=()
 
 log() {
     printf '%s | %s\n' "$(date '+%F %T %z')" "$*"
@@ -47,9 +48,20 @@ case "$MODE" in
         SYNC_TIMEOUT="$NIGHTLY_TIMEOUT"
         SYNC_COMMAND=(python sync_arvento_gps_to_postgres.py day "$REPORT_DAY")
         TRIGGER="nightly-correction"
-        CACHE_LABEL="полный расчёт сводного за $REPORT_DAY"
+        CACHE_LABEL="быстрый итоговый расчёт всех машин разнарядки за $REPORT_DAY"
+        # Full XLSX recomputation has timed out at 3600s on large GPS days.
+        # The incremental calculation handles GPS cars quickly; this helper
+        # also adds roster cars without GPS, preserving full-day completeness.
+        CACHE_TIMEOUT="${PIPELINE_NIGHTLY_FAST_CACHE_TIMEOUT_SECONDS:-1200}"
+        CACHE_RUN_ARGS=(
+            -v "$ROOT/deploy/arvento-fast-nightly-cache.py:/tmp/arvento-fast-nightly-cache.py:ro"
+        )
+        [[ -r "$ROOT/deploy/arvento-fast-nightly-cache.py" ]] || {
+            printf "Missing fast cache script: %s\n" "$ROOT/deploy/arvento-fast-nightly-cache.py" >&2
+            exit 1
+        }
         CACHE_COMMAND=(
-            python consolidated_cache_worker.py refresh
+            python -B /tmp/arvento-fast-nightly-cache.py
             --date "$REPORT_DAY"
             --trigger "${TRIGGER}-${REPORT_DAY}"
         )
@@ -204,6 +216,7 @@ if timeout --signal=TERM --kill-after=60 "$CACHE_TIMEOUT" \
     "${COMPOSE[@]}" run \
         --rm \
         --no-deps \
+        "${CACHE_RUN_ARGS[@]}" \
         report-portal \
         "${CACHE_COMMAND[@]}"; then
     CACHE_RC=0
