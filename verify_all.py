@@ -38,6 +38,7 @@ RUNTIME_CHECKS = (
     "verify_fleet_dashboard_api.py",
     "verify_mileage_review_policy.py",
     "verify_cache_freshness.py",
+    "verify_cache_workbook.py",
     "verify_database_migrations.py",
     "verify_download_delivery.py",
     "verify_operational_geofences.py",

@@ -53,6 +53,14 @@ def main() -> None:
     assert cache_day_is_fresh(replaced_roster)
     assert cache_day_stale_reasons(replaced_roster) == ()
 
+    missing_vehicle = dict(replaced_roster, missing_roster_vehicles=1)
+    assert not cache_day_is_fresh(missing_vehicle)
+    assert "roster_coverage" in cache_day_stale_reasons(missing_vehicle)
+
+    missing_cached_row = dict(row, actual_row_count=206)
+    assert not cache_day_is_fresh(missing_cached_row)
+    assert "row_count" in cache_day_stale_reasons(missing_cached_row)
+
     missing_roster = dict(row, source_roster_loaded_at=None)
     assert not cache_day_is_fresh(missing_roster)
     assert "missing_roster" in cache_day_stale_reasons(missing_roster)
@@ -81,6 +89,11 @@ def main() -> None:
         source_gps_max_received_at=None,
     )
     assert cache_day_is_fresh(empty)
+
+    # Listed vehicles without GPS still have completed zero-metric rows.
+    no_gps_roster = dict(empty, status="SUCCESS", row_count=205,
+                         actual_row_count=205, missing_roster_vehicles=0)
+    assert cache_day_is_fresh(no_gps_roster)
 
     assert _as_optional_float(None) is None
     assert _as_optional_float("") is None
