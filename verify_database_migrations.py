@@ -19,6 +19,7 @@ def main() -> None:
     assert [path.name for path in migrations] == [
         "001_cache_freshness.sql",
         "002_operational_geofences.sql",
+        "003_roster_cache_policy.sql",
     ]
     assert len(migration_checksum(migrations[0])) == 64
     checksum = migration_checksum(migrations[0])

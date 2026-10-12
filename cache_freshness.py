@@ -112,12 +112,18 @@ def cache_day_stale_reasons(row: dict[str, Any]) -> tuple[str, ...]:
     row_count = int(row.get("row_count") or 0)
     status = str(row.get("status") or "")
 
-    if source_vehicle_count == 0:
+    if source_vehicle_count == 0 and row_count == 0:
         status_matches = status == "EMPTY" and row_count == 0
     else:
         status_matches = status == "SUCCESS" and row_count > 0
     if not status_matches:
         reasons.append("status")
+
+    actual_row_count = row.get("actual_row_count")
+    if actual_row_count is not None and int(actual_row_count) != row_count:
+        reasons.append("row_count")
+    if int(row.get("missing_roster_vehicles") or 0):
+        reasons.append("roster_coverage")
 
     # A central roster must exist for the report date, but replacing that roster
     # does not invalidate expensive GPS/geofence calculations.
@@ -184,6 +190,8 @@ def load_cache_coverage(
             requested.report_day,
             cache.status,
             cache.row_count,
+            cached_rows.row_count AS actual_row_count,
+            roster_coverage.missing_vehicles AS missing_roster_vehicles,
             cache.gps_max_event_time AS cached_gps_max_event_time,
             cache.gps_max_received_at AS cached_gps_max_received_at,
             cache.distance_max_fetched_at AS cached_distance_max_fetched_at,
@@ -202,12 +210,28 @@ def load_cache_coverage(
         LEFT JOIN gps USING (report_day)
         LEFT JOIN distance USING (report_day)
         LEFT JOIN LATERAL (
-            SELECT loaded_at
+            SELECT roster_day, loaded_at
             FROM consolidated_roster_snapshots
             WHERE roster_day <= requested.report_day
             ORDER BY roster_day DESC
             LIMIT 1
         ) AS roster ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS row_count
+            FROM consolidated_report_cache AS c
+            WHERE c.report_day = requested.report_day
+        ) AS cached_rows ON TRUE
+        LEFT JOIN LATERAL (
+            SELECT COUNT(*) AS missing_vehicles
+            FROM consolidated_roster_entries AS e
+            WHERE e.roster_day = roster.roster_day
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM consolidated_report_cache AS c
+                  WHERE c.report_day = requested.report_day
+                    AND c.normalized_plate = e.normalized_plate
+              )
+        ) AS roster_coverage ON TRUE
         LEFT JOIN LATERAL (
             SELECT MAX(GREATEST(g.updated_at, v.created_at)) AS updated_at
             FROM geofences AS g

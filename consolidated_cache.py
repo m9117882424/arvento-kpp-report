@@ -253,13 +253,12 @@ def export_stored_rosters(database_url: str, target_dir: Path) -> list[Path]:
     return result
 
 
-def _header_map(sheet) -> dict[str, int]:
-    return {str(cell.value or "").strip(): cell.column for cell in sheet[1]}
-
-
-def _cell(sheet, row_index: int, headers: dict[str, int], name: str, default: Any = None) -> Any:
-    column = headers.get(name)
-    return sheet.cell(row_index, column).value if column else default
+def _iter_sheet_rows(sheet) -> Iterable[dict[str, Any]]:
+    """Read each XML row once; random access reparses read-only worksheets."""
+    iterator = sheet.iter_rows(values_only=True)
+    headers = [str(value or "").strip() for value in next(iterator, ())]
+    for values in iterator:
+        yield dict(zip(headers, values))
 
 
 def _as_day(value: Any) -> date | None:
@@ -311,22 +310,21 @@ def _diagnostics(workbook) -> dict[tuple[date, str], dict[str, Any]]:
     if "Диагностика" not in workbook.sheetnames:
         return {}
     sheet = workbook["Диагностика"]
-    headers = _header_map(sheet)
     result: dict[tuple[date, str], dict[str, Any]] = {}
-    for row_index in range(2, sheet.max_row + 1):
-        report_day = _as_day(_cell(sheet, row_index, headers, "Дата"))
-        plate = str(_cell(sheet, row_index, headers, "Госномер", "") or "")
+    for row in _iter_sheet_rows(sheet):
+        report_day = _as_day(row.get("Дата"))
+        plate = str(row.get("Госномер", "") or "")
         normalized = normalize_plate(plate)
         if report_day is None or not normalized:
             continue
         result[(report_day, normalized)] = {
-            "in_roster": _as_bool(_cell(sheet, row_index, headers, "В разнарядке")),
-            "raw_points": _as_int(_cell(sheet, row_index, headers, "Исходных GPS-точек")),
-            "retained_points": _as_int(_cell(sheet, row_index, headers, "Точек после удаления координатных выбросов")),
-            "valid_speed_points": _as_int(_cell(sheet, row_index, headers, "Точек для расчёта максимальной скорости")),
-            "max_distance": _as_float(_cell(sheet, row_index, headers, "Максимальное удаление от АЭС, км")),
-            "roster_day": _as_day(_cell(sheet, row_index, headers, "Дата разнарядки")),
-            "roster_filename": str(_cell(sheet, row_index, headers, "Файл разнарядки", "") or ""),
+            "in_roster": _as_bool(row.get("В разнарядке")),
+            "raw_points": _as_int(row.get("Исходных GPS-точек")),
+            "retained_points": _as_int(row.get("Точек после удаления координатных выбросов")),
+            "valid_speed_points": _as_int(row.get("Точек для расчёта максимальной скорости")),
+            "max_distance": _as_float(row.get("Максимальное удаление от АЭС, км")),
+            "roster_day": _as_day(row.get("Дата разнарядки")),
+            "roster_filename": str(row.get("Файл разнарядки", "") or ""),
         }
     return result
 
@@ -343,14 +341,13 @@ def upsert_cache_from_workbook(
     workbook = load_workbook(workbook_path, read_only=True, data_only=True)
     try:
         sheet = workbook["Сводный отчет"]
-        headers = _header_map(sheet)
         diagnostics = _diagnostics(workbook)
         records: list[tuple[Any, ...]] = []
         counts: defaultdict[date, int] = defaultdict(int)
 
-        for row_index in range(2, sheet.max_row + 1):
-            report_day = _as_day(_cell(sheet, row_index, headers, "Дата"))
-            plate = str(_cell(sheet, row_index, headers, "Госномер / Plaka", "") or "").strip()
+        for row in _iter_sheet_rows(sheet):
+            report_day = _as_day(row.get("Дата"))
+            plate = str(row.get("Госномер / Plaka", "") or "").strip()
             normalized = normalize_plate(plate)
             if report_day is None or not normalized or not (start_day <= report_day <= end_day):
                 continue
@@ -358,31 +355,31 @@ def upsert_cache_from_workbook(
             records.append((
                 report_day,
                 normalized,
-                str(_cell(sheet, row_index, headers, "Компания или фирма", "") or ""),
+                str(row.get("Компания или фирма", "") or ""),
                 plate,
-                str(_cell(sheet, row_index, headers, "ПОЛЬЗОВАТЕЛЬ / KULLANICI", "") or ""),
-                str(_cell(sheet, row_index, headers, "Грейд / SCALA", "") or ""),
-                _cell(sheet, row_index, headers, "Максимальная скорость / Maximum Hız"),
-                _cell(sheet, row_index, headers, "Максимальная скорость только на маршруте Аккую - Ташуджу / Maximum Hız Rota Akkuyu-Taşucu"),
-                _cell(sheet, row_index, headers, "Максимальная скорость на АЭС Аккую"),
-                _as_float(_cell(sheet, row_index, headers, "Пробег общий, км")),
-                _as_float(_cell(sheet, row_index, headers, "Пробег внутри АЭС АККУЮ, км")),
-                _as_float(_cell(sheet, row_index, headers, "Пробег вне площадки, км")),
-                _as_float(_cell(sheet, row_index, headers, "Разница между пробегами, км")),
-                _as_float(_cell(sheet, row_index, headers, "Пробег внутри АЭС АККУЮ, %")),
-                _as_float(_cell(sheet, row_index, headers, "Пробег вне площадки, %")),
-                _as_float(_cell(sheet, row_index, headers, "Разница между пробегами, %")),
-                _cell(sheet, row_index, headers, "Дата выезда"),
-                _cell(sheet, row_index, headers, "Дата прибытия"),
-                str(_cell(sheet, row_index, headers, "День недели", "") or ""),
-                _cell(sheet, row_index, headers, "Прибыл / Giriş"),
-                _cell(sheet, row_index, headers, "Убыл / Çıkış"),
-                _as_optional_float(_cell(sheet, row_index, headers, "Всего отработано часов")),
-                _as_int(_cell(sheet, row_index, headers, "Нарушение геозоны / Sınır ihlali")),
-                _as_int(_cell(sheet, row_index, headers, "Использование ТС в личных целях")),
-                _as_int(_cell(sheet, row_index, headers, "Hafta sonu çalışmaları / Работа в выходные дни")),
-                _as_int(_cell(sheet, row_index, headers, "Gece vardiyasında çalışmalar / Работа ночью")),
-                _as_float(_cell(sheet, row_index, headers, FUEL_HEADER)),
+                str(row.get("ПОЛЬЗОВАТЕЛЬ / KULLANICI", "") or ""),
+                str(row.get("Грейд / SCALA", "") or ""),
+                row.get("Максимальная скорость / Maximum Hız"),
+                row.get("Максимальная скорость только на маршруте Аккую - Ташуджу / Maximum Hız Rota Akkuyu-Taşucu"),
+                row.get("Максимальная скорость на АЭС Аккую"),
+                _as_float(row.get("Пробег общий, км")),
+                _as_float(row.get("Пробег внутри АЭС АККУЮ, км")),
+                _as_float(row.get("Пробег вне площадки, км")),
+                _as_float(row.get("Разница между пробегами, км")),
+                _as_float(row.get("Пробег внутри АЭС АККУЮ, %")),
+                _as_float(row.get("Пробег вне площадки, %")),
+                _as_float(row.get("Разница между пробегами, %")),
+                row.get("Дата выезда"),
+                row.get("Дата прибытия"),
+                str(row.get("День недели", "") or ""),
+                row.get("Прибыл / Giriş"),
+                row.get("Убыл / Çıkış"),
+                _as_optional_float(row.get("Всего отработано часов")),
+                _as_int(row.get("Нарушение геозоны / Sınır ihlali")),
+                _as_int(row.get("Использование ТС в личных целях")),
+                _as_int(row.get("Hafta sonu çalışmaları / Работа в выходные дни")),
+                _as_int(row.get("Gece vardiyasında çalışmalar / Работа ночью")),
+                _as_float(row.get(FUEL_HEADER)),
                 bool(diag.get("in_roster", True)),
                 int(diag.get("raw_points", 0)),
                 int(diag.get("retained_points", 0)),
