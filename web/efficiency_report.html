@@ -49,13 +49,14 @@
     .kpi-label{font-size:11px;color:#8793a6;font-weight:670}.kpi-value{font-size:25px;font-weight:835;letter-spacing:-.7px;margin-top:10px;color:#203653;white-space:nowrap}
     .kpi-note{font-size:10px;color:#a0acbc;margin-top:5px}
     .main-grid{display:grid;grid-template-columns:minmax(0,1fr) 258px;gap:14px}
-    .table-panel{min-width:0;overflow:hidden}.table-header{padding:17px 18px 12px;display:flex;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid #edf0f5}
+    .table-panel{min-width:0;overflow:hidden}.table-header{padding:17px 18px 12px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid #edf0f5}
     .table-title{font-size:14px;font-weight:825}.table-sub{font-size:11px;color:#8c9aaa;margin-top:5px}
+    .color-legend{font-size:11px;color:#728198;line-height:1.5;max-width:490px}
     .table-scroll{overflow:auto;max-height:590px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1450px;font-size:11px}
-    thead th{position:sticky;top:0;background:#f5f8fc;color:#728198;font-size:10px;line-height:1.25;font-weight:800;text-align:left;padding:12px 9px;border-bottom:1px solid #e6ebf3;white-space:nowrap;z-index:2}
+    thead th{position:sticky;top:0;background:#f5f8fc;color:#728198;font-size:10px;line-height:1.3;font-weight:800;text-align:left;padding:12px 9px;border-bottom:1px solid #e6ebf3;white-space:normal;min-width:110px;max-width:205px;z-index:2}
     tbody td{padding:12px 9px;border-bottom:1px solid #edf1f6;white-space:nowrap;color:#39506b;vertical-align:middle}
     tbody tr:hover{background:#f9fbff}.right{text-align:right}.center{text-align:center}.plate{font-size:11px;font-weight:820;color:#193659}.model{font-size:10px;color:#8d9bad;margin-top:3px}
-    .one{font-weight:740;color:#425876;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.second{font-size:10px;color:#95a1b1}
+    .one{font-weight:740;color:#425876;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.second{font-size:10px;color:#95a1b1;white-space:normal;line-height:1.4;max-width:205px;margin-top:3px}
     .td-sticky{position:sticky;left:0;background:#fff;z-index:1;box-shadow:inset -1px 0 #edf1f6}thead .td-sticky{z-index:3;background:#f5f8fc}
     .cell-tag{font-weight:820;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:5px 7px;min-width:42px}
     .good{background:#e5f8ef;color:#15825a}.mid{background:#fff3df;color:#aa690b}.bad{background:#fee9e8;color:#c84143}.na{background:#f0f2f5;color:#8b98aa}
@@ -85,7 +86,7 @@
     <div class="aside-bottom">Источник: Arvento PostgreSQL / PostGIS<br>Часовой пояс: Europe/Istanbul</div>
   </aside>
   <main>
-    <div class="head"><div><div class="breadcrumb">Отчёты / Аналитика / Эффективность</div><h1>Эффективность транспорта</h1><div class="sub">Фактический пробег, движение, стоянки, скорость и рейтинг по сводному отчёту</div></div><div class="head-actions"><button class="outline" id="exportExcel" disabled>↧ Excel</button></div></div>
+    <div class="head"><div><div class="breadcrumb">Отчёты / Аналитика / Эффективность</div><h1>Эффективность транспорта</h1><div class="sub">Пробег — по сводному отчёту; время движения, стоянки и превышения скорости — по GPS Arvento</div></div><div class="head-actions"><button class="outline" id="exportExcel" disabled>↧ Выгрузить Excel</button></div></div>
     <section class="panel filters">
       <div class="filters-top"><div class="panel-title">Фильтры отчёта <span class="smallbadge" id="selectionSummary">Загрузка</span></div><span class="thin">Множественный выбор</span></div>
       <div class="filters-grid">
@@ -102,14 +103,14 @@
       <div class="settings-body" id="settingsBody">
         <div class="setting-control"><label>Выезд на обед</label><div class="timefields"><input id="lunchExitFrom" type="time" value="11:30"><input id="lunchExitTo" type="time" value="12:30"></div></div>
         <div class="setting-control"><label>Возврат с обеда</label><div class="timefields"><input id="lunchReturnFrom" type="time" value="12:30"><input id="lunchReturnTo" type="time" value="14:00"></div></div>
-        <div class="setting-control"><label>Transit · норма, км/день</label><input id="transitMin" type="number" min="0" max="500" step="1" value="50"></div>
-        <div class="setting-control"><label>Остальные · норма, км/день</label><input id="otherMin" type="number" min="0" max="500" step="1" value="30"></div>
-        <div class="setting-control"><label>Стоянка строго более, мин</label><input id="parkingMin" type="number" min="0" max="240" step="1" value="5"><div class="minihelp">Разрывы GPS-связи не засчитываются</div></div>
+        <div class="setting-control"><label>Ford Transit · минимум внутри Аккую, км/рабочий день</label><input id="transitMin" type="number" min="0" max="500" step="1" value="50"></div>
+        <div class="setting-control"><label>Другие модели · минимум внутри Аккую, км/рабочий день</label><input id="otherMin" type="number" min="0" max="500" step="1" value="30"></div>
+        <div class="setting-control"><label>Считать стоянкой остановку дольше, мин</label><input id="parkingMin" type="number" min="0" max="240" step="1" value="5"><div class="minihelp">Разрывы GPS-связи не засчитываются</div></div>
         <div class="setting-control"><label>Офисные геозоны (мультивыбор)</label><div class="zone-choice" id="officeZones"><div class="minihelp">Загрузка…</div></div><div class="minihelp">Пока не выбраны — стоянки в балле не считаются</div></div>
         <div class="setting-control"><label>Разрешённые геозоны (мультивыбор)</label><div class="zone-choice" id="allowedZones"><div class="minihelp">Загрузка…</div></div><div class="minihelp">Пока не выбраны — контроль вне зон отключён</div></div>
-        <div class="setting-control"><label>Порог на площадке, км/ч</label><input id="speedSite" type="number" min="5" max="200" step=".1" value="50"></div>
-        <div class="setting-control"><label>Порог вне площадки, км/ч</label><input id="speedOutside" type="number" min="20" max="250" step=".1" value="103"></div>
-        <div class="setting-control"><label>Превышение не менее, сек</label><input id="speedDuration" type="number" min="0" max="3600" step="1" value="3"><div class="minihelp">Дополнительно минимум 3 GPS-точки</div></div>
+        <div class="setting-control"><label>Порог превышения скорости внутри Аккую, км/ч</label><input id="speedSite" type="number" min="5" max="200" step=".1" value="50"></div>
+        <div class="setting-control"><label>Порог превышения скорости вне Аккую, км/ч</label><input id="speedOutside" type="number" min="20" max="250" step=".1" value="103"></div>
+        <div class="setting-control"><label>Минимальная длительность превышения скорости, сек</label><input id="speedDuration" type="number" min="0" max="3600" step="1" value="3"><div class="minihelp">Также требуются минимум 3 GPS-точки подряд</div></div>
       </div>
       <div class="settings-notice" id="zoneNotice">Основная территория Аккую используется всегда. Тоннельные геозоны исключаются из фиксации превышений автоматически.</div>
     </section>
@@ -117,18 +118,18 @@
     <section class="kpis" id="kpis"></section>
     <section class="main-grid">
       <div class="panel table-panel">
-        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="thin">Зелёный — норма · жёлтый — внимание · красный — нарушение</div></div>
+        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="color-legend">Цвет относится к показателю: зелёный — достигнут ориентир; жёлтый — частичное выполнение; красный — ниже ориентира или зафиксировано превышение. Для среднего пробега сравнивается норматив модели.</div></div>
         <div class="table-scroll"><table><thead><tr>
-          <th class="td-sticky">№ / Госномер</th><th>Дирекция / пользователь</th><th>Нормативные дни<br>факт / план</th><th class="right">Внутри<br>км/день</th><th class="right">Снаружи<br>км/день</th><th class="center">Доля<br>внутри</th><th class="center">Движение<br>внутри</th><th class="center">Стоянки<br>у офисов</th><th class="center">Обед<br>выезд / возврат</th><th class="center">Выходные<br>на площадке</th><th class="right">Вне зон<br>км</th><th class="center">Превышения<br>скорости</th><th class="center">Баллы</th>
+          <th class="td-sticky">№ строки / Госномер</th><th>Дирекция / пользователь</th><th>Дней с нормативом пробега<br>выполнено / план</th><th class="right">Средний пробег внутри Аккую<br>км/плановый рабочий день</th><th class="right">Средний пробег вне Аккую<br>км/плановый рабочий день</th><th class="center">Доля пробега внутри Аккую<br>за весь период, %</th><th class="center">Время движения<br>внутри Аккую</th><th class="center">Стоянки в выбранных<br>офисных зонах</th><th class="center">Обед<br>выездов / возвращений, шт.</th><th class="center">Выходных дней<br>с движением внутри Аккую</th><th class="right">Пробег вне<br>разрешённых зон, км</th><th class="center">Эпизоды превышения<br>скорости, шт.</th><th class="center">Итоговый балл<br>0–100</th>
         </tr></thead><tbody id="tableBody"><tr><td colspan="13" class="center" style="padding:35px">Нажмите «Показать отчёт»</td></tr></tbody></table></div>
-        <div class="table-foot"><div>Н/Д — нет подтверждённых данных; предварительный балл не учитывает ненастроенные геозоны</div><div id="footerCount"></div></div>
+        <div class="table-foot"><div>Н/Д — показатель нельзя достоверно рассчитать; «Не настроено» — не выбраны нужные геозоны. Оценка без геозон предварительная.</div><div id="footerCount"></div></div>
       </div>
-      <div class="panel rank-panel"><div class="rank-head"><strong>🏆 ТОП-5 автопарка</strong></div><div class="rank-sub">Рейтинг 0–100, штраф за скорость до 15 баллов</div><div class="ranks" id="ranks"></div><div class="ranklegend">Вес: норматив дней 50%, движение/стоянки 25%, доля внутри 15%, разрешённые зоны 10%. Ненастроенные показатели исключаются с пропорциональным пересчётом весов. За превышение −3 балла (до −15).</div></div>
+      <div class="panel rank-panel"><div class="rank-head"><strong>🏆 ТОП-5 автопарка</strong></div><div class="rank-sub">Итоговый балл от 0 до 100; штраф за скорость — до 15 баллов</div><div class="ranks" id="ranks"></div><div class="ranklegend">Вес: дни с выполненным нормативом пробега — 50%, доля времени движения среди движения и офисных стоянок — 25%, доля пробега внутри Аккую — 15%, пробег в разрешённых зонах — 10%. Ненастроенные показатели исключаются с пропорциональным пересчётом весов. За превышение скорости −3 балла (до −15).</div></div>
     </section>
     <p class="thin" id="footnote">Данные берутся из сводного отчёта и GPS Arvento. Работа в выходные — суббота и воскресенье.</p>
   </main>
 </div>
-<dialog id="speedDialog"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:17px"><strong id="dialogTitle">Превышения скорости</strong><button class="outline" id="closeDialog">Закрыть</button></div><div class="dialog-scroll"><table><thead><tr><th>Начало</th><th>Конец</th><th>На площадке?</th><th>Длительность, сек</th><th>Макс., км/ч</th><th>Порог, км/ч</th><th>Карта</th></tr></thead><tbody id="speedDetails"></tbody></table></div></dialog>
+<dialog id="speedDialog"><div style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:17px"><strong id="dialogTitle">Эпизоды превышения скорости</strong><button class="outline" id="closeDialog">Закрыть</button></div><div class="dialog-scroll"><table><thead><tr><th>Начало</th><th>Окончание</th><th>Место</th><th>Длительность, сек</th><th>Максимальная скорость, км/ч</th><th>Установленный порог, км/ч</th><th>Карта</th></tr></thead><tbody id="speedDetails"></tbody></table></div></dialog>
 <script>
 (() => {
   'use strict';
@@ -140,8 +141,10 @@
   const esc = x => String(x ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const fmt = (x,d=1) => x == null ? 'Н/Д' : Number(x).toLocaleString('ru-RU',{maximumFractionDigits:d,minimumFractionDigits:d});
   const minutes = x => {if(x == null)return 'Н/Д';const n=Math.round(x);return Math.floor(n/60)+' ч '+String(n%60).padStart(2,'0')+' м';};
-  const tag = (v, cls='na') => '<span class="cell-tag '+cls+'">'+esc(v)+'</span>';
+  const tag = (v, cls='na', hint='') => '<span class="cell-tag '+cls+'"'+(hint?' title="'+esc(hint)+'"':'')+'>'+esc(v)+'</span>';
   const rating = v => v == null ? 'na' : v >= 85 ? 'good' : v >= 60 ? 'mid' : 'bad';
+  const insideAverageClass = (average, minimum) => average==null||minimum==null?'na':average>=minimum?'good':'bad';
+  const normDaysClass = (done, planned, gpsDays) => !planned||!gpsDays?'na':done>=planned?'good':done/planned>=.8?'mid':'bad';
   const iso = d => [d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
   const showStatus = (message, kind='') => { $('status').className='status '+kind;$('status').textContent=message; };
 
@@ -260,38 +263,40 @@
   }
   function render(report) {
     const rows=report.vehicles;
-    $('selectionSummary').textContent=rows.length+' ТС в выборке';
-    $('rowCount').textContent='По убыванию балла · '+rows.length+' автомобилей · '+report.period.from+' — '+report.period.to;
-    $('footerCount').textContent='Показано '+rows.length+' ТС';
+    $('selectionSummary').textContent=rows.length+' автомобилей в отчёте';
+    $('rowCount').textContent='По убыванию итогового балла · '+rows.length+' автомобилей · '+report.period.from+' — '+report.period.to;
+    $('footerCount').textContent='Показано '+rows.length+' автомобилей';
     const s=report.summary;
     const cards=[
-      ['ТС в выборке',s.vehicles,'включая машины без GPS'],
-      ['Дней с нормативом',s.eligible_days?Math.round(100*s.norm_days/s.eligible_days)+'%':'Н/Д',s.norm_days+' из '+s.eligible_days+' дней'],
-      ['Пробег внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','доля внутри / всего'],
-      ['Движение на площадке',minutes(s.moving_minutes),'подтверждённые интервалы'],
-      ['Стоянки у офисов',minutes(s.office_parking_minutes),'только выбранные зоны'],
-      ['Превышения скорости',s.speed_events,'без тоннельных зон']
+      ['Автомобилей в отчёте',s.vehicles,'включая автомобили без GPS-данных'],
+      ['Доля плановых рабочих дней с выполненным нормативом пробега',s.eligible_days?Math.round(100*s.norm_days/s.eligible_days)+'%':'Н/Д','выполнено '+s.norm_days+' из '+s.eligible_days+' дней по всем автомобилям'],
+      ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','пробег внутри / общий пробег за весь период'],
+      ['Суммарное время движения внутри Аккую',minutes(s.moving_minutes),'по всем автомобилям, подтверждённые GPS-интервалы'],
+      ['Суммарное время стоянок в выбранных офисных зонах',minutes(s.office_parking_minutes),report.settings.office_zone_codes.length?'по всем автомобилям, остановки дольше '+report.settings.parking_min_minutes+' мин':'офисные геозоны ещё не выбраны'],
+      ['Эпизоды превышения скорости',s.speed_events,'внутри и вне Аккую, тоннельные зоны исключены']
     ];
     $('kpis').innerHTML=cards.map(c=>'<div class="panel kpi"><div class="kpi-label">'+esc(c[0])+'</div><div class="kpi-value">'+esc(c[1])+'</div><div class="kpi-note">'+esc(c[2])+'</div></div>').join('');
     $('tableBody').innerHTML=rows.map((r,i)=>{
-      const norm=r.eligible_days?r.norm_days/r.eligible_days:null;
+      const noGps=!r.gps_days;
+      const averageNorm=r.inside_daily_norm_km;
       const speedCell=r.gps_days?tag(r.speed_events,r.speed_events?'bad':'good'):'<span class="cell-tag na">Н/Д</span>';
       return '<tr>'+
         '<td class="td-sticky"><div class="plate">'+esc(r.position??(i+1))+'. '+esc(r.plate)+'</div><div class="model">'+esc(r.model)+'</div></td>'+
         '<td><div class="one" title="'+esc(r.directorate)+'">'+esc(r.directorate||r.company||'Не указано')+'</div><div class="second">'+esc(r.user||'Не указан')+'</div></td>'+
-        '<td>'+tag(r.norm_days+' / '+r.eligible_days,norm==null?'na':norm>=.8?'good':norm>=.5?'mid':'bad')+'</td>'+
-        '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),r.score==null?'na':r.norm_days===r.eligible_days?'good':'bad')+'</td>'+
+        '<td>'+tag(r.norm_days+' / '+r.eligible_days,normDaysClass(r.norm_days,r.eligible_days,r.gps_days),'Дней с подтверждённым выполнением суточной нормы из числа плановых рабочих дней')+'</td>'+
+        '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),insideAverageClass(r.inside_km_per_day,averageNorm),'Средний пробег внутри Аккую за плановый рабочий день. Норматив: от '+fmt(averageNorm,0)+' км')+
+          (averageNorm==null?'':'<div class="second">норма: от '+fmt(averageNorm,0)+' км за рабочий день</div>')+'</td>'+
         '<td class="right">'+fmt(r.outside_km_per_day)+'</td>'+
-        '<td class="center">'+tag(r.inside_share_percent==null?'Н/Д':fmt(r.inside_share_percent)+'%',r.inside_share_percent==null?'na':r.inside_share_percent>=75?'good':r.inside_share_percent>=50?'mid':'bad')+
-          '<div class="second">внутри / вне: '+(r.inside_to_outside_percent==null?'—':fmt(r.inside_to_outside_percent)+'%')+'</div></td>'+
+        '<td class="center">'+tag(r.inside_share_percent==null?'Н/Д':fmt(r.inside_share_percent)+'%',r.inside_share_percent==null?'na':r.inside_share_percent>=75?'good':r.inside_share_percent>=50?'mid':'bad','Визуальный ориентир: зелёный от 75%, жёлтый от 50%, красный ниже 50%')+
+          '<div class="second">отношение внутри к вне: '+(r.inside_to_outside_percent==null?'Н/Д':fmt(r.inside_to_outside_percent)+'%')+'</div></td>'+
         '<td class="center">'+(r.gps_days?minutes(r.moving_minutes):'Н/Д')+
-          '<div class="second">к стоянкам: '+(r.motion_vs_office_percent==null?'—':fmt(r.motion_vs_office_percent)+'%')+'</div></td>'+
-        '<td class="center">'+tag(minutes(r.office_parking_minutes),r.office_parking_minutes==null?'na':r.office_parking_minutes>r.moving_minutes?'bad':'good')+'</td>'+
-        '<td class="center">'+r.lunch_exits+' / '+r.lunch_returns+'</td>'+
-        '<td class="center">'+r.weekend_site_days+'</td>'+
-        '<td class="right">'+tag(r.unauthorized_km==null?'Не настроено':fmt(r.unauthorized_km),r.unauthorized_km==null?'na':r.unauthorized_km?'bad':'good')+'</td>'+
-        '<td class="center">'+(r.speed_events?'<button type="button" class="linkbutton" data-speed="'+esc(r.normalized_plate)+'" title="Показать события">'+r.speed_events+'</button>':speedCell)+'</td>'+
-        '<td class="center"><span class="score '+rating(r.score)+'">'+(r.score==null?'Н/Д':r.score)+'</span></td></tr>';
+          '<div class="second" title="Доля движения от суммы времени движения и офисных стоянок">доля времени в движении: '+(r.motion_vs_office_percent==null?'Н/Д':fmt(r.motion_vs_office_percent)+'%')+'</div></td>'+
+        '<td class="center">'+tag(noGps?'Н/Д':minutes(r.office_parking_minutes),noGps||r.office_parking_minutes==null?'na':r.office_parking_minutes>r.moving_minutes?'bad':'good',r.office_parking_minutes>r.moving_minutes?'Время офисных стоянок больше времени движения внутри Аккую':'Подтверждённое время стоянок в выбранных офисных геозонах')+'</td>'+
+        '<td class="center">'+(noGps?'Н/Д':r.lunch_exits+' / '+r.lunch_returns)+'</td>'+
+        '<td class="center">'+(noGps?'Н/Д':r.weekend_site_days)+'</td>'+
+        '<td class="right">'+tag(r.unauthorized_km==null?'Не настроено':noGps?'Н/Д':fmt(r.unauthorized_km),noGps||r.unauthorized_km==null?'na':r.unauthorized_km?'bad':'good')+'</td>'+
+        '<td class="center">'+(r.speed_events?'<button type="button" class="linkbutton" data-speed="'+esc(r.normalized_plate)+'" title="Показать подтверждённые эпизоды превышения скорости">'+r.speed_events+'</button>':speedCell)+'</td>'+
+        '<td class="center"><span class="score '+rating(r.score)+'">'+(r.score==null?'Н/Д':r.score)+'</span>'+(r.data_status==='ok'?'':'<div class="second">'+esc(r.data_status)+'</div>')+'</td></tr>';
     }).join('')||'<tr><td colspan="13" class="center" style="padding:35px">По выбранным фильтрам автомобилей нет</td></tr>';
     $('ranks').innerHTML=rows.filter(r=>r.score!=null).slice(0,5).map((r,i)=>
       '<div class="rankline"><span class="ranknum">'+(i+1)+'</span><div class="rankdata"><div class="ranktop"><span>'+esc(r.plate)+'</span><span>'+r.score+'</span></div><div class="track"><div class="fill" style="width:'+r.score+'%;background:'+(r.score>=85?'#4bc897':r.score>=60?'#ebb15c':'#e97c80')+'"></div></div></div></div>'
@@ -301,12 +306,12 @@
     if(!report.settings.office_zone_codes.length||!report.settings.allowed_zone_codes.length)reasons.push('ненастроенных геозон');
     if(report.coverage.provisional_days.length)reasons.push('незакрытых суток');
     if((report.coverage.roster_coverage_days||[]).length)reasons.push('неполного охвата разнарядки');
-    $('footnote').textContent=report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
+    $('footnote').textContent='Средний пробег — только за плановые будни из разнарядки; доля пробега внутри — за весь выбранный период. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
   }
   function showSpeed(plate) {
     if(!lastReport)return;
     const events=lastReport.speed_events.filter(e=>e.plate.replace(/[^\p{L}\p{N}]/gu,'').toLocaleUpperCase()===plate);
-    $('dialogTitle').textContent='Превышения скорости · '+plate;
+    $('dialogTitle').textContent='Эпизоды превышения скорости · '+plate;
     $('speedDetails').innerHTML=events.map(e=>
       '<tr><td>'+esc(e.start.replace('T',' '))+'</td><td>'+esc(e.finish.replace('T',' '))+'</td><td>'+esc(e.place)+'</td><td>'+e.duration_seconds+'</td><td>'+e.max_speed_kmh+'</td><td>'+e.threshold_kmh+'</td><td><a target="_blank" rel="noopener noreferrer" href="https://www.google.com/maps?q='+encodeURIComponent(e.latitude+','+e.longitude)+'">Карта</a></td></tr>'
     ).join('');
