@@ -251,7 +251,9 @@
       if(lastReport.coverage.score_preliminary)caveats.push('часть геозон ещё не настроена');
       if(lastReport.coverage.incomplete_days.length)caveats.push('есть дни с неготовым сводным кэшем');
       if(lastReport.coverage.provisional_days.length)caveats.push('текущие сутки ещё не закрыты');
-      showStatus('Отчёт сформирован.'+(caveats.length?' Внимание: '+caveats.join('; ')+'.':''),'ok');
+      const cacheNote=' Кэш GPS-метрик: '+lastReport.coverage.gps_metric_cache_hits+
+        ' использовано повторно, '+lastReport.coverage.gps_metric_cache_misses+' рассчитано.';
+      showStatus('Отчёт сформирован.'+cacheNote+(caveats.length?' Внимание: '+caveats.join('; ')+'.':''),'ok');
     }catch(error){showStatus(error.message,'error');}
     finally{$('generate').disabled=false;}
   }

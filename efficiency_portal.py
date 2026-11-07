@@ -8,9 +8,10 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
@@ -30,6 +31,7 @@ _JOBS: dict[str, "EfficiencyJob"] = {}
 _LIMIT_RUNNING = asyncio.Semaphore(1)
 _JOB_TTL_SECONDS = 1800
 _MAX_JOBS = 10
+_LOCAL_TZ = ZoneInfo("Europe/Istanbul")
 _WEB_PAGE = Path(__file__).resolve().parent / "web" / "efficiency_report.html"
 
 
@@ -114,12 +116,29 @@ def apply_efficiency_portal(app: FastAPI, database_url: Callable[[], str]) -> No
     @app.post("/api/efficiency/jobs", status_code=202)
     async def start_efficiency(settings: EfficiencySettings) -> dict[str, str]:
         _cleanup()
+        # Identical historical requests should reuse an existing result or
+        # running job. Current-day results are never reused after completion.
+        historical = settings.date_to < datetime.now(_LOCAL_TZ).date()
+        for existing in _JOBS.values():
+            if existing.settings == settings and (
+                existing.state in {"queued", "running"}
+                or (historical and existing.state == "succeeded")
+            ):
+                return {"job_id": existing.job_id, "status": existing.state}
         active = sum(job.state in {"queued", "running"} for job in _JOBS.values())
-        if active >= 2 or len(_JOBS) >= _MAX_JOBS:
+        if active >= 2:
             raise HTTPException(
                 status_code=429,
                 detail="Уже выполняются расчёты. Дождитесь их окончания.",
             )
+        # Bound memory without blocking new work because old completed jobs
+        # have not yet reached their 30-minute retention deadline.
+        while len(_JOBS) >= _MAX_JOBS:
+            completed = [job for job in _JOBS.values() if job.state in {"succeeded", "failed"}]
+            if not completed:
+                raise HTTPException(status_code=429, detail="Очередь отчётов заполнена")
+            oldest = min(completed, key=lambda job: job.updated_at)
+            _JOBS.pop(oldest.job_id, None)
         job_id = secrets.token_urlsafe(24)
         job = EfficiencyJob(job_id, settings, time.monotonic())
         _JOBS[job_id] = job

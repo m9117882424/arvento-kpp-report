@@ -12,8 +12,10 @@ from __future__ import annotations
 import io
 import json
 import math
+import threading
+import time as clock
 import unicodedata
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Mapping, Sequence
@@ -55,6 +57,8 @@ SCORE_WEIGHTS = {
     "inside_share": 0.15,
     "authorized_use": 0.10,
 }
+GPS_METRIC_CACHE_TTL_SECONDS = 3600
+GPS_METRIC_CACHE_MAX_ENTRIES = 10_000
 
 
 class EfficiencySettings(BaseModel):
@@ -210,6 +214,47 @@ class GPSDailyMetrics:
     points: int = 0
 
 
+# Derived metrics (not raw tracks) are small enough to retain across requests.
+# Keep the key independent of plate/directorate/user/model filters so a change
+# to the report selection does not re-read the same closed-day GPS history.
+_METRIC_CACHE: OrderedDict[tuple[Any, ...], tuple[float, GPSDailyMetrics]] = OrderedDict()
+_METRIC_CACHE_LOCK = threading.Lock()
+
+
+def _metric_settings_signature(settings: EfficiencySettings) -> tuple[Any, ...]:
+    return (
+        tuple(sorted(settings.office_zone_codes)),
+        tuple(sorted(settings.allowed_zone_codes)),
+        settings.lunch_exit_from, settings.lunch_exit_to,
+        settings.lunch_return_from, settings.lunch_return_to,
+        settings.parking_min_minutes,
+        settings.site_speed_threshold_kmh,
+        settings.outside_speed_threshold_kmh,
+        settings.speed_min_duration_seconds,
+    )
+
+
+def _cached_metric(key: tuple[Any, ...]) -> GPSDailyMetrics | None:
+    with _METRIC_CACHE_LOCK:
+        item = _METRIC_CACHE.get(key)
+        if item is None:
+            return None
+        loaded_at, metrics = item
+        if clock.monotonic() - loaded_at >= GPS_METRIC_CACHE_TTL_SECONDS:
+            _METRIC_CACHE.pop(key, None)
+            return None
+        _METRIC_CACHE.move_to_end(key)
+        return metrics
+
+
+def _remember_metric(key: tuple[Any, ...], metrics: GPSDailyMetrics) -> None:
+    with _METRIC_CACHE_LOCK:
+        _METRIC_CACHE[key] = (clock.monotonic(), metrics)
+        _METRIC_CACHE.move_to_end(key)
+        while len(_METRIC_CACHE) > GPS_METRIC_CACHE_MAX_ENTRIES:
+            _METRIC_CACHE.popitem(last=False)
+
+
 def _within_window(timestamp: datetime, start: time, finish: time) -> bool:
     local_time = timestamp.astimezone(TZ).time().replace(tzinfo=None)
     return start <= local_time <= finish
@@ -272,11 +317,13 @@ def analyze_daily_track(
                 and speed is not None and speed > MIN_MOVING_SPEED_KMH
             ):
                 metrics.moving_minutes += dt / 60
-            if was_inside and not inside and _within_window(
+            # A change of GPS position after a long outage is not proof of a
+            # crossing at the timestamp of the first newly received point.
+            if dt and was_inside and not inside and _within_window(
                 point.timestamp, settings.lunch_exit_from, settings.lunch_exit_to
             ):
                 metrics.lunch_exits += 1
-            if not was_inside and inside and _within_window(
+            if dt and not was_inside and inside and _within_window(
                 point.timestamp, settings.lunch_return_from, settings.lunch_return_to
             ):
                 metrics.lunch_returns += 1
@@ -370,7 +417,10 @@ def load_daily_rows(
             COALESCE(c.outside_km,0) AS outside_km,
             COALESCE(c.total_km,0) AS total_km,
             COALESCE(c.raw_points,0) AS raw_points,
-            (cd.status='SUCCESS' AND c.normalized_plate IS NOT NULL) AS cache_ready
+            (cd.status='SUCCESS' AND c.normalized_plate IS NOT NULL) AS cache_ready,
+            cd.gps_max_event_time AS cache_gps_event_time,
+            cd.gps_max_received_at AS cache_gps_received_at,
+            cd.geofence_updated_at AS cache_geofence_updated_at
         FROM roster r
         FULL JOIN consolidated_report_cache c
           ON c.report_day=r.report_day AND c.normalized_plate=r.normalized_plate
@@ -495,6 +545,16 @@ def aggregate_report(
         current = days[-1]
         total_inside = sum(float(r["inside_km"] or 0) for r in days)
         total_outside = sum(float(r["outside_km"] or 0) for r in days)
+        # Weekends/non-roster dates contribute to overall mileage and site
+        # activity but cannot inflate the mean per planned working day.
+        weekday_inside = sum(
+            float(r["inside_km"] or 0)
+            for r in days if r["in_roster"] and r["report_day"].weekday() < 5
+        )
+        weekday_outside = sum(
+            float(r["outside_km"] or 0)
+            for r in days if r["in_roster"] and r["report_day"].weekday() < 5
+        )
         eligible_days = 0
         norm_days = 0
         weekend_days = 0
@@ -563,8 +623,8 @@ def aggregate_report(
             "days": len(days),
             "inside_km": round(total_inside, 2),
             "outside_km": round(total_outside, 2),
-            "inside_km_per_day": round(total_inside / eligible_days, 1) if eligible_days else None,
-            "outside_km_per_day": round(total_outside / eligible_days, 1) if eligible_days else None,
+            "inside_km_per_day": round(weekday_inside / eligible_days, 1) if eligible_days else None,
+            "outside_km_per_day": round(weekday_outside / eligible_days, 1) if eligible_days else None,
             "inside_share_percent": round(100 * total_inside / (total_inside + total_outside), 1)
             if total_inside + total_outside else None,
             "inside_to_outside_percent": round(100 * total_inside / total_outside, 1)
@@ -642,21 +702,62 @@ def generate_efficiency_report(
             row["cache_ready"] = False
     if not rows:
         result = aggregate_report([], {}, settings)
+        result["coverage"]["gps_metric_cache_hits"] = 0
+        result["coverage"]["gps_metric_cache_misses"] = 0
         result["coverage"]["stale_reasons"] = [
             {"date": day.isoformat(), "reasons": list(reasons)}
             for day, reasons in coverage.stale_reasons
         ]
         return result
     registry = load_database_registry(database_url)
+    metric_signature = (
+        _metric_settings_signature(settings), tuple(registry.version_refs)
+    )
     day_plate_map: dict[date, list[str]] = defaultdict(list)
-    for item in rows:
-        day_plate_map[item["report_day"]].append(item["normalized_plate"])
+    pending_keys: dict[tuple[date, str], tuple[Any, ...]] = {}
     gps: dict[tuple[date, str], GPSDailyMetrics] = {}
-    with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
-        for day, plates in sorted(day_plate_map.items()):
-            for normalized, track in iter_daily_gps(conn, day, sorted(set(plates))):
-                gps[(day, normalized)] = analyze_daily_track(track, registry, office, allowed, settings)
+    today_local = datetime.now(TZ).date()
+    cache_hits = 0
+    for item in rows:
+        day, plate = item["report_day"], item["normalized_plate"]
+        key = (
+            day, plate, item["cache_gps_event_time"],
+            item["cache_gps_received_at"], item["cache_geofence_updated_at"],
+            metric_signature,
+        )
+        cached = (
+            _cached_metric(key)
+            if item["cache_ready"] and day < today_local
+            else None
+        )
+        if cached is not None:
+            gps[(day, plate)] = cached
+            cache_hits += 1
+        else:
+            day_plate_map[day].append(plate)
+            if item["cache_ready"] and day < today_local:
+                pending_keys[(day, plate)] = key
+    if day_plate_map:
+        with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
+            for day, plates in sorted(day_plate_map.items()):
+                for normalized, track in iter_daily_gps(conn, day, sorted(set(plates))):
+                    metrics = analyze_daily_track(track, registry, office, allowed, settings)
+                    gps[(day, normalized)] = metrics
+                    key = pending_keys.get((day, normalized))
+                    if key is not None:
+                        _remember_metric(key, metrics)
+                # A car with confirmed zero GPS points must also be cached: it
+                # remains unranked, but changing filters should be inexpensive.
+                for plate in plates:
+                    if (day, plate) not in gps:
+                        empty = GPSDailyMetrics()
+                        gps[(day, plate)] = empty
+                        key = pending_keys.get((day, plate))
+                        if key is not None:
+                            _remember_metric(key, empty)
     result = aggregate_report(rows, gps, settings)
+    result["coverage"]["gps_metric_cache_hits"] = cache_hits
+    result["coverage"]["gps_metric_cache_misses"] = len(rows) - cache_hits
     result["coverage"]["stale_reasons"] = [
         {"date": day.isoformat(), "reasons": list(reasons)}
         for day, reasons in coverage.stale_reasons

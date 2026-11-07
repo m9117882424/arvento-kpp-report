@@ -18,14 +18,17 @@ from efficiency_report import (
     EfficiencySettings,
     GPSDailyMetrics,
     GPSPoint,
+    _METRIC_CACHE,
     aggregate_report,
     analyze_daily_track,
     choose_shapes,
     compute_score,
+    generate_efficiency_report,
     is_transit,
     shape_from_geojson,
     workbook_from_report,
 )
+from cache_freshness import CacheCoverage
 from geozone_registry import Geozone, Registry
 from site_boundary_speed import detect_speed_violations_by_polygon
 from efficiency_portal import apply_efficiency_portal
@@ -141,6 +144,22 @@ class GPSMetricTest(unittest.TestCase):
         self.assertEqual(result.moving_minutes,2)
         self.assertTrue(result.weekend_site_movement)
 
+    def test_lunch_crossings_require_continuous_gps(self):
+        def p(hour,minute,inside):
+            return GPSPoint(
+                "34 TEST 01",datetime(2026,11,6,hour,minute,tzinfo=TZ),
+                2 if inside else 12,2,20,.1,
+            )
+        lost=analyze_daily_track(
+            [p(10,0,True),p(12,5,False)],fixture_registry(),[],[],settings()
+        )
+        self.assertEqual((lost.lunch_exits,lost.lunch_returns),(0,0))
+        valid=analyze_daily_track(
+            [p(12,0,True),p(12,1,False),p(13,0,False),p(13,1,True)],
+            fixture_registry(),[],[],settings()
+        )
+        self.assertEqual((valid.lunch_exits,valid.lunch_returns),(1,1))
+
     def test_speed_threshold_duration_and_tunnel_exclusion(self):
         registry=fixture_registry()
         good=points(date(2026,11,6),[(0,2,2,60),(4,2,2,61),(8,2,2,62)])
@@ -185,6 +204,62 @@ class GPSMetricTest(unittest.TestCase):
 
 
 class RatingTest(unittest.TestCase):
+    def test_historical_gps_metrics_reused_across_filter_changes(self):
+        day=date(2026,11,6)
+        base_row={
+            "report_day":day,"normalized_plate":"34TEST01","plate":"34 TEST 01",
+            "company":"TSM","user_name":"Тест","model":"FORD KUGA",
+            "directorate":"Механизация","in_roster":True,
+            "inside_km":35,"outside_km":5,"total_km":40,
+            "raw_points":3,"cache_ready":True,
+            "cache_gps_event_time":datetime(2026,11,6,15,tzinfo=TZ),
+            "cache_gps_received_at":datetime(2026,11,6,16,tzinfo=TZ),
+            "cache_geofence_updated_at":datetime(2026,11,1,9,tzinfo=TZ),
+        }
+        track=points(day,[(0,2,2,15),(60,2.1,2.1,15),(120,2.2,2.2,15)])
+        _METRIC_CACHE.clear()
+        with (
+            patch("efficiency_report.psycopg.connect"),
+            patch("efficiency_report.load_shapes",return_value={}),
+            patch("efficiency_report.load_database_registry",return_value=fixture_registry()),
+            patch("efficiency_report.load_daily_rows",side_effect=lambda conn,conf:[dict(base_row)]),
+            patch("efficiency_report.load_cache_coverage",return_value=CacheCoverage(1,1,())),
+            patch("efficiency_report.iter_daily_gps",return_value=[("34TEST01",track)]) as tracks,
+        ):
+            result1=generate_efficiency_report("readonly",settings(date_to=day,plates=["34TEST01"]))
+            result2=generate_efficiency_report("readonly",settings(date_to=day))
+            self.assertEqual(result1["vehicles"][0]["moving_minutes"],2)
+            self.assertEqual(result2["vehicles"][0]["moving_minutes"],2)
+            self.assertEqual(result1["coverage"]["gps_metric_cache_misses"],1)
+            self.assertEqual(result2["coverage"]["gps_metric_cache_hits"],1)
+            self.assertEqual(tracks.call_count,1,"Фильтр не должен вызывать повторное чтение GPS")
+            generate_efficiency_report("readonly",settings(date_to=day,site_speed_threshold_kmh=55))
+            self.assertEqual(tracks.call_count,2,"Изменение порога скорости требует нового расчёта")
+        _METRIC_CACHE.clear()
+
+    def test_weekend_mileage_does_not_inflate_weekday_average(self):
+        rows=[]
+        for day,inside,outside in [
+            (date(2026,11,6),10,20),(date(2026,11,7),200,100)
+        ]:
+            rows.append({
+                "report_day":day,"normalized_plate":"34TEST01","plate":"34 TEST 01",
+                "company":"TSM","user_name":"Тест","model":"FORD TRANSIT",
+                "directorate":"Механизация","in_roster":True,
+                "inside_km":inside,"outside_km":outside,
+                "total_km":inside+outside,"raw_points":3,"cache_ready":True,
+            })
+        gps={
+            (day,"34TEST01"):GPSDailyMetrics(points=3)
+            for day in (date(2026,11,6),date(2026,11,7))
+        }
+        result=aggregate_report(rows,gps,settings())
+        car=result["vehicles"][0]
+        self.assertEqual(car["inside_km"],210)
+        self.assertEqual(car["inside_km_per_day"],10)
+        self.assertEqual(car["outside_km_per_day"],20)
+        self.assertEqual(car["eligible_days"],1)
+
     def test_score_components_and_speed_penalty(self):
         self.assertEqual(compute_score(
             eligible_days=10,norm_days=8,inside_km=80,outside_km=20,
@@ -261,7 +336,7 @@ class PortalRouteTest(unittest.TestCase):
         app = FastAPI()
         apply_efficiency_portal(app, lambda: "read-only-database")
         endpoints = {route.path: route.endpoint for route in app.routes}
-        conf = settings()
+        conf = settings(date_to=date(2026,11,6))
         sample = aggregate_report([], {}, conf)
 
         async def lifecycle():
@@ -274,6 +349,8 @@ class PortalRouteTest(unittest.TestCase):
                     break
                 await asyncio.sleep(.01)
             self.assertEqual(state["status"], "succeeded")
+            duplicate = await endpoints["/api/efficiency/jobs"](conf)
+            self.assertEqual(duplicate["job_id"], job_id)
             result = await endpoints["/api/efficiency/jobs/{job_id}/result"](job_id)
             self.assertEqual(result["summary"], sample["summary"])
             excel = await endpoints["/api/efficiency/jobs/{job_id}/excel"](job_id)
