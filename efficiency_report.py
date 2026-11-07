@@ -512,6 +512,33 @@ def matches_filters(row: Mapping[str, Any], settings: EfficiencySettings) -> boo
     )
 
 
+def apply_cache_coverage(
+    rows: Sequence[dict[str, Any]], coverage: CacheCoverage,
+) -> list[str]:
+    """Invalidate affected cars without penalizing them for other missing cars.
+
+    ``roster_coverage`` only means that some vehicles in the day's roster have
+    no consolidated-cache row. A vehicle with its own successful cache row can
+    still be scored. All other freshness failures remain day-wide blockers.
+    Cars without their own cache entry already have ``cache_ready=False``.
+    """
+    reasons_by_day = {day: set(reasons) for day, reasons in coverage.stale_reasons}
+    # Fail closed if an external coverage implementation reports an invalid
+    # date without detailed reasons. Only the explicit roster-only case is safe.
+    for day in coverage.stale_days:
+        reasons_by_day.setdefault(day, {"unknown"})
+    roster_partial_days: list[str] = []
+    for day, reasons in sorted(reasons_by_day.items()):
+        if "roster_coverage" in reasons:
+            roster_partial_days.append(day.isoformat())
+    for row in rows:
+        reasons = reasons_by_day.get(row["report_day"], set())
+        row["roster_partial"] = "roster_coverage" in reasons
+        if reasons - {"roster_coverage"}:
+            row["cache_ready"] = False
+    return roster_partial_days
+
+
 def iter_daily_gps(
     connection: psycopg.Connection[Any],
     report_day: date,
@@ -672,6 +699,11 @@ def aggregate_report(
             )
             if gps_days and all(r["cache_ready"] for r in days) else None
         )
+        preliminary = (
+            not (settings.office_zone_codes and settings.allowed_zone_codes)
+            or any(row["report_day"] >= today_local for row in days)
+            or any(row.get("roster_partial", False) for row in days)
+        )
         vehicle = {
             "plate": current["plate"],
             "normalized_plate": normalized,
@@ -706,12 +738,16 @@ def aggregate_report(
             "speed_events": speed_site + speed_outside,
             "speed_penalty": min(SPEED_PENALTY_CAP, (speed_site + speed_outside) * SPEED_PENALTY_PER_EVENT),
             "score": score,
-            "data_status": "ok" if score is not None else "Недостаточно данных",
-            "preliminary": not (settings.office_zone_codes and settings.allowed_zone_codes),
+            "data_status": (
+                "Предварительно" if score is not None and preliminary
+                else "ok" if score is not None else "Недостаточно данных"
+            ),
+            "preliminary": preliminary,
         }
         vehicles.append(vehicle)
     vehicles.sort(key=lambda v: (v["score"] is None, -(v["score"] or 0), v["plate"]))
     for i, vehicle in enumerate(vehicles, 1):
+        vehicle["position"] = i
         vehicle["rank"] = i if vehicle["score"] is not None else None
     total_inside = sum(v["inside_km"] for v in vehicles)
     total_outside = sum(v["outside_km"] for v in vehicles)
@@ -758,12 +794,11 @@ def generate_efficiency_report(
         allowed = choose_shapes(shapes, settings.allowed_zone_codes, "разрешённого движения")
         rows = load_daily_rows(conn, settings)
         coverage = _cached_coverage(conn, settings.date_from, settings.date_to)
-    stale_days = set(coverage.stale_days)
-    for row in rows:
-        if row["report_day"] in stale_days:
-            row["cache_ready"] = False
+    roster_partial_days = apply_cache_coverage(rows, coverage)
     if not rows:
         result = aggregate_report([], {}, settings)
+        result["coverage"]["roster_coverage_days"] = roster_partial_days
+        result["coverage"]["score_preliminary"] |= bool(roster_partial_days)
         result["coverage"]["gps_metric_cache_hits"] = 0
         result["coverage"]["gps_metric_cache_misses"] = 0
         result["coverage"]["gps_metric_persisted_hits"] = 0
@@ -851,6 +886,8 @@ def generate_efficiency_report(
                         persisted_writes += store.save(to_persist)
             persist_available = store.enabled
     result = aggregate_report(rows, gps, settings)
+    result["coverage"]["roster_coverage_days"] = roster_partial_days
+    result["coverage"]["score_preliminary"] |= bool(roster_partial_days)
     result["coverage"]["gps_metric_cache_hits"] = cache_hits
     result["coverage"]["gps_metric_cache_misses"] = len(rows) - cache_hits
     result["coverage"]["gps_metric_persisted_hits"] = persisted_hits
@@ -905,7 +942,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     sheet = workbook.active
     sheet.title = "Рейтинг ТС"
     headers = [
-        "Место", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
+        "№", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
         "Норма дней", "План дней", "Пробег внутри, км",
         "Внутри / рабочий день, км", "Пробег снаружи, км",
         "Доля внутри, %", "Внутри / снаружи, %", "Движение внутри, мин",
@@ -913,11 +950,12 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "Выезды / возвраты на обед", "Работа на площадке в выходные, дней",
         "Вне выбранных зон, км", "Превышения на площадке", "Превышения снаружи",
         "Штраф за скорость, баллы", "Итоговый балл", "Состояние",
+        "Место в рейтинге",
     ]
     _append_safe_excel_row(sheet, headers)
     for vehicle in report["vehicles"]:
         cells = [
-            vehicle["rank"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
+            vehicle["position"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
@@ -927,6 +965,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
             vehicle["speed_site_events"], vehicle["speed_outside_events"],
             vehicle["speed_penalty"], vehicle["score"], vehicle["data_status"],
+            vehicle["rank"],
         ]
         _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
@@ -995,7 +1034,8 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Итоговый балл", "50% норматив дней + 25% движение/стоянки + 15% доля пробега внутри + 10% разрешённые зоны"])
     _append_safe_excel_row(notes, ["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])
     _append_safe_excel_row(notes, ["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
-    _append_safe_excel_row(notes, ["Недостаточно данных", "Балл не присваивается без GPS, разнарядки или готового кэша"])
+    _append_safe_excel_row(notes, ["№ и место", "№ — порядковый номер каждой строки; место присваивается только ТС с рассчитанным баллом"])
+    _append_safe_excel_row(notes, ["Недостаточно данных", "Балл не присваивается без GPS, плановых дней или готового кэша самого ТС; отсутствие строки другого ТС не блокирует балл"])
     for key, value in report["settings"].items():
         _append_safe_excel_row(notes, [key, ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)])
 
