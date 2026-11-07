@@ -436,6 +436,45 @@ class RatingTest(unittest.TestCase):
         self.assertEqual(car["inside_km_per_day"],10)
         self.assertEqual(car["outside_km_per_day"],20)
         self.assertEqual(car["eligible_days"],1)
+        self.assertEqual(car["inside_daily_norm_km"],50)
+
+    def test_high_weekday_average_is_independent_of_partial_norm_days(self):
+        days=[date(2026,10,19)+timedelta(days=offset) for offset in range(19)]
+        weekdays=[day for day in days if day.weekday()<5]
+        self.assertEqual(len(weekdays),15)
+        rows=[]
+        gps={}
+        for plate,model,daily_km in [
+            ("34TEST01","FORD TRANSİT",139.4),
+            ("34TEST02","FORD TRANSIT",77.6),
+        ]:
+            for index,day in enumerate(weekdays):
+                rows.append({
+                    "report_day":day,"normalized_plate":plate,"plate":plate,
+                    "company":"TSM","user_name":"Тест","model":model,
+                    "directorate":"Механизация","in_roster":True,
+                    "inside_km":0 if index==0 else daily_km,"outside_km":0,
+                    "total_km":0 if index==0 else daily_km,
+                    "raw_points":3,"cache_ready":True,
+                })
+                gps[(day,plate)]=GPSDailyMetrics(points=3)
+        report=aggregate_report(rows,gps,settings())
+        vehicles={v["plate"]:v for v in report["vehicles"]}
+        for plate,expected_average in [("34TEST01",130.1),("34TEST02",72.4)]:
+            car=vehicles[plate]
+            self.assertEqual((car["norm_days"],car["eligible_days"]),(14,15))
+            self.assertEqual(car["inside_km_per_day"],expected_average)
+            self.assertEqual(car["inside_daily_norm_km"],50)
+            self.assertGreater(car["inside_km_per_day"],car["inside_daily_norm_km"])
+        book=load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            ranking=book["Рейтинг ТС"]
+            self.assertEqual(
+                [ranking.cell(line,9).fill.fgColor.rgb for line in (2,3)],
+                ["00E0F4E8","00E0F4E8"],
+            )
+        finally:
+            book.close()
 
     def test_score_components_and_speed_penalty(self):
         self.assertEqual(compute_score(
@@ -489,12 +528,15 @@ class RatingTest(unittest.TestCase):
                 "Рейтинг ТС","По дням","Превышения скорости","Методика"
             ])
             self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
-            self.assertEqual(book.worksheets[0].cell(1,9).value,"Внутри / рабочий день, км")
+            self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
+            self.assertEqual(book.worksheets[0].cell(1,25).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
+            self.assertEqual(book.worksheets[0].cell(2,25).value,50)
             self.assertEqual(book.worksheets[0].cell(2,9).fill.fgColor.rgb,"00FDE2E2")
             self.assertEqual(book.worksheets[0].cell(2,19).value,1)
             self.assertEqual(book.worksheets[0].cell(2,19).fill.fgColor.rgb,"00FDE2E2")
+            self.assertIn("Средний пробег за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
         finally:
             book.close()
 
@@ -532,6 +574,15 @@ class PortalRouteTest(unittest.TestCase):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
         self.assertIn("r.position??(i+1)", html)
         self.assertNotIn("r.rank||'—'", html)
+
+    def test_average_badge_uses_its_own_norm_and_labels_are_explicit(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn("insideAverageClass(r.inside_km_per_day,averageNorm)", html)
+        self.assertIn("normDaysClass(r.norm_days,r.eligible_days,r.gps_days)", html)
+        self.assertNotIn("r.norm_days===r.eligible_days?'good':'bad'", html)
+        self.assertIn("Средний пробег внутри Аккую", html)
+        self.assertIn("норма: от ", html)
+        self.assertIn("доля времени в движении", html)
 
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()

@@ -713,6 +713,11 @@ def aggregate_report(
             "user": current["user_name"],
             "eligible_days": eligible_days,
             "norm_days": norm_days,
+            "inside_daily_norm_km": (
+                settings.transit_min_inside_km
+                if is_transit(str(current["model"]))
+                else settings.other_min_inside_km
+            ),
             "gps_days": gps_days,
             "days": len(days),
             "inside_km": round(total_inside, 2),
@@ -942,15 +947,15 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     sheet = workbook.active
     sheet.title = "Рейтинг ТС"
     headers = [
-        "№", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
-        "Норма дней", "План дней", "Пробег внутри, км",
-        "Внутри / рабочий день, км", "Пробег снаружи, км",
-        "Доля внутри, %", "Внутри / снаружи, %", "Движение внутри, мин",
-        "Стоянки у офиса, мин", "Движение / движение+стоянка, %",
-        "Выезды / возвраты на обед", "Работа на площадке в выходные, дней",
-        "Вне выбранных зон, км", "Превышения на площадке", "Превышения снаружи",
-        "Штраф за скорость, баллы", "Итоговый балл", "Состояние",
-        "Место в рейтинге",
+        "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
+        "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
+        "Средний пробег внутри Аккую, км/плановый рабочий день", "Общий пробег вне Аккую, км",
+        "Доля пробега внутри Аккую, %", "Отношение пробега внутри к пробегу вне, %", "Время движения внутри Аккую, мин",
+        "Время стоянок в выбранных офисных зонах, мин", "Доля движения среди движения и офисных стоянок, %",
+        "Выездов / возвращений с обеда, шт.", "Выходных дней с движением внутри Аккую",
+        "Пробег вне разрешённых зон по GPS, км", "Эпизодов превышения скорости внутри Аккую", "Эпизодов превышения скорости вне Аккую",
+        "Штраф за превышения скорости, баллы", "Итоговый балл, 0–100", "Статус оценки",
+        "Место в рейтинге", "Норматив внутри Аккую по текущей модели, км/плановый рабочий день",
     ]
     _append_safe_excel_row(sheet, headers)
     for vehicle in report["vehicles"]:
@@ -964,17 +969,13 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
             vehicle["speed_site_events"], vehicle["speed_outside_events"],
-            vehicle["speed_penalty"], vehicle["score"], vehicle["data_status"],
-            vehicle["rank"],
+            vehicle["speed_penalty"], vehicle["score"],
+            "Рассчитано" if vehicle["data_status"] == "ok" else vehicle["data_status"],
+            vehicle["rank"], vehicle["inside_daily_norm_km"],
         ]
         _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
-        settings = report["settings"]
-        norm = (
-            settings["transit_min_inside_km"]
-            if is_transit(vehicle["model"])
-            else settings["other_min_inside_km"]
-        )
+        norm = vehicle["inside_daily_norm_km"]
         avg = vehicle["inside_km_per_day"]
         if avg is not None:
             sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
@@ -993,9 +994,9 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
 
     daily = workbook.create_sheet("По дням")
     _append_safe_excel_row(daily, [
-        "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "В разнарядке",
-        "Кэш готов", "Внутри, км", "Снаружи, км", "Движение, мин",
-        "Стоянки у офиса, мин", "Превышения", "GPS точек",
+        "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "Есть в разнарядке",
+        "Данные сводного кэша готовы", "Пробег внутри Аккую, км", "Пробег вне Аккую, км", "Время движения внутри Аккую, мин",
+        "Стоянки в выбранных офисных зонах, мин", "Эпизоды превышения скорости, шт.", "Количество GPS-точек",
     ])
     for item in report["daily"]:
         _append_safe_excel_row(daily, [
@@ -1009,8 +1010,8 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
 
     speed = workbook.create_sheet("Превышения скорости")
     _append_safe_excel_row(speed, [
-        "Госномер", "Зона", "Начало", "Окончание", "Длительность, сек",
-        "Максимум, км/ч", "Порог, км/ч", "Широта", "Долгота",
+        "Госномер", "Внутри или вне Аккую", "Начало", "Окончание", "Длительность превышения, сек",
+        "Максимальная скорость, км/ч", "Установленный порог, км/ч", "Широта", "Долгота",
     ])
     for event in report["speed_events"]:
         _append_safe_excel_row(speed, [
@@ -1027,7 +1028,11 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
     _append_safe_excel_row(notes, ["Часовой пояс", "Europe/Istanbul"])
     _append_safe_excel_row(notes, ["Выходные", "суббота и воскресенье; требуется движение внутри площадки"])
-    _append_safe_excel_row(notes, ["Норматив", "Transit 50 км/день; другие 30 км/день (из настроек)"])
+    _append_safe_excel_row(notes, ["Норматив пробега внутри Аккую", f'Ford Transit — от {report["settings"]["transit_min_inside_km"]} км за плановый рабочий день; другие модели — от {report["settings"]["other_min_inside_km"]} км (текущие настройки)'])
+    _append_safe_excel_row(notes, ["Средний пробег за плановый рабочий день", "Сумма пробега только за будни по разнарядке / число плановых будней; пробег в выходные на среднее не влияет"])
+    _append_safe_excel_row(notes, ["Цвет среднего пробега внутри", "Зелёный — среднее не ниже нормы по модели; красный — среднее ниже нормы. Дни с выполненным нормативом считаются отдельно по каждому дню"])
+    _append_safe_excel_row(notes, ["Доля пробега внутри Аккую", "Общий пробег внутри за период / общий пробег внутри и вне за период; включает выходные"])
+    _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])
     _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
     _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
     _append_safe_excel_row(notes, ["Скорость", "Не менее 3 последовательных правдоподобных GPS-точек и заданной длительности"])
@@ -1036,12 +1041,33 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
     _append_safe_excel_row(notes, ["№ и место", "№ — порядковый номер каждой строки; место присваивается только ТС с рассчитанным баллом"])
     _append_safe_excel_row(notes, ["Недостаточно данных", "Балл не присваивается без GPS, плановых дней или готового кэша самого ТС; отсутствие строки другого ТС не блокирует балл"])
+    setting_labels = {
+        "date_from": "Начало периода", "date_to": "Конец периода",
+        "plates": "Фильтр по госномерам", "directorates": "Фильтр по дирекциям",
+        "users": "Фильтр по пользователям", "models": "Фильтр по моделям",
+        "office_zone_codes": "Коды выбранных офисных геозон",
+        "allowed_zone_codes": "Коды выбранных разрешённых геозон",
+        "lunch_exit_from": "Окно выезда на обед: начало",
+        "lunch_exit_to": "Окно выезда на обед: конец",
+        "lunch_return_from": "Окно возвращения с обеда: начало",
+        "lunch_return_to": "Окно возвращения с обеда: конец",
+        "transit_min_inside_km": "Норма Ford Transit внутри Аккую, км/рабочий день",
+        "other_min_inside_km": "Норма остальных моделей внутри Аккую, км/рабочий день",
+        "parking_min_minutes": "Минимальная стоянка: строго больше, мин",
+        "site_speed_threshold_kmh": "Порог превышения скорости внутри Аккую, км/ч",
+        "outside_speed_threshold_kmh": "Порог превышения скорости вне Аккую, км/ч",
+        "speed_min_duration_seconds": "Минимальная длительность превышения, сек",
+    }
     for key, value in report["settings"].items():
-        _append_safe_excel_row(notes, [key, ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)])
+        label = setting_labels.get(key, key)
+        readable_value = ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)
+        if isinstance(value, list) and not value:
+            readable_value = "Не выбрано (все значения)" if key in {"plates", "directorates", "users", "models"} else "Не выбрано"
+        _append_safe_excel_row(notes, [label, readable_value])
 
     for ws in workbook.worksheets:
         ws.sheet_view.showGridLines = False
-        ws.row_dimensions[1].height = 28
+        ws.row_dimensions[1].height = 57
         for cell in ws[1]:
             cell.fill = PatternFill("solid", fgColor="183153")
             cell.font = Font(color="FFFFFF", bold=True)
@@ -1050,6 +1076,13 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             letter = get_column_letter(column[0].column)
             width = max(len(str(c.value or "")) for c in list(column)[:300]) + 2
             ws.column_dimensions[letter].width = min(max(width, 12), 48)
+    notes.column_dimensions["A"].width = 47
+    notes.column_dimensions["B"].width = 100
+    for row in notes.iter_rows(min_row=2):
+        for cell in row:
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+        description_length = len(str(row[1].value or ""))
+        notes.row_dimensions[row[0].row].height = min(90, max(22, 16 * ((description_length // 95) + 1)))
     output = io.BytesIO()
     workbook.save(output)
     workbook.close()
