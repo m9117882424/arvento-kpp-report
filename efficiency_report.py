@@ -33,7 +33,7 @@ from business_rules import (
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     MIN_SPEED_EVENT_DURATION_SECONDS,
 )
-from cache_freshness import load_cache_coverage
+from cache_freshness import CacheCoverage, load_cache_coverage
 from geozone_registry import load_database_registry, point_in_polygon
 from roster_registry import normalize_plate
 from site_boundary_speed import (
@@ -59,6 +59,7 @@ SCORE_WEIGHTS = {
 }
 GPS_METRIC_CACHE_TTL_SECONDS = 3600
 GPS_METRIC_CACHE_MAX_ENTRIES = 10_000
+COVERAGE_CACHE_TTL_SECONDS = 60
 
 
 class EfficiencySettings(BaseModel):
@@ -219,6 +220,8 @@ class GPSDailyMetrics:
 # to the report selection does not re-read the same closed-day GPS history.
 _METRIC_CACHE: OrderedDict[tuple[Any, ...], tuple[float, GPSDailyMetrics]] = OrderedDict()
 _METRIC_CACHE_LOCK = threading.Lock()
+_COVERAGE_CACHE: OrderedDict[tuple[date, date], tuple[float, CacheCoverage]] = OrderedDict()
+_COVERAGE_CACHE_LOCK = threading.Lock()
 
 
 def _metric_settings_signature(settings: EfficiencySettings) -> tuple[Any, ...]:
@@ -253,6 +256,33 @@ def _remember_metric(key: tuple[Any, ...], metrics: GPSDailyMetrics) -> None:
         _METRIC_CACHE.move_to_end(key)
         while len(_METRIC_CACHE) > GPS_METRIC_CACHE_MAX_ENTRIES:
             _METRIC_CACHE.popitem(last=False)
+
+
+def _cached_coverage(
+    connection: psycopg.Connection[Any], start: date, finish: date
+) -> CacheCoverage:
+    """Bound repeated heavy source-watermark scans to once per minute.
+
+    Only historical, completely covered periods qualify; current dates and
+    stale sources must be verified anew on every request.
+    """
+    historical = finish < datetime.now(TZ).date()
+    key = (start, finish)
+    if historical:
+        with _COVERAGE_CACHE_LOCK:
+            cached = _COVERAGE_CACHE.get(key)
+            if cached and clock.monotonic() - cached[0] < COVERAGE_CACHE_TTL_SECONDS:
+                _COVERAGE_CACHE.move_to_end(key)
+                return cached[1]
+            _COVERAGE_CACHE.pop(key, None)
+    coverage = load_cache_coverage(connection, start, finish)
+    if historical and coverage.complete:
+        with _COVERAGE_CACHE_LOCK:
+            _COVERAGE_CACHE[key] = (clock.monotonic(), coverage)
+            _COVERAGE_CACHE.move_to_end(key)
+            while len(_COVERAGE_CACHE) > 32:
+                _COVERAGE_CACHE.popitem(last=False)
+    return coverage
 
 
 def _within_window(timestamp: datetime, start: time, finish: time) -> bool:
@@ -695,7 +725,7 @@ def generate_efficiency_report(
         office = choose_shapes(shapes, settings.office_zone_codes, "стоянок")
         allowed = choose_shapes(shapes, settings.allowed_zone_codes, "разрешённого движения")
         rows = load_daily_rows(conn, settings)
-        coverage = load_cache_coverage(conn, settings.date_from, settings.date_to)
+        coverage = _cached_coverage(conn, settings.date_from, settings.date_to)
     stale_days = set(coverage.stale_days)
     for row in rows:
         if row["report_day"] in stale_days:

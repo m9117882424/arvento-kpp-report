@@ -18,6 +18,7 @@ from efficiency_report import (
     EfficiencySettings,
     GPSDailyMetrics,
     GPSPoint,
+    _COVERAGE_CACHE,
     _METRIC_CACHE,
     aggregate_report,
     analyze_daily_track,
@@ -218,12 +219,13 @@ class RatingTest(unittest.TestCase):
         }
         track=points(day,[(0,2,2,15),(60,2.1,2.1,15),(120,2.2,2.2,15)])
         _METRIC_CACHE.clear()
+        _COVERAGE_CACHE.clear()
         with (
             patch("efficiency_report.psycopg.connect"),
             patch("efficiency_report.load_shapes",return_value={}),
             patch("efficiency_report.load_database_registry",return_value=fixture_registry()),
             patch("efficiency_report.load_daily_rows",side_effect=lambda conn,conf:[dict(base_row)]),
-            patch("efficiency_report.load_cache_coverage",return_value=CacheCoverage(1,1,())),
+            patch("efficiency_report.load_cache_coverage",return_value=CacheCoverage(1,1,())) as coverage,
             patch("efficiency_report.iter_daily_gps",return_value=[("34TEST01",track)]) as tracks,
         ):
             result1=generate_efficiency_report("readonly",settings(date_to=day,plates=["34TEST01"]))
@@ -233,9 +235,11 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(result1["coverage"]["gps_metric_cache_misses"],1)
             self.assertEqual(result2["coverage"]["gps_metric_cache_hits"],1)
             self.assertEqual(tracks.call_count,1,"Фильтр не должен вызывать повторное чтение GPS")
+            self.assertEqual(coverage.call_count,1,"Фильтр не должен повторять тяжёлую проверку водяных знаков")
             generate_efficiency_report("readonly",settings(date_to=day,site_speed_threshold_kmh=55))
             self.assertEqual(tracks.call_count,2,"Изменение порога скорости требует нового расчёта")
         _METRIC_CACHE.clear()
+        _COVERAGE_CACHE.clear()
 
     def test_weekend_mileage_does_not_inflate_weekday_average(self):
         rows=[]
