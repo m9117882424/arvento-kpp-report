@@ -704,6 +704,8 @@ def aggregate_report(
             or any(row["report_day"] >= today_local for row in days)
             or any(row.get("roster_partial", False) for row in days)
         )
+        total_km = total_inside + total_outside
+        inside_share_percent = round(100 * total_inside / total_km, 1) if total_km else None
         vehicle = {
             "plate": current["plate"],
             "normalized_plate": normalized,
@@ -724,8 +726,9 @@ def aggregate_report(
             "outside_km": round(total_outside, 2),
             "inside_km_per_day": round(weekday_inside / eligible_days, 1) if eligible_days else None,
             "outside_km_per_day": round(weekday_outside / eligible_days, 1) if eligible_days else None,
-            "inside_share_percent": round(100 * total_inside / (total_inside + total_outside), 1)
-            if total_inside + total_outside else None,
+            "inside_share_percent": inside_share_percent,
+            "outside_share_percent": round(100 - inside_share_percent, 1)
+            if inside_share_percent is not None else None,
             "inside_to_outside_percent": round(100 * total_inside / total_outside, 1)
             if total_outside > 0 else None,
             "moving_minutes": round(moving, 1),
@@ -756,6 +759,8 @@ def aggregate_report(
         vehicle["rank"] = i if vehicle["score"] is not None else None
     total_inside = sum(v["inside_km"] for v in vehicles)
     total_outside = sum(v["outside_km"] for v in vehicles)
+    fleet_km = total_inside + total_outside
+    fleet_inside_share = round(100 * total_inside / fleet_km, 1) if fleet_km else None
     result = {
         "period": {"from": settings.date_from.isoformat(), "to": settings.date_to.isoformat()},
         "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
@@ -765,8 +770,9 @@ def aggregate_report(
             "scored_vehicles": sum(v["score"] is not None for v in vehicles),
             "norm_days": sum(v["norm_days"] for v in vehicles),
             "eligible_days": sum(v["eligible_days"] for v in vehicles),
-            "inside_share_percent": round(100 * total_inside / (total_inside + total_outside), 1)
-            if total_inside + total_outside else None,
+            "inside_share_percent": fleet_inside_share,
+            "outside_share_percent": round(100 - fleet_inside_share, 1)
+            if fleet_inside_share is not None else None,
             "moving_minutes": round(sum(v["moving_minutes"] for v in vehicles), 1),
             "office_parking_minutes": round(sum(v["office_parking_minutes"] or 0 for v in vehicles), 1)
             if settings.office_zone_codes else None,
@@ -950,12 +956,13 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
         "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
         "Средний пробег внутри Аккую, км/плановый рабочий день", "Общий пробег вне Аккую, км",
-        "Доля пробега внутри Аккую, %", "Отношение пробега внутри к пробегу вне, %", "Время движения внутри Аккую, мин",
+        "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Время движения внутри Аккую, мин",
         "Время стоянок в выбранных офисных зонах, мин", "Доля движения среди движения и офисных стоянок, %",
         "Выездов / возвращений с обеда, шт.", "Выходных дней с движением внутри Аккую",
         "Пробег вне разрешённых зон по GPS, км", "Эпизодов превышения скорости внутри Аккую", "Эпизодов превышения скорости вне Аккую",
         "Штраф за превышения скорости, баллы", "Итоговый балл, 0–100", "Статус оценки",
         "Место в рейтинге", "Норматив внутри Аккую по текущей модели, км/плановый рабочий день",
+        "Средний пробег вне Аккую за рабочий день, км (без норматива)",
     ]
     _append_safe_excel_row(sheet, headers)
     for vehicle in report["vehicles"]:
@@ -964,14 +971,14 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
-            vehicle["inside_to_outside_percent"], vehicle["moving_minutes"],
+            vehicle["outside_share_percent"], vehicle["moving_minutes"],
             vehicle["office_parking_minutes"], vehicle["motion_vs_office_percent"],
             f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
             vehicle["speed_site_events"], vehicle["speed_outside_events"],
             vehicle["speed_penalty"], vehicle["score"],
             "Рассчитано" if vehicle["data_status"] == "ok" else vehicle["data_status"],
-            vehicle["rank"], vehicle["inside_daily_norm_km"],
+            vehicle["rank"], vehicle["inside_daily_norm_km"], vehicle["outside_km_per_day"],
         ]
         _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
@@ -1032,6 +1039,8 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Средний пробег за плановый рабочий день", "Сумма пробега только за будни по разнарядке / число плановых будней; пробег в выходные на среднее не влияет"])
     _append_safe_excel_row(notes, ["Цвет среднего пробега внутри", "Зелёный — среднее не ниже нормы по модели; красный — среднее ниже нормы. Дни с выполненным нормативом считаются отдельно по каждому дню"])
     _append_safe_excel_row(notes, ["Доля пробега внутри Аккую", "Общий пробег внутри за период / общий пробег внутри и вне за период; включает выходные"])
+    _append_safe_excel_row(notes, ["Доля пробега вне Аккую", "100% минус доля пробега внутри Аккую; обе доли относятся к общему пробегу за период и в сумме дают 100%"])
+    _append_safe_excel_row(notes, ["Средний пробег вне Аккую", "Пробег вне Аккую за будни по разнарядке / число таких дней. Норматив внешнего пробега не установлен, этот показатель не оценивается цветом"])
     _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])
     _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
     _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
