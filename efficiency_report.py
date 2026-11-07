@@ -626,6 +626,9 @@ def aggregate_report(
     vehicles: list[dict[str, Any]] = []
     all_events: list[dict[str, Any]] = []
     detail: list[dict[str, Any]] = []
+    fleet_weekday_moving_minutes = 0.0
+    fleet_planned_vehicle_days_with_gps = 0
+    fleet_vehicles_with_weekday_gps = 0
     incomplete_days = set()
     provisional_days = set()
     today_local = datetime.now(TZ).date()
@@ -648,6 +651,8 @@ def aggregate_report(
         norm_days = 0
         weekend_days = 0
         gps_days = 0
+        gps_workday_days = 0
+        weekday_moving = 0.0
         moving = office = unauthorized_km = unauthorized_minutes = 0.0
         stops = lunch_exits = lunch_returns = speed_site = speed_outside = 0
         for row in days:
@@ -661,6 +666,9 @@ def aggregate_report(
                 gps_days += 1
             if row["in_roster"] and day.weekday() < 5:
                 eligible_days += 1
+                if gps.points > 0:
+                    gps_workday_days += 1
+                    weekday_moving += gps.moving_minutes
                 norm = (
                     settings.transit_min_inside_km
                     if is_transit(str(row["model"]))
@@ -706,6 +714,12 @@ def aggregate_report(
         )
         total_km = total_inside + total_outside
         inside_share_percent = round(100 * total_inside / total_km, 1) if total_km else None
+        if eligible_days and gps_workday_days:
+            # Zero-movement planned days remain in the denominator. Vehicles
+            # without GPS on any planned day cannot be treated as zero activity.
+            fleet_weekday_moving_minutes += weekday_moving
+            fleet_planned_vehicle_days_with_gps += eligible_days
+            fleet_vehicles_with_weekday_gps += 1
         vehicle = {
             "plate": current["plate"],
             "normalized_plate": normalized,
@@ -721,6 +735,7 @@ def aggregate_report(
                 else settings.other_min_inside_km
             ),
             "gps_days": gps_days,
+            "gps_workday_days": gps_workday_days,
             "days": len(days),
             "inside_km": round(total_inside, 2),
             "outside_km": round(total_outside, 2),
@@ -732,6 +747,8 @@ def aggregate_report(
             "inside_to_outside_percent": round(100 * total_inside / total_outside, 1)
             if total_outside > 0 else None,
             "moving_minutes": round(moving, 1),
+            "moving_minutes_per_day": round(weekday_moving / eligible_days, 1)
+            if eligible_days and gps_workday_days else None,
             "office_parking_minutes": round(office, 1) if settings.office_zone_codes else None,
             "motion_vs_office_percent": round(100 * moving / (moving + office), 1)
             if settings.office_zone_codes and moving + office > 0 else None,
@@ -774,6 +791,11 @@ def aggregate_report(
             "outside_share_percent": round(100 - fleet_inside_share, 1)
             if fleet_inside_share is not None else None,
             "moving_minutes": round(sum(v["moving_minutes"] for v in vehicles), 1),
+            "moving_minutes_per_vehicle_workday": round(
+                fleet_weekday_moving_minutes / fleet_planned_vehicle_days_with_gps, 1
+            ) if fleet_planned_vehicle_days_with_gps else None,
+            "moving_average_vehicle_count": fleet_vehicles_with_weekday_gps,
+            "moving_average_workdays": fleet_planned_vehicle_days_with_gps,
             "office_parking_minutes": round(sum(v["office_parking_minutes"] or 0 for v in vehicles), 1)
             if settings.office_zone_codes else None,
             "speed_events": sum(v["speed_events"] for v in vehicles),
@@ -956,7 +978,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
         "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
         "Средний пробег внутри Аккую, км/плановый рабочий день", "Общий пробег вне Аккую, км",
-        "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Время движения внутри Аккую, мин",
+        "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Среднее время движения внутри Аккую за плановый рабочий день, мин",
         "Время стоянок в выбранных офисных зонах, мин", "Доля движения среди движения и офисных стоянок, %",
         "Выездов / возвращений с обеда, шт.", "Выходных дней с движением внутри Аккую",
         "Пробег вне разрешённых зон по GPS, км", "Эпизодов превышения скорости внутри Аккую", "Эпизодов превышения скорости вне Аккую",
@@ -971,7 +993,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
-            vehicle["outside_share_percent"], vehicle["moving_minutes"],
+            vehicle["outside_share_percent"], vehicle["moving_minutes_per_day"],
             vehicle["office_parking_minutes"], vehicle["motion_vs_office_percent"],
             f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
@@ -1029,6 +1051,24 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     speed.freeze_panes = "C2"
     speed.auto_filter.ref = speed.dimensions
 
+    leaders = workbook.create_sheet("ТОП-10")
+    _append_safe_excel_row(leaders, [
+        "Категория", "№ в ТОП", "Госномер", "Марка / модель", "Итоговый балл, 0–100", "Статус оценки",
+    ])
+    scored = [vehicle for vehicle in report["vehicles"] if vehicle["score"] is not None]
+    highest = sorted(scored, key=lambda v: (-v["score"], v["plate"]))[:10]
+    lowest = sorted(scored, key=lambda v: (v["score"], v["plate"]))[:10]
+    for label, selection in (("ТОП-10 эффективных", highest), ("ТОП-10 малоэффективных", lowest)):
+        for position, vehicle in enumerate(selection, 1):
+            _append_safe_excel_row(leaders, [
+                label, position, vehicle["plate"], vehicle["model"], vehicle["score"],
+                "Рассчитано" if vehicle["data_status"] == "ok" else vehicle["data_status"],
+            ])
+        if not selection:
+            _append_safe_excel_row(leaders, [label, "Нет ТС с рассчитанным баллом"])
+    leaders.freeze_panes = "C2"
+    leaders.auto_filter.ref = leaders.dimensions
+
     notes = workbook.create_sheet("Методика")
     _append_safe_excel_row(notes, ["Показатель", "Правило"])
     _append_safe_excel_row(notes, ["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
@@ -1041,6 +1081,8 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Доля пробега внутри Аккую", "Общий пробег внутри за период / общий пробег внутри и вне за период; включает выходные"])
     _append_safe_excel_row(notes, ["Доля пробега вне Аккую", "100% минус доля пробега внутри Аккую; обе доли относятся к общему пробегу за период и в сумме дают 100%"])
     _append_safe_excel_row(notes, ["Средний пробег вне Аккую", "Пробег вне Аккую за будни по разнарядке / число таких дней. Норматив внешнего пробега не установлен, этот показатель не оценивается цветом"])
+    _append_safe_excel_row(notes, ["Среднее время движения внутри Аккую за плановый рабочий день", "Подтверждённое GPS-время движения внутри Аккую только в плановые будни по разнарядке / все плановые будни ТС, включая дни с нулевым движением. Движение в выходные исключено. Если GPS отсутствует на всех плановых буднях, значение Н/Д"])
+    _append_safe_excel_row(notes, ["Среднее время движения по автопарку", "Сумма движения в плановые будни для ТС с GPS в такие дни / сумма всех плановых будней этих ТС; среднее взвешено по автомобиледням, а не по количеству машин. Время движения в выходные и ТС без GPS за все плановые будни исключаются"])
     _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])
     _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
     _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
@@ -1049,6 +1091,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])
     _append_safe_excel_row(notes, ["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
     _append_safe_excel_row(notes, ["№ и место", "№ — порядковый номер каждой строки; место присваивается только ТС с рассчитанным баллом"])
+    _append_safe_excel_row(notes, ["ТОП-10 эффективных и малоэффективных", "Два независимых списка: 10 наибольших и 10 наименьших итоговых баллов; ТС со статусом Н/Д не участвуют. При равенстве баллов сортировка по госномеру. При числе оценённых ТС менее 20 списки могут пересекаться"])
     _append_safe_excel_row(notes, ["Недостаточно данных", "Балл не присваивается без GPS, плановых дней или готового кэша самого ТС; отсутствие строки другого ТС не блокирует балл"])
     setting_labels = {
         "date_from": "Начало периода", "date_to": "Конец периода",
