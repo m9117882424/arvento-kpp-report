@@ -13,9 +13,9 @@ from pathlib import Path
 from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 
 from efficiency_report import (
     EfficiencySettings,
@@ -95,6 +95,20 @@ def apply_efficiency_portal(app: FastAPI, database_url: Callable[[], str]) -> No
     @app.get("/efficiency", include_in_schema=False)
     def efficiency_page() -> FileResponse:
         return FileResponse(_WEB_PAGE, media_type="text/html")
+
+    @app.get("/api/efficiency/admin-tools", include_in_schema=False)
+    def efficiency_admin_tools(
+        authenticated_user: str | None = Header(
+            default=None, alias="X-Arvento-Authenticated-User"
+        ),
+    ) -> JSONResponse:
+        # Only the exact authenticated Nginx location supplies this header.
+        # This response controls menu visibility; the dedicated Nginx
+        # credential file independently protects editor HTML and write APIs.
+        return JSONResponse(
+            {"can_edit_geozones": authenticated_user == "maksim"},
+            headers={"Cache-Control": "private, no-store"},
+        )
 
     @app.get("/api/efficiency/options")
     def efficiency_options(

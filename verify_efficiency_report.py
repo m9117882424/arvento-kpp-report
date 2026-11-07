@@ -711,6 +711,35 @@ class RatingTest(unittest.TestCase):
 
 
 class PortalRouteTest(unittest.TestCase):
+    def test_editor_uses_relative_api_urls_below_protected_prefix(self):
+        editor = (Path(__file__).parent / "web" / "geofence_editor.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fetch('api/geofences')", editor)
+        self.assertIn("fetch('api/config')", editor)
+        self.assertIn("`api/geofences/${currentId}`", editor)
+        self.assertNotIn("fetch('/api/geofences", editor)
+        self.assertNotIn("fetch('/api/config", editor)
+
+    def test_geozone_access_is_a_separate_nginx_basic_auth_boundary(self):
+        nginx = (Path(__file__).parent / "deploy" / "nginx" / "bdd-geozones.conf.example").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("location ^~ /geozones/ {", nginx)
+        self.assertIn("auth_basic_user_file /etc/nginx/.htpasswd_bdd_geozones_maksim;", nginx)
+        self.assertIn("proxy_pass http://127.0.0.1:18083/;", nginx)
+        self.assertIn("location = /api/efficiency/admin-tools {", nginx)
+        self.assertIn("proxy_set_header X-Arvento-Authenticated-User $remote_user;", nginx)
+        self.assertNotIn("auth_basic off;", nginx)
+
+    def test_admin_menu_hidden_unless_backend_allows_it(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('id="geozonesNav" href="/geozones/" hidden', html)
+        self.assertIn("if(permissions?.can_edit_geozones)", html)
+        self.assertIn("nav a[hidden]{display:none!important}", html)
+
     def test_visible_number_is_independent_of_score_rank(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
         self.assertIn("r.position??(i+1)", html)
@@ -734,7 +763,8 @@ class PortalRouteTest(unittest.TestCase):
         apply_efficiency_portal(app, lambda: "not-used-during-registration")
         paths = [route.path for route in app.routes]
         for path in (
-            "/efficiency", "/api/efficiency/options", "/api/efficiency/jobs",
+            "/efficiency", "/api/efficiency/admin-tools",
+            "/api/efficiency/options", "/api/efficiency/jobs",
             "/api/efficiency/jobs/{job_id}",
             "/api/efficiency/jobs/{job_id}/result",
             "/api/efficiency/jobs/{job_id}/excel",
@@ -742,6 +772,14 @@ class PortalRouteTest(unittest.TestCase):
             self.assertEqual(paths.count(path), 1)
         page = next(route for route in app.routes if route.path == "/efficiency")
         self.assertTrue(page.endpoint().path.is_file())
+        admin = next(
+            route.endpoint for route in app.routes
+            if route.path == "/api/efficiency/admin-tools"
+        )
+        self.assertEqual(admin(None).body, b'{"can_edit_geozones":false}')
+        self.assertEqual(admin("another-user").body, b'{"can_edit_geozones":false}')
+        self.assertEqual(admin("maksim").body, b'{"can_edit_geozones":true}')
+        self.assertEqual(admin("maksim").headers["cache-control"], "private, no-store")
 
     def test_background_job_result_and_excel(self):
         app = FastAPI()

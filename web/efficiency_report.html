@@ -12,7 +12,7 @@
     aside{background:linear-gradient(170deg,#10223e,#0a1930);color:#e6edf8;padding:25px 16px;display:flex;flex-direction:column;gap:27px}
     .brand{display:flex;align-items:center;gap:11px;margin:0 8px}.brand-icon{width:34px;height:34px;border-radius:11px;display:grid;place-items:center;background:#2d77ef;font-weight:900;font-size:17px;color:#fff}
     .brand-title{font-size:15px;font-weight:850;letter-spacing:.3px}.brand-caption{font-size:10px;letter-spacing:1.6px;color:#91a8c9;margin-top:3px}
-    nav{display:flex;flex-direction:column;gap:5px}nav a{display:block;text-decoration:none;color:#a6bad5;border-radius:10px;padding:12px 13px;font-size:13px;font-weight:600}nav a:hover{background:#223957;color:#fff}nav a.active{color:#fff;background:#276fdd}
+    nav{display:flex;flex-direction:column;gap:5px}nav a{display:block;text-decoration:none;color:#a6bad5;border-radius:10px;padding:12px 13px;font-size:13px;font-weight:600}nav a[hidden]{display:none!important}nav a:hover{background:#223957;color:#fff}nav a.active{color:#fff;background:#276fdd}
     .aside-bottom{margin-top:auto;border-top:1px solid #30435e;padding:18px 9px 0;color:#99abc7;font-size:11px;line-height:1.7}
     main{padding:26px 25px 34px;min-width:0;max-width:1920px;width:100%}
     .head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;margin-bottom:21px}.breadcrumb{font-size:12px;color:#94a0b0;font-weight:600;margin-bottom:9px}
@@ -82,7 +82,7 @@
 <div class="shell">
   <aside>
     <div class="brand"><div class="brand-icon">T</div><div><div class="brand-title">BiTSM / ARVENTO</div><div class="brand-caption">ТРАНСПОРТНАЯ АНАЛИТИКА</div></div></div>
-    <nav><a href="/">▤ Сводный отчёт</a><a class="active" href="/efficiency">◈ Эффективность ТС</a></nav>
+    <nav><a href="/">▤ Сводный отчёт</a><a class="active" href="/efficiency">◈ Эффективность ТС</a><a id="geozonesNav" href="/geozones/" hidden>▣ Геозоны</a></nav>
     <div class="aside-bottom">Источник: Arvento PostgreSQL / PostGIS<br>Часовой пояс: Europe/Istanbul</div>
   </aside>
   <main>
@@ -137,6 +137,10 @@
 (() => {
   'use strict';
   const $ = id => document.getElementById(id);
+  fetch('/api/efficiency/admin-tools',{cache:'no-store'})
+    .then(r=>r.ok?r.json():null)
+    .then(permissions=>{if(permissions?.can_edit_geozones)$('geozonesNav').hidden=false;})
+    .catch(()=>{});
   const labels = {plates:"Все госномера",directorates:"Все дирекции",users:"Все пользователи",models:"Все марки"};
   const choices = {plates:new Set(),directorates:new Set(),users:new Set(),models:new Set()};
   const zones = {office_zone_codes:new Set(),allowed_zone_codes:new Set()};
