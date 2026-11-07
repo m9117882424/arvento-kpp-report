@@ -26,6 +26,7 @@ import psycopg.rows
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.worksheet import Worksheet
 from pydantic import BaseModel, Field, model_validator
 
 from business_rules import (
@@ -890,6 +891,14 @@ def filter_options(database_url: str, start: date, finish: date) -> dict[str, An
     }
 
 
+def _append_safe_excel_row(sheet: Worksheet, values: Sequence[Any]) -> None:
+    """Keep external roster/geozone names as text, never executable Excel formulas."""
+    sheet.append(list(values))
+    for cell in sheet[sheet.max_row]:
+        if isinstance(cell.value, str) and cell.value.startswith("="):
+            cell.data_type = "s"
+
+
 def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     """Produce a highlighted, inspectable XLSX without another GPS calculation."""
     workbook = Workbook()
@@ -897,18 +906,20 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     sheet.title = "Рейтинг ТС"
     headers = [
         "Место", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
-        "Норма дней", "План дней", "Пробег внутри, км", "Пробег снаружи, км",
+        "Норма дней", "План дней", "Пробег внутри, км",
+        "Внутри / рабочий день, км", "Пробег снаружи, км",
         "Доля внутри, %", "Внутри / снаружи, %", "Движение внутри, мин",
         "Стоянки у офиса, мин", "Движение / движение+стоянка, %",
         "Выезды / возвраты на обед", "Работа на площадке в выходные, дней",
         "Вне выбранных зон, км", "Превышения на площадке", "Превышения снаружи",
         "Штраф за скорость, баллы", "Итоговый балл", "Состояние",
     ]
-    sheet.append(headers)
+    _append_safe_excel_row(sheet, headers)
     for vehicle in report["vehicles"]:
         cells = [
             vehicle["rank"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
+            vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
             vehicle["inside_to_outside_percent"], vehicle["moving_minutes"],
             vehicle["office_parking_minutes"], vehicle["motion_vs_office_percent"],
@@ -917,7 +928,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["speed_site_events"], vehicle["speed_outside_events"],
             vehicle["speed_penalty"], vehicle["score"], vehicle["data_status"],
         ]
-        sheet.append(cells)
+        _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
         settings = report["settings"]
         norm = (
@@ -927,28 +938,28 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         )
         avg = vehicle["inside_km_per_day"]
         if avg is not None:
-            sheet.cell(line, 8).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
+            sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
         if vehicle["speed_events"]:
-            for col in (18, 19):
+            for col in (19, 20):
                 sheet.cell(line, col).fill = PatternFill("solid", fgColor="FDE2E2")
         if vehicle["score"] is not None:
-            sheet.cell(line, 21).fill = PatternFill(
+            sheet.cell(line, 22).fill = PatternFill(
                 "solid", fgColor="E0F4E8" if vehicle["score"] >= 85 else "FFF0CD"
                 if vehicle["score"] >= 60 else "FDE2E2"
             )
         if vehicle["unauthorized_km"]:
-            sheet.cell(line, 17).fill = PatternFill("solid", fgColor="FDE2E2")
+            sheet.cell(line, 18).fill = PatternFill("solid", fgColor="FDE2E2")
     sheet.freeze_panes = "C2"
     sheet.auto_filter.ref = sheet.dimensions
 
     daily = workbook.create_sheet("По дням")
-    daily.append([
+    _append_safe_excel_row(daily, [
         "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "В разнарядке",
         "Кэш готов", "Внутри, км", "Снаружи, км", "Движение, мин",
         "Стоянки у офиса, мин", "Превышения", "GPS точек",
     ])
     for item in report["daily"]:
-        daily.append([
+        _append_safe_excel_row(daily, [
             item["date"], item["plate"], item["model"], item["directorate"], item["user"],
             "Да" if item["in_roster"] else "Нет", "Да" if item["cache_ready"] else "Нет",
             item["inside_km"], item["outside_km"], item["moving_minutes"],
@@ -958,12 +969,12 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     daily.auto_filter.ref = daily.dimensions
 
     speed = workbook.create_sheet("Превышения скорости")
-    speed.append([
+    _append_safe_excel_row(speed, [
         "Госномер", "Зона", "Начало", "Окончание", "Длительность, сек",
         "Максимум, км/ч", "Порог, км/ч", "Широта", "Долгота",
     ])
     for event in report["speed_events"]:
-        speed.append([
+        _append_safe_excel_row(speed, [
             event["plate"], event["place"], event["start"], event["finish"],
             event["duration_seconds"], event["max_speed_kmh"], event["threshold_kmh"],
             event["latitude"], event["longitude"],
@@ -972,21 +983,21 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     speed.auto_filter.ref = speed.dimensions
 
     notes = workbook.create_sheet("Методика")
-    notes.append(["Показатель", "Правило"])
-    notes.append(["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
-    notes.append(["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
-    notes.append(["Часовой пояс", "Europe/Istanbul"])
-    notes.append(["Выходные", "суббота и воскресенье; требуется движение внутри площадки"])
-    notes.append(["Норматив", "Transit 50 км/день; другие 30 км/день (из настроек)"])
-    notes.append(["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
-    notes.append(["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
-    notes.append(["Скорость", "Не менее 3 последовательных правдоподобных GPS-точек и заданной длительности"])
-    notes.append(["Итоговый балл", "50% норматив дней + 25% движение/стоянки + 15% доля пробега внутри + 10% разрешённые зоны"])
-    notes.append(["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])
-    notes.append(["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
-    notes.append(["Недостаточно данных", "Балл не присваивается без GPS, разнарядки или готового кэша"])
+    _append_safe_excel_row(notes, ["Показатель", "Правило"])
+    _append_safe_excel_row(notes, ["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
+    _append_safe_excel_row(notes, ["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
+    _append_safe_excel_row(notes, ["Часовой пояс", "Europe/Istanbul"])
+    _append_safe_excel_row(notes, ["Выходные", "суббота и воскресенье; требуется движение внутри площадки"])
+    _append_safe_excel_row(notes, ["Норматив", "Transit 50 км/день; другие 30 км/день (из настроек)"])
+    _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
+    _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
+    _append_safe_excel_row(notes, ["Скорость", "Не менее 3 последовательных правдоподобных GPS-точек и заданной длительности"])
+    _append_safe_excel_row(notes, ["Итоговый балл", "50% норматив дней + 25% движение/стоянки + 15% доля пробега внутри + 10% разрешённые зоны"])
+    _append_safe_excel_row(notes, ["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])
+    _append_safe_excel_row(notes, ["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
+    _append_safe_excel_row(notes, ["Недостаточно данных", "Балл не присваивается без GPS, разнарядки или готового кэша"])
     for key, value in report["settings"].items():
-        notes.append([key, ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)])
+        _append_safe_excel_row(notes, [key, ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)])
 
     for ws in workbook.worksheets:
         ws.sheet_view.showGridLines = False

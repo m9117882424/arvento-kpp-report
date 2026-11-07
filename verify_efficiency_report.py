@@ -414,8 +414,40 @@ class RatingTest(unittest.TestCase):
                 "Рейтинг ТС","По дням","Превышения скорости","Методика"
             ])
             self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
-            self.assertEqual(book.worksheets[0].cell(2,18).value,1)
-            self.assertEqual(book.worksheets[0].cell(2,18).fill.fgColor.rgb,"00FDE2E2")
+            self.assertEqual(book.worksheets[0].cell(1,9).value,"Внутри / рабочий день, км")
+            self.assertEqual(book.worksheets[0].cell(2,8).value,10)
+            self.assertEqual(book.worksheets[0].cell(2,9).value,10)
+            self.assertEqual(book.worksheets[0].cell(2,9).fill.fgColor.rgb,"00FDE2E2")
+            self.assertEqual(book.worksheets[0].cell(2,19).value,1)
+            self.assertEqual(book.worksheets[0].cell(2,19).fill.fgColor.rgb,"00FDE2E2")
+        finally:
+            book.close()
+
+    def test_excel_roster_values_cannot_become_formulas(self):
+        day=date(2026,11,6)
+        formula='=HYPERLINK("https://example.invalid/","click")'
+        rows=[{
+            "report_day":day,"normalized_plate":"34TEST01","plate":formula,
+            "company":"TSM","user_name":formula,"model":formula,
+            "directorate":formula,"in_roster":True,
+            "inside_km":35,"outside_km":5,"total_km":40,
+            "raw_points":3,"cache_ready":True,
+        }]
+        gps={(day,"34TEST01"):GPSDailyMetrics(points=3,moving_minutes=20)}
+        configuration=settings(users=[formula])
+        result=aggregate_report(rows,gps,configuration)
+        book=load_workbook(io.BytesIO(workbook_from_report(result)))
+        try:
+            rating=book["Рейтинг ТС"]
+            daily=book["По дням"]
+            for column in (2,3,4,5):
+                self.assertEqual(rating.cell(2,column).value,formula)
+                self.assertEqual(rating.cell(2,column).data_type,"s")
+            for column in (2,3,4,5):
+                self.assertEqual(daily.cell(2,column).data_type,"s")
+            for sheet in book.worksheets:
+                for row in sheet:
+                    self.assertTrue(all(cell.data_type!="f" for cell in row))
         finally:
             book.close()
 
