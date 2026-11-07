@@ -1,6 +1,15 @@
-# arvento_report
+# Arvento — мониторинг транспорта и отчёты TSM
 
 Система загрузки телематических данных Arvento, хранения GPS-точек в PostgreSQL/PostGIS, управления геозонами и формирования транспортных отчётов.
+
+**Основной репозиторий:** [m9117882424/arvento-kpp-report](https://github.com/m9117882424/arvento-kpp-report), рабочая ветка — `main`. Основной сервер: `vmi3115231`, checkout `/opt/arvento_report`. Вся прикладная логика должна проходить через GitHub и проверки CI; содержимое `/opt/arvento_report` не является отдельной веткой разработки.
+
+Ключевые инструкции:
+
+- [Развёртывание](SERVER_DEPLOY.md) и [релиз/откат](docs/RELEASE_AND_RESTORE.md).
+- [Методика эффективности транспорта](docs/efficiency-report.md), включая подписи, нормативы и цвета.
+- [Сводный кэш](docs/consolidated-cache.md) и [ночной ускоренный расчёт](docs/NIGHTLY_FAST_CACHE.md).
+- [Инвентаризация и безопасная уборка VPS](docs/SERVER_HYGIENE.md).
 
 ## Основные задачи
 
@@ -18,11 +27,12 @@
 - `geofence-editor` — редактор геозон на localhost;
 - `report-portal` — портал отчётов на localhost.
 
-Синхронизация не запускается вторым бесконечным Docker-демоном. Её выполняют systemd timers:
+Синхронизация не запускается вторым бесконечным Docker-демоном. Её выполняют systemd timers (время **Europe/Istanbul**):
 
 - `arvento-intraday-pipeline.timer` — каждые 30 минут с 01:00 до 23:30;
 - `arvento-nightly-correction.timer` — корректировка предыдущих суток в 00:10;
 - `arvento-backup.timer` — проверенный `pg_dump` в 03:30.
+- `arvento-efficiency-cache.timer` — необязательный прогрев GPS-кэша рейтинга в **04:40**; устанавливается всегда, **включается отдельно** после проверки нагрузки. На PRIMARY включён.
 
 Все тяжёлые задания используют общий `flock`, конечные timeout и ограничения ресурсов контейнера. Сервис `gps-sync` сохранён только в профиле `legacy-daemon` для совместимости и не входит в обычный `docker compose up`.
 
@@ -62,7 +72,15 @@ Installer:
 
 Новый интерактивный отчёт **«Эффективность ТС»** доступен на `/efficiency`:
 сводный кэш, множественные фильтры, подтверждённые стоянки и нарушения
-скорости с исключением тоннелей, рейтинг 0–100 и Excel.
+скорости с исключением тоннелей, рейтинг 0–100 и Excel. Даты ограничены 31 днём,
+выходные — суббота/воскресенье, стоянка по умолчанию — дольше пяти минут.
+Норматив среднего пробега установлен **только внутри Аккую** (Ford Transit —
+50 км/рабочий день, остальные модели — 30 км/рабочий день по умолчанию);
+для пробега вне Аккую норматива нет. Доли пробега внутри и вне Аккую
+в сумме равны 100% при наличии пробега. Порядковый номер присутствует у
+каждой строки независимо от наличия рассчитанного балла. Цвет среднего
+пробега определяется его сравнением с нормативом модели, а не долей дней,
+когда норматив был выполнен.
 Методика: [`docs/efficiency-report.md`](docs/efficiency-report.md).
 
 План перехода к удобно сопровождаемому продукту:
@@ -74,7 +92,7 @@ Installer:
 sudo /usr/local/sbin/arvento-healthcheck
 
 docker compose -f docker-compose.server.yml ps
-systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly|backup)'
+systemctl list-timers --all --no-pager | grep -E 'arvento-(intraday|nightly|backup|efficiency)'
 
 curl http://127.0.0.1:18083/health
 curl http://127.0.0.1:18084/health
@@ -86,6 +104,7 @@ curl http://127.0.0.1:18084/health
 journalctl -u arvento-intraday-pipeline.service -n 200 --no-pager
 journalctl -u arvento-nightly-correction.service -n 200 --no-pager
 journalctl -u arvento-backup.service -n 100 --no-pager
+journalctl -u arvento-efficiency-cache.service -n 100 --no-pager
 ```
 
 ## Ручная синхронизация
@@ -113,22 +132,45 @@ flock -n /run/arvento-sync-and-cache.lock \
   python sync_arvento_gps_to_postgres.py day 2026-07-24
 ```
 
-## Обновление
+## Git и обновление
+
+На production в Git должны находиться **только версионируемые исходники**.
+Дамп БД, токены, `.env`, временные выгрузки, одноразовые скрипты и исследовательские
+worktree не должны мешать `git status`. Исторические локальные файлы сохраняют
+за пределами checkout с возможностью восстановления, а не удаляют вслепую.
+Подробности и проверочные команды: [SERVER_HYGIENE](docs/SERVER_HYGIENE.md).
+
+Перед обновлением проверьте `git status --short`, активные задания и доступное
+место. **Не применяйте** `git clean -fd`, `git reset --hard` или безусловный
+`docker system prune` на общем VPS. Если в checkout есть неотслеживаемые
+пользовательские файлы, сначала разберите и сохраните их отдельно.
 
 ```bash
 cd /opt/arvento_report
+git status --short
+git switch main
 git fetch origin
-git pull --ff-only origin main
+git merge --ff-only origin/main
 sudo bash deploy/release.sh /opt/arvento_report
 ```
 
 Release создаёт контрольный backup, использует immutable image tag по commit SHA,
 выполняет smoke-test и автоматически возвращает предыдущий image при ошибке.
+Для изменений **только README/документации** достаточно fast-forward Git
+и контрольного `git status` — пересборка приложения и длительный `pg_dump`
+не требуются. При изменении Python, HTML, Compose, systemd или deployment-скриптов
+используется полный release.
 Подробный регламент: [`docs/RELEASE_AND_RESTORE.md`](docs/RELEASE_AND_RESTORE.md).
 
 ## Резервные копии
 
-По умолчанию backup хранится вне Git checkout в `/opt/arvento_backups` и удаляется через 14 дней. Параметры:
+Backup хранится вне Git checkout в `/opt/arvento_backups`. Стандартный
+скрипт удаляет архивы старше **14 дней**; на PRIMARY дополнительно действует
+локальный systemd `ExecStartPost` — лимит последних **семи** файлов `arvento_report_*.dump`.
+Это именно число файлов, а не семь календарных дней: серия релизов за сутки
+может вытеснить архивы предыдущих дней. До изменения политики проверяйте
+`systemctl cat arvento-backup.service` и содержимое каталога; не удаляйте
+архивы без подтверждённой более новой копии. Параметры основного скрипта:
 
 ```text
 BACKUP_DIR=/opt/arvento_backups
