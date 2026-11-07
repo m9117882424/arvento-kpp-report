@@ -183,7 +183,7 @@
   }
 
   async function loadZones() {
-    const response = await fetch('/api/geofences');
+    const response = await fetch('api/geofences');
     if (!response.ok) throw new Error('Не удалось загрузить геозоны');
     const data = await response.json();
     zonesEl.innerHTML = '';
@@ -215,7 +215,7 @@
       setStatus('Укажите код и название.');
       return;
     }
-    const url = currentId ? `/api/geofences/${currentId}` : '/api/geofences';
+    const url = currentId ? `api/geofences/${currentId}` : 'api/geofences';
     const method = currentId ? 'PUT' : 'POST';
     const response = await fetch(url, {method, headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)});
     const result = response.status === 204 ? {} : await response.json();
@@ -230,7 +230,7 @@
 
   async function disableZone() {
     if (!currentId) return setStatus('Сначала выберите существующую геозону.');
-    const response = await fetch(`/api/geofences/${currentId}`, {method: 'DELETE'});
+    const response = await fetch(`api/geofences/${currentId}`, {method: 'DELETE'});
     if (!response.ok) return setStatus('Не удалось отключить геозону.');
     clearForm();
     await loadZones();
@@ -238,7 +238,7 @@
   }
 
   async function init() {
-    config = await (await fetch('/api/config')).json();
+    config = await (await fetch('api/config')).json();
     map = L.map('map').setView(config.center, config.zoom);
     osmLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
