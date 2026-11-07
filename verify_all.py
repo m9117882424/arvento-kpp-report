@@ -45,6 +45,7 @@ RUNTIME_CHECKS = (
     "verify_report_contracts.py",
     "verify_generation_jobs.py",
     "verify_speed_threshold_defaults.py",
+    "verify_efficiency_report.py",
 )
 
 # Requires a live production database and an explicit report day.

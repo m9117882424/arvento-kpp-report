@@ -1,0 +1,814 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""Source-backed vehicle efficiency calculation for the Arvento report portal.
+
+The consolidated daily cache is the source of mileage and roster coverage.
+GPS is read in bounded daily streams only for measures absent from that cache:
+movement, office parking, selected-area use, lunch crossings and speed events.
+No GPS interval is inferred across long telemetry gaps.
+"""
+from __future__ import annotations
+
+import io
+import json
+import math
+import unicodedata
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import date, datetime, time, timedelta
+from typing import Any, Iterable, Mapping, Sequence
+from zoneinfo import ZoneInfo
+
+import psycopg
+import psycopg.rows
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from pydantic import BaseModel, Field, model_validator
+
+from business_rules import (
+    DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+    DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+    MIN_SPEED_EVENT_DURATION_SECONDS,
+)
+from cache_freshness import load_cache_coverage
+from geozone_registry import load_database_registry, point_in_polygon
+from roster_registry import normalize_plate
+from site_boundary_speed import (
+    classify_site_state_by_polygon,
+    detect_speed_violations_by_polygon,
+)
+from speed_violation_report import _valid_speed, validate_speed_thresholds
+
+
+TZ = ZoneInfo("Europe/Istanbul")
+MAX_PERIOD_DAYS = 31
+MAX_INTERVAL_SECONDS = 300
+MAX_OFFICE_GAP_SECONDS = 900
+MIN_MOVING_SPEED_KMH = 3.0
+MAX_PLAUSIBLE_SEGMENT_KM = 5.0
+SPEED_PENALTY_PER_EVENT = 3
+SPEED_PENALTY_CAP = 15
+SCORE_WEIGHTS = {
+    "norm_days": 0.50,
+    "office_motion": 0.25,
+    "inside_share": 0.15,
+    "authorized_use": 0.10,
+}
+
+
+class EfficiencySettings(BaseModel):
+    date_from: date
+    date_to: date
+    plates: list[str] = Field(default_factory=list, max_length=1500)
+    directorates: list[str] = Field(default_factory=list, max_length=250)
+    users: list[str] = Field(default_factory=list, max_length=1500)
+    models: list[str] = Field(default_factory=list, max_length=250)
+    office_zone_codes: list[str] = Field(default_factory=list, max_length=50)
+    allowed_zone_codes: list[str] = Field(default_factory=list, max_length=50)
+    lunch_exit_from: time = time(11, 30)
+    lunch_exit_to: time = time(12, 30)
+    lunch_return_from: time = time(12, 30)
+    lunch_return_to: time = time(14, 0)
+    transit_min_inside_km: float = Field(default=50.0, ge=0, le=500)
+    other_min_inside_km: float = Field(default=30.0, ge=0, le=500)
+    parking_min_minutes: float = Field(default=5.0, ge=0, le=240)
+    site_speed_threshold_kmh: float = DEFAULT_SITE_SPEED_THRESHOLD_KMH
+    outside_speed_threshold_kmh: float = DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH
+    speed_min_duration_seconds: int = Field(
+        default=MIN_SPEED_EVENT_DURATION_SECONDS, ge=0, le=3600
+    )
+
+    @model_validator(mode="after")
+    def validate_scope(self) -> "EfficiencySettings":
+        if self.date_to < self.date_from:
+            raise ValueError("Дата окончания раньше даты начала")
+        if (self.date_to - self.date_from).days + 1 > MAX_PERIOD_DAYS:
+            raise ValueError(f"Период не должен превышать {MAX_PERIOD_DAYS} дней")
+        if self.lunch_exit_to <= self.lunch_exit_from:
+            raise ValueError("Окончание окна выезда на обед должно быть позже начала")
+        if self.lunch_return_to <= self.lunch_return_from:
+            raise ValueError("Окончание окна возвращения должно быть позже начала")
+        validate_speed_thresholds(
+            self.site_speed_threshold_kmh,
+            self.outside_speed_threshold_kmh,
+        )
+        self.plates = list(dict.fromkeys(normalize_plate(p) for p in self.plates if p.strip()))
+        for attr in ("directorates", "users", "models", "office_zone_codes", "allowed_zone_codes"):
+            values = getattr(self, attr)
+            setattr(self, attr, list(dict.fromkeys(v.strip() for v in values if v.strip())))
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class Shape:
+    code: str
+    name: str
+    kind: str
+    # Each polygon consists of an exterior ring and zero or more holes.
+    polygons: tuple[tuple[tuple[tuple[float, float], ...], ...], ...]
+
+    def contains(self, lat: float, lon: float) -> bool:
+        for rings in self.polygons:
+            if not rings:
+                continue
+            exterior = rings[0]
+            if not point_in_polygon(lat, lon, exterior):
+                continue
+            if any(point_in_polygon(lat, lon, hole) for hole in rings[1:]):
+                continue
+            return True
+        return False
+
+
+def shape_from_geojson(code: str, name: str, kind: str, geometry: Mapping[str, Any]) -> Shape | None:
+    kind_geo = geometry.get("type")
+    if kind_geo == "Polygon":
+        polygons = [geometry.get("coordinates") or []]
+    elif kind_geo == "MultiPolygon":
+        polygons = geometry.get("coordinates") or []
+    else:
+        return None
+    rings_out: list[tuple[tuple[tuple[float, float], ...], ...]] = []
+    for poly in polygons:
+        rings = []
+        for ring in poly:
+            points = tuple((float(lat), float(lon)) for lon, lat, *_ in ring)
+            if len(points) >= 4:
+                rings.append(points)
+        if rings:
+            rings_out.append(tuple(rings))
+    if not rings_out:
+        return None
+    return Shape(code, name, kind.upper(), tuple(rings_out))
+
+
+def load_shapes(connection: psycopg.Connection[Any]) -> dict[str, Shape]:
+    rows = connection.execute(
+        """
+        SELECT g.code, g.name, g.geofence_type, ST_AsGeoJSON(v.geometry)::json
+        FROM geofences g
+        JOIN geofence_versions v ON v.geofence_id=g.id AND v.valid_to IS NULL
+        WHERE g.is_active
+        ORDER BY g.name
+        """
+    ).fetchall()
+    result: dict[str, Shape] = {}
+    for code, name, kind, geom in rows:
+        shape = shape_from_geojson(code, name, kind, geom if isinstance(geom, dict) else json.loads(geom))
+        if shape:
+            result[shape.code] = shape
+    return result
+
+
+def choose_shapes(
+    available: Mapping[str, Shape], requested: Sequence[str], purpose: str
+) -> list[Shape]:
+    missing = sorted(set(requested) - available.keys())
+    if missing:
+        raise ValueError(f"Геозоны {purpose} не найдены или отключены: {', '.join(missing)}")
+    forbidden = [code for code in requested if available[code].kind in {"SPEED_EXCLUSION", "TUNNEL"}]
+    if forbidden:
+        raise ValueError(f"Тоннельные зоны не могут быть зонами {purpose}: {', '.join(forbidden)}")
+    if purpose == "стоянок":
+        not_offices = [
+            code for code in requested
+            if available[code].kind not in {"OFFICE", "PARKING", "WORK_ZONE"}
+        ]
+        if not_offices:
+            raise ValueError(
+                "Для офисных стоянок используйте геозоны OFFICE, PARKING или WORK_ZONE: "
+                + ", ".join(not_offices)
+            )
+    return [available[code] for code in requested]
+
+
+@dataclass(frozen=True, slots=True)
+class GPSPoint:
+    plate: str
+    timestamp: datetime
+    lat: float
+    lon: float
+    speed: float | None
+    distance_km: float | None
+    address: str = ""
+
+
+@dataclass(slots=True)
+class GPSDailyMetrics:
+    moving_minutes: float = 0.0
+    office_parking_minutes: float = 0.0
+    office_stops: int = 0
+    unauthorized_minutes: float = 0.0
+    unauthorized_km: float = 0.0
+    lunch_exits: int = 0
+    lunch_returns: int = 0
+    weekend_site_movement: bool = False
+    speed_site: int = 0
+    speed_outside: int = 0
+    speed_events: list[dict[str, Any]] = field(default_factory=list)
+    points: int = 0
+
+
+def _within_window(timestamp: datetime, start: time, finish: time) -> bool:
+    local_time = timestamp.astimezone(TZ).time().replace(tzinfo=None)
+    return start <= local_time <= finish
+
+
+def _valid_interval(first: GPSPoint, second: GPSPoint, max_seconds: int) -> float:
+    seconds = (second.timestamp - first.timestamp).total_seconds()
+    return seconds if 0 < seconds <= max_seconds else 0.0
+
+
+def _in_any(point: GPSPoint, shapes: Sequence[Shape]) -> bool:
+    return any(shape.contains(point.lat, point.lon) for shape in shapes)
+
+
+def _valid_distance(value: float | None) -> float:
+    if value is None or not math.isfinite(value):
+        return 0.0
+    return value if 0 <= value <= MAX_PLAUSIBLE_SEGMENT_KM else 0.0
+
+
+def is_transit(model: str) -> bool:
+    """Match FORD TRANSIT and Turkish FORD TRANSİT consistently."""
+    normalized = unicodedata.normalize("NFKD", model)
+    plain = "".join(c for c in normalized if unicodedata.category(c) != "Mn")
+    return "transit" in plain.casefold()
+
+
+def analyze_daily_track(
+    track: Sequence[GPSPoint],
+    registry: Any,
+    office_shapes: Sequence[Shape],
+    allowed_shapes: Sequence[Shape],
+    settings: EfficiencySettings,
+) -> GPSDailyMetrics:
+    metrics = GPSDailyMetrics(points=len(track))
+    if not track:
+        return metrics
+    classified = classify_site_state_by_polygon(track, registry)
+    stop_start: GPSPoint | None = None
+    stop_last: GPSPoint | None = None
+
+    def close_stop() -> None:
+        nonlocal stop_start, stop_last
+        if stop_start is not None and stop_last is not None:
+            duration = (stop_last.timestamp - stop_start.timestamp).total_seconds()
+            if duration > settings.parking_min_minutes * 60:
+                metrics.office_parking_minutes += duration / 60
+                metrics.office_stops += 1
+        stop_start = stop_last = None
+
+    previous: tuple[GPSPoint, bool] | None = None
+    for point, inside in classified:
+        speed = _valid_speed(point.speed)
+        if previous is not None:
+            preceding, was_inside = previous
+            previous_speed = _valid_speed(preceding.speed)
+            dt = _valid_interval(preceding, point, MAX_INTERVAL_SECONDS)
+            if dt and was_inside and inside and (
+                previous_speed is not None and previous_speed > MIN_MOVING_SPEED_KMH
+                and speed is not None and speed > MIN_MOVING_SPEED_KMH
+            ):
+                metrics.moving_minutes += dt / 60
+            if was_inside and not inside and _within_window(
+                point.timestamp, settings.lunch_exit_from, settings.lunch_exit_to
+            ):
+                metrics.lunch_exits += 1
+            if not was_inside and inside and _within_window(
+                point.timestamp, settings.lunch_return_from, settings.lunch_return_to
+            ):
+                metrics.lunch_returns += 1
+
+        is_stopped_at_office = (
+            office_shapes
+            and speed is not None
+            and speed <= MIN_MOVING_SPEED_KMH
+            and _in_any(point, office_shapes)
+        )
+        if is_stopped_at_office:
+            if stop_last is not None and not _valid_interval(
+                stop_last, point, MAX_OFFICE_GAP_SECONDS
+            ):
+                close_stop()
+            if stop_start is None:
+                stop_start = point
+            stop_last = point
+        else:
+            close_stop()
+
+        if allowed_shapes and not _in_any(point, allowed_shapes):
+            if speed is not None and speed > MIN_MOVING_SPEED_KMH:
+                metrics.unauthorized_km += _valid_distance(point.distance_km)
+                if previous is not None and not _in_any(previous[0], allowed_shapes):
+                    metrics.unauthorized_minutes += _valid_interval(
+                        previous[0], point, MAX_INTERVAL_SECONDS
+                    ) / 60
+        previous = (point, inside)
+    close_stop()
+
+    if track[0].timestamp.astimezone(TZ).weekday() >= 5:
+        metrics.weekend_site_movement = metrics.moving_minutes > 0
+
+    site_events, outside_events = detect_speed_violations_by_polygon(
+        track,
+        registry,
+        settings.site_speed_threshold_kmh,
+        settings.outside_speed_threshold_kmh,
+        min_duration_seconds=settings.speed_min_duration_seconds,
+    )
+    metrics.speed_site = len(site_events)
+    metrics.speed_outside = len(outside_events)
+    for event in (*site_events, *outside_events):
+        metrics.speed_events.append({
+            "plate": event.plate,
+            "place": "На площадке" if event.on_site else "Вне площадки",
+            "start": event.start.astimezone(TZ).isoformat(timespec="seconds"),
+            "finish": event.finish.astimezone(TZ).isoformat(timespec="seconds"),
+            "duration_seconds": event.duration_seconds,
+            "max_speed_kmh": round(event.max_speed_kmh, 1),
+            "threshold_kmh": event.threshold_kmh,
+            "latitude": float(event.max_point.lat),
+            "longitude": float(event.max_point.lon),
+        })
+    return metrics
+
+
+def load_daily_rows(
+    connection: psycopg.Connection[Any], settings: EfficiencySettings
+) -> list[dict[str, Any]]:
+    """Apply the latest roster snapshot effective on each day; include zero-GPS cars."""
+    query = """
+        WITH days AS (
+            SELECT generate_series(%s::date, %s::date, interval '1 day')::date AS report_day
+        ),
+        effective AS (
+            SELECT d.report_day, s.roster_day
+            FROM days d
+            LEFT JOIN LATERAL (
+                SELECT roster_day FROM consolidated_roster_snapshots
+                WHERE roster_day <= d.report_day ORDER BY roster_day DESC LIMIT 1
+            ) s ON TRUE
+        ),
+        roster AS (
+            SELECT d.report_day, r.normalized_plate, r.plate, r.company,
+                   r.user_name, r.model, r.directorate
+            FROM effective d
+            JOIN consolidated_roster_entries r ON r.roster_day=d.roster_day
+        )
+        SELECT
+            COALESCE(r.report_day,c.report_day) AS report_day,
+            COALESCE(r.normalized_plate,c.normalized_plate) AS normalized_plate,
+            COALESCE(NULLIF(r.plate,''), NULLIF(c.plate,''),c.normalized_plate) AS plate,
+            COALESCE(NULLIF(r.company,''),c.company,'') AS company,
+            COALESCE(r.user_name,c.user_name,'') AS user_name,
+            COALESCE(r.model,'') AS model,
+            COALESCE(r.directorate,'') AS directorate,
+            (r.normalized_plate IS NOT NULL) AS in_roster,
+            COALESCE(c.inside_km,0) AS inside_km,
+            COALESCE(c.outside_km,0) AS outside_km,
+            COALESCE(c.total_km,0) AS total_km,
+            COALESCE(c.raw_points,0) AS raw_points,
+            (cd.status='SUCCESS' AND c.normalized_plate IS NOT NULL) AS cache_ready
+        FROM roster r
+        FULL JOIN consolidated_report_cache c
+          ON c.report_day=r.report_day AND c.normalized_plate=r.normalized_plate
+         AND c.report_day BETWEEN %s AND %s
+        LEFT JOIN consolidated_cache_days cd
+          ON cd.report_day=COALESCE(r.report_day,c.report_day)
+        WHERE COALESCE(r.report_day,c.report_day) BETWEEN %s AND %s
+        ORDER BY report_day,normalized_plate
+    """
+    params = (
+        settings.date_from, settings.date_to,
+        settings.date_from, settings.date_to,
+        settings.date_from, settings.date_to,
+    )
+    with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
+        cursor.execute(query, params)
+        rows = [dict(row) for row in cursor.fetchall()]
+    return [r for r in rows if matches_filters(r, settings)]
+
+
+def matches_filters(row: Mapping[str, Any], settings: EfficiencySettings) -> bool:
+    return (
+        (not settings.plates or row["normalized_plate"] in settings.plates)
+        and (not settings.directorates or row["directorate"] in settings.directorates)
+        and (not settings.users or row["user_name"] in settings.users)
+        and (not settings.models or row["model"] in settings.models)
+    )
+
+
+def iter_daily_gps(
+    connection: psycopg.Connection[Any],
+    report_day: date,
+    plates: Sequence[str],
+) -> Iterable[tuple[str, list[GPSPoint]]]:
+    """Read a single partition/day as a named server-side cursor, one car at a time."""
+    if not plates:
+        return
+    start = datetime.combine(report_day, time.min, TZ)
+    finish = start + timedelta(days=1)
+    name = f"efficiency_{report_day:%Y%m%d}"
+    with connection.cursor(name=name, row_factory=psycopg.rows.tuple_row) as cursor:
+        cursor.itersize = 2500
+        cursor.execute(
+            """
+            SELECT normalized_plate, plate, event_time, latitude, longitude,
+                   speed_kmh, distance_km
+            FROM gps_points
+            WHERE event_time >= %s AND event_time < %s
+              AND normalized_plate = ANY(%s::text[])
+            ORDER BY normalized_plate, event_time, id
+            """,
+            (start, finish, list(plates)),
+        )
+        previous_plate: str | None = None
+        current: list[GPSPoint] = []
+        for normalized, plate, instant, lat, lon, speed, distance in cursor:
+            if previous_plate is not None and normalized != previous_plate:
+                yield previous_plate, current
+                current = []
+            previous_plate = normalized
+            current.append(GPSPoint(
+                plate=plate, timestamp=instant, lat=float(lat), lon=float(lon),
+                speed=float(speed) if speed is not None else None,
+                distance_km=float(distance) if distance is not None else None,
+            ))
+        if previous_plate is not None:
+            yield previous_plate, current
+
+
+def compute_score(
+    eligible_days: int,
+    norm_days: int,
+    inside_km: float,
+    outside_km: float,
+    moving_minutes: float,
+    office_minutes: float,
+    outside_allowed_km: float,
+    speed_events: int,
+    office_configured: bool,
+    allowed_configured: bool,
+) -> int | None:
+    if eligible_days <= 0:
+        return None
+    metrics: list[tuple[float, float]] = [
+        (SCORE_WEIGHTS["norm_days"], min(1.0, norm_days / eligible_days)),
+        (SCORE_WEIGHTS["inside_share"], inside_km / (inside_km + outside_km)
+         if inside_km + outside_km > 0 else 0.0),
+    ]
+    if office_configured:
+        metrics.append((
+            SCORE_WEIGHTS["office_motion"],
+            moving_minutes / (moving_minutes + office_minutes)
+            if moving_minutes + office_minutes > 0 else 0.0,
+        ))
+    if allowed_configured:
+        metrics.append((
+            SCORE_WEIGHTS["authorized_use"],
+            1.0 - min(1.0, outside_allowed_km / max(inside_km + outside_km, 1.0)),
+        ))
+    weight = sum(item[0] for item in metrics)
+    raw = 100.0 * sum(w * result for w, result in metrics) / weight
+    penalty = min(SPEED_PENALTY_CAP, speed_events * SPEED_PENALTY_PER_EVENT)
+    return max(0, min(100, round(raw - penalty)))
+
+
+def aggregate_report(
+    rows: Sequence[Mapping[str, Any]],
+    gps_by_day: Mapping[tuple[date, str], GPSDailyMetrics],
+    settings: EfficiencySettings,
+) -> dict[str, Any]:
+    grouped: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for row in rows:
+        grouped[str(row["normalized_plate"])].append(row)
+    vehicles: list[dict[str, Any]] = []
+    all_events: list[dict[str, Any]] = []
+    detail: list[dict[str, Any]] = []
+    incomplete_days = set()
+    provisional_days = set()
+    today_local = datetime.now(TZ).date()
+    for normalized, days in grouped.items():
+        days = sorted(days, key=lambda r: r["report_day"])
+        current = days[-1]
+        total_inside = sum(float(r["inside_km"] or 0) for r in days)
+        total_outside = sum(float(r["outside_km"] or 0) for r in days)
+        eligible_days = 0
+        norm_days = 0
+        weekend_days = 0
+        gps_days = 0
+        moving = office = unauthorized_km = unauthorized_minutes = 0.0
+        stops = lunch_exits = lunch_returns = speed_site = speed_outside = 0
+        for row in days:
+            day = row["report_day"]
+            if not row["cache_ready"]:
+                incomplete_days.add(day)
+            if day >= today_local:
+                provisional_days.add(day)
+            gps = gps_by_day.get((day, normalized), GPSDailyMetrics())
+            if gps.points > 0:
+                gps_days += 1
+            if row["in_roster"] and day.weekday() < 5:
+                eligible_days += 1
+                norm = (
+                    settings.transit_min_inside_km
+                    if is_transit(str(row["model"]))
+                    else settings.other_min_inside_km
+                )
+                if row["cache_ready"] and gps.points > 0 and float(row["inside_km"] or 0) >= norm:
+                    norm_days += 1
+            if day.weekday() >= 5 and gps.weekend_site_movement:
+                weekend_days += 1
+            moving += gps.moving_minutes
+            office += gps.office_parking_minutes
+            stops += gps.office_stops
+            unauthorized_km += gps.unauthorized_km
+            unauthorized_minutes += gps.unauthorized_minutes
+            lunch_exits += gps.lunch_exits
+            lunch_returns += gps.lunch_returns
+            speed_site += gps.speed_site
+            speed_outside += gps.speed_outside
+            all_events.extend(gps.speed_events)
+            detail.append({
+                "date": day.isoformat(), "plate": row["plate"],
+                "model": row["model"], "directorate": row["directorate"],
+                "user": row["user_name"], "in_roster": row["in_roster"],
+                "cache_ready": row["cache_ready"], "inside_km": round(float(row["inside_km"] or 0), 2),
+                "outside_km": round(float(row["outside_km"] or 0), 2),
+                "moving_minutes": round(gps.moving_minutes, 1),
+                "office_minutes": round(gps.office_parking_minutes, 1),
+                "speed_events": gps.speed_site + gps.speed_outside,
+                "gps_points": gps.points,
+            })
+        score = (
+            compute_score(
+                eligible_days, norm_days, total_inside, total_outside,
+                moving, office, unauthorized_km, speed_site + speed_outside,
+                bool(settings.office_zone_codes), bool(settings.allowed_zone_codes),
+            )
+            if gps_days and all(r["cache_ready"] for r in days) else None
+        )
+        vehicle = {
+            "plate": current["plate"],
+            "normalized_plate": normalized,
+            "company": current["company"],
+            "model": current["model"],
+            "directorate": current["directorate"],
+            "user": current["user_name"],
+            "eligible_days": eligible_days,
+            "norm_days": norm_days,
+            "gps_days": gps_days,
+            "days": len(days),
+            "inside_km": round(total_inside, 2),
+            "outside_km": round(total_outside, 2),
+            "inside_km_per_day": round(total_inside / eligible_days, 1) if eligible_days else None,
+            "outside_km_per_day": round(total_outside / eligible_days, 1) if eligible_days else None,
+            "inside_share_percent": round(100 * total_inside / (total_inside + total_outside), 1)
+            if total_inside + total_outside else None,
+            "inside_to_outside_percent": round(100 * total_inside / total_outside, 1)
+            if total_outside > 0 else None,
+            "moving_minutes": round(moving, 1),
+            "office_parking_minutes": round(office, 1) if settings.office_zone_codes else None,
+            "motion_vs_office_percent": round(100 * moving / (moving + office), 1)
+            if settings.office_zone_codes and moving + office > 0 else None,
+            "office_stops": stops if settings.office_zone_codes else None,
+            "lunch_exits": lunch_exits,
+            "lunch_returns": lunch_returns,
+            "weekend_site_days": weekend_days,
+            "unauthorized_km": round(unauthorized_km, 2) if settings.allowed_zone_codes else None,
+            "unauthorized_minutes": round(unauthorized_minutes, 1) if settings.allowed_zone_codes else None,
+            "speed_site_events": speed_site,
+            "speed_outside_events": speed_outside,
+            "speed_events": speed_site + speed_outside,
+            "speed_penalty": min(SPEED_PENALTY_CAP, (speed_site + speed_outside) * SPEED_PENALTY_PER_EVENT),
+            "score": score,
+            "data_status": "ok" if score is not None else "Недостаточно данных",
+            "preliminary": not (settings.office_zone_codes and settings.allowed_zone_codes),
+        }
+        vehicles.append(vehicle)
+    vehicles.sort(key=lambda v: (v["score"] is None, -(v["score"] or 0), v["plate"]))
+    for i, vehicle in enumerate(vehicles, 1):
+        vehicle["rank"] = i if vehicle["score"] is not None else None
+    total_inside = sum(v["inside_km"] for v in vehicles)
+    total_outside = sum(v["outside_km"] for v in vehicles)
+    result = {
+        "period": {"from": settings.date_from.isoformat(), "to": settings.date_to.isoformat()},
+        "generated_at": datetime.now(TZ).isoformat(timespec="seconds"),
+        "settings": settings.model_dump(mode="json"),
+        "summary": {
+            "vehicles": len(vehicles),
+            "scored_vehicles": sum(v["score"] is not None for v in vehicles),
+            "norm_days": sum(v["norm_days"] for v in vehicles),
+            "eligible_days": sum(v["eligible_days"] for v in vehicles),
+            "inside_share_percent": round(100 * total_inside / (total_inside + total_outside), 1)
+            if total_inside + total_outside else None,
+            "moving_minutes": round(sum(v["moving_minutes"] for v in vehicles), 1),
+            "office_parking_minutes": round(sum(v["office_parking_minutes"] or 0 for v in vehicles), 1)
+            if settings.office_zone_codes else None,
+            "speed_events": sum(v["speed_events"] for v in vehicles),
+            "weekend_site_days": sum(v["weekend_site_days"] for v in vehicles),
+        },
+        "coverage": {
+            "incomplete_days": [day.isoformat() for day in sorted(incomplete_days)],
+            "provisional_days": [day.isoformat() for day in sorted(provisional_days)],
+            "gps_missing_vehicles": [v["plate"] for v in vehicles if not v["gps_days"]],
+            "score_preliminary": (
+                not (settings.office_zone_codes and settings.allowed_zone_codes)
+                or bool(provisional_days)
+            ),
+            "notice": "Показатели движения/стоянок основаны на подтверждённых GPS-интервалах; разрывы связи не считаются работой или стоянкой.",
+        },
+        "vehicles": vehicles,
+        "daily": detail,
+        "speed_events": sorted(all_events, key=lambda e: (e["plate"], e["start"])),
+    }
+    return result
+
+
+def generate_efficiency_report(
+    database_url: str, settings: EfficiencySettings
+) -> dict[str, Any]:
+    with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
+        shapes = load_shapes(conn)
+        office = choose_shapes(shapes, settings.office_zone_codes, "стоянок")
+        allowed = choose_shapes(shapes, settings.allowed_zone_codes, "разрешённого движения")
+        rows = load_daily_rows(conn, settings)
+        coverage = load_cache_coverage(conn, settings.date_from, settings.date_to)
+    stale_days = set(coverage.stale_days)
+    for row in rows:
+        if row["report_day"] in stale_days:
+            row["cache_ready"] = False
+    if not rows:
+        result = aggregate_report([], {}, settings)
+        result["coverage"]["stale_reasons"] = [
+            {"date": day.isoformat(), "reasons": list(reasons)}
+            for day, reasons in coverage.stale_reasons
+        ]
+        return result
+    registry = load_database_registry(database_url)
+    day_plate_map: dict[date, list[str]] = defaultdict(list)
+    for item in rows:
+        day_plate_map[item["report_day"]].append(item["normalized_plate"])
+    gps: dict[tuple[date, str], GPSDailyMetrics] = {}
+    with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
+        for day, plates in sorted(day_plate_map.items()):
+            for normalized, track in iter_daily_gps(conn, day, sorted(set(plates))):
+                gps[(day, normalized)] = analyze_daily_track(track, registry, office, allowed, settings)
+    result = aggregate_report(rows, gps, settings)
+    result["coverage"]["stale_reasons"] = [
+        {"date": day.isoformat(), "reasons": list(reasons)}
+        for day, reasons in coverage.stale_reasons
+    ]
+    return result
+
+
+def filter_options(database_url: str, start: date, finish: date) -> dict[str, Any]:
+    settings = EfficiencySettings(date_from=start, date_to=finish)
+    with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=15000") as conn:
+        rows = load_daily_rows(conn, settings)
+        shapes = load_shapes(conn)
+    return {
+        "plates": sorted({row["plate"] for row in rows if row["plate"]}),
+        "directorates": sorted({row["directorate"] for row in rows if row["directorate"]}),
+        "users": sorted({row["user_name"] for row in rows if row["user_name"]}),
+        "models": sorted({row["model"] for row in rows if row["model"]}),
+        "zones": [
+            {"code": s.code, "name": s.name, "type": s.kind}
+            for s in shapes.values()
+            if s.kind not in {"SPEED_EXCLUSION", "TUNNEL"}
+        ],
+        "speed_exclusion_zones": [
+            {"code": s.code, "name": s.name}
+            for s in shapes.values()
+            if s.kind in {"SPEED_EXCLUSION", "TUNNEL"}
+        ],
+        "defaults": {
+            "site_speed_threshold_kmh": DEFAULT_SITE_SPEED_THRESHOLD_KMH,
+            "outside_speed_threshold_kmh": DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+            "speed_min_duration_seconds": MIN_SPEED_EVENT_DURATION_SECONDS,
+        },
+    }
+
+
+def workbook_from_report(report: Mapping[str, Any]) -> bytes:
+    """Produce a highlighted, inspectable XLSX without another GPS calculation."""
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Рейтинг ТС"
+    headers = [
+        "Место", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
+        "Норма дней", "План дней", "Пробег внутри, км", "Пробег снаружи, км",
+        "Доля внутри, %", "Внутри / снаружи, %", "Движение внутри, мин",
+        "Стоянки у офиса, мин", "Движение / движение+стоянка, %",
+        "Выезды / возвраты на обед", "Работа на площадке в выходные, дней",
+        "Вне выбранных зон, км", "Превышения на площадке", "Превышения снаружи",
+        "Штраф за скорость, баллы", "Итоговый балл", "Состояние",
+    ]
+    sheet.append(headers)
+    for vehicle in report["vehicles"]:
+        cells = [
+            vehicle["rank"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
+            vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
+            vehicle["outside_km"], vehicle["inside_share_percent"],
+            vehicle["inside_to_outside_percent"], vehicle["moving_minutes"],
+            vehicle["office_parking_minutes"], vehicle["motion_vs_office_percent"],
+            f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
+            vehicle["weekend_site_days"], vehicle["unauthorized_km"],
+            vehicle["speed_site_events"], vehicle["speed_outside_events"],
+            vehicle["speed_penalty"], vehicle["score"], vehicle["data_status"],
+        ]
+        sheet.append(cells)
+        line = sheet.max_row
+        settings = report["settings"]
+        norm = (
+            settings["transit_min_inside_km"]
+            if is_transit(vehicle["model"])
+            else settings["other_min_inside_km"]
+        )
+        avg = vehicle["inside_km_per_day"]
+        if avg is not None:
+            sheet.cell(line, 8).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
+        if vehicle["speed_events"]:
+            for col in (18, 19):
+                sheet.cell(line, col).fill = PatternFill("solid", fgColor="FDE2E2")
+        if vehicle["score"] is not None:
+            sheet.cell(line, 21).fill = PatternFill(
+                "solid", fgColor="E0F4E8" if vehicle["score"] >= 85 else "FFF0CD"
+                if vehicle["score"] >= 60 else "FDE2E2"
+            )
+        if vehicle["unauthorized_km"]:
+            sheet.cell(line, 17).fill = PatternFill("solid", fgColor="FDE2E2")
+    sheet.freeze_panes = "C2"
+    sheet.auto_filter.ref = sheet.dimensions
+
+    daily = workbook.create_sheet("По дням")
+    daily.append([
+        "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "В разнарядке",
+        "Кэш готов", "Внутри, км", "Снаружи, км", "Движение, мин",
+        "Стоянки у офиса, мин", "Превышения", "GPS точек",
+    ])
+    for item in report["daily"]:
+        daily.append([
+            item["date"], item["plate"], item["model"], item["directorate"], item["user"],
+            "Да" if item["in_roster"] else "Нет", "Да" if item["cache_ready"] else "Нет",
+            item["inside_km"], item["outside_km"], item["moving_minutes"],
+            item["office_minutes"], item["speed_events"], item["gps_points"],
+        ])
+    daily.freeze_panes = "C2"
+    daily.auto_filter.ref = daily.dimensions
+
+    speed = workbook.create_sheet("Превышения скорости")
+    speed.append([
+        "Госномер", "Зона", "Начало", "Окончание", "Длительность, сек",
+        "Максимум, км/ч", "Порог, км/ч", "Широта", "Долгота",
+    ])
+    for event in report["speed_events"]:
+        speed.append([
+            event["plate"], event["place"], event["start"], event["finish"],
+            event["duration_seconds"], event["max_speed_kmh"], event["threshold_kmh"],
+            event["latitude"], event["longitude"],
+        ])
+    speed.freeze_panes = "C2"
+    speed.auto_filter.ref = speed.dimensions
+
+    notes = workbook.create_sheet("Методика")
+    notes.append(["Показатель", "Правило"])
+    notes.append(["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
+    notes.append(["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
+    notes.append(["Часовой пояс", "Europe/Istanbul"])
+    notes.append(["Выходные", "суббота и воскресенье; требуется движение внутри площадки"])
+    notes.append(["Норматив", "Transit 50 км/день; другие 30 км/день (из настроек)"])
+    notes.append(["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
+    notes.append(["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
+    notes.append(["Скорость", "Не менее 3 последовательных правдоподобных GPS-точек и заданной длительности"])
+    notes.append(["Итоговый балл", "50% норматив дней + 25% движение/стоянки + 15% доля пробега внутри + 10% разрешённые зоны"])
+    notes.append(["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])
+    notes.append(["Штраф скорости", "−3 балла за подтверждённое превышение, максимум −15 баллов"])
+    notes.append(["Недостаточно данных", "Балл не присваивается без GPS, разнарядки или готового кэша"])
+    for key, value in report["settings"].items():
+        notes.append([key, ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)])
+
+    for ws in workbook.worksheets:
+        ws.sheet_view.showGridLines = False
+        ws.row_dimensions[1].height = 28
+        for cell in ws[1]:
+            cell.fill = PatternFill("solid", fgColor="183153")
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(vertical="center", wrap_text=True)
+        for column in ws.columns:
+            letter = get_column_letter(column[0].column)
+            width = max(len(str(c.value or "")) for c in list(column)[:300]) + 2
+            ws.column_dimensions[letter].width = min(max(width, 12), 48)
+    output = io.BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+__all__ = [
+    "EfficiencySettings", "GPSDailyMetrics", "GPSPoint", "Shape", "aggregate_report",
+    "analyze_daily_track", "choose_shapes", "compute_score", "filter_options", "is_transit",
+    "generate_efficiency_report", "shape_from_geojson", "workbook_from_report",
+]

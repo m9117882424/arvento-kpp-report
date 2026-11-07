@@ -197,12 +197,15 @@ def _valid_speed(value: Any) -> float | None:
     return speed
 
 
-def _event_is_smooth(points: Sequence[Any]) -> bool:
+def _event_is_smooth(
+    points: Sequence[Any],
+    min_duration_seconds: int = MIN_SPEED_EVENT_DURATION_SECONDS,
+) -> bool:
     """Reject isolated spikes and physically implausible speed sequences."""
     if len(points) < MIN_SPEED_EVENT_POINTS:
         return False
     duration = (points[-1].timestamp - points[0].timestamp).total_seconds()
-    if duration < MIN_SPEED_EVENT_DURATION_SECONDS:
+    if duration < min_duration_seconds:
         return False
 
     speeds = [_valid_speed(point.speed) for point in points]
