@@ -248,8 +248,9 @@
       lastReport=await readJson(await fetch('/api/efficiency/jobs/'+encodeURIComponent(currentJob)+'/result',{cache:'no-store'}));
       render(lastReport);$('exportExcel').disabled=false;
       const caveats=[];
-      if(lastReport.coverage.score_preliminary)caveats.push('часть геозон ещё не настроена');
+      if(!lastReport.settings.office_zone_codes.length||!lastReport.settings.allowed_zone_codes.length)caveats.push('часть геозон ещё не настроена');
       if(lastReport.coverage.incomplete_days.length)caveats.push('есть дни с неготовым сводным кэшем');
+      if((lastReport.coverage.roster_coverage_days||[]).length)caveats.push('для части ТС нет дневного кэша; остальные оценены индивидуально');
       if(lastReport.coverage.provisional_days.length)caveats.push('текущие сутки ещё не закрыты');
       const cacheNote=' Кэш GPS-метрик: '+lastReport.coverage.gps_metric_cache_hits+
         ' использовано повторно, '+lastReport.coverage.gps_metric_cache_misses+' рассчитано.';
@@ -276,7 +277,7 @@
       const norm=r.eligible_days?r.norm_days/r.eligible_days:null;
       const speedCell=r.gps_days?tag(r.speed_events,r.speed_events?'bad':'good'):'<span class="cell-tag na">Н/Д</span>';
       return '<tr>'+
-        '<td class="td-sticky"><div class="plate">'+(r.rank||'—')+'. '+esc(r.plate)+'</div><div class="model">'+esc(r.model)+'</div></td>'+
+        '<td class="td-sticky"><div class="plate">'+esc(r.position??(i+1))+'. '+esc(r.plate)+'</div><div class="model">'+esc(r.model)+'</div></td>'+
         '<td><div class="one" title="'+esc(r.directorate)+'">'+esc(r.directorate||r.company||'Не указано')+'</div><div class="second">'+esc(r.user||'Не указан')+'</div></td>'+
         '<td>'+tag(r.norm_days+' / '+r.eligible_days,norm==null?'na':norm>=.8?'good':norm>=.5?'mid':'bad')+'</td>'+
         '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),r.score==null?'na':r.norm_days===r.eligible_days?'good':'bad')+'</td>'+
@@ -296,7 +297,11 @@
       '<div class="rankline"><span class="ranknum">'+(i+1)+'</span><div class="rankdata"><div class="ranktop"><span>'+esc(r.plate)+'</span><span>'+r.score+'</span></div><div class="track"><div class="fill" style="width:'+r.score+'%;background:'+(r.score>=85?'#4bc897':r.score>=60?'#ebb15c':'#e97c80')+'"></div></div></div></div>'
     ).join('');
     document.querySelectorAll('[data-speed]').forEach(b=>b.addEventListener('click',()=>showSpeed(b.dataset.speed)));
-    $('footnote').textContent=report.coverage.notice+' Рейтинг '+(report.coverage.score_preliminary?'предварительный из-за отсутствия выбранных геозон.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
+    const reasons=[];
+    if(!report.settings.office_zone_codes.length||!report.settings.allowed_zone_codes.length)reasons.push('ненастроенных геозон');
+    if(report.coverage.provisional_days.length)reasons.push('незакрытых суток');
+    if((report.coverage.roster_coverage_days||[]).length)reasons.push('неполного охвата разнарядки');
+    $('footnote').textContent=report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
   }
   function showSpeed(plate) {
     if(!lastReport)return;

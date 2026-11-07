@@ -10,6 +10,7 @@ import sys
 import unittest
 from dataclasses import asdict
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -24,6 +25,7 @@ from efficiency_report import (
     _COVERAGE_CACHE,
     _METRIC_CACHE,
     _restore_daily_metrics,
+    apply_cache_coverage,
     aggregate_report,
     analyze_daily_track,
     choose_shapes,
@@ -211,6 +213,77 @@ class GPSMetricTest(unittest.TestCase):
 
 
 class RatingTest(unittest.TestCase):
+    def test_missing_other_vehicle_does_not_hide_valid_ford_score_or_number(self):
+        day = date(2026, 11, 6)
+        ford = {
+            "report_day": day, "normalized_plate": "34MPM505", "plate": "34MPM505",
+            "company": "TSM", "user_name": "Плачинда Игорь", "model": "FORD KUGA",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 0, "outside_km": 50, "total_km": 50,
+            "raw_points": 3, "cache_ready": True,
+            "cache_gps_event_time": datetime(2026, 11, 6, 15, tzinfo=TZ),
+            "cache_gps_received_at": datetime(2026, 11, 6, 16, tzinfo=TZ),
+            "cache_geofence_updated_at": datetime(2026, 11, 1, 9, tzinfo=TZ),
+        }
+        missing = {
+            **ford, "normalized_plate": "34MISSING", "plate": "34MISSING",
+            "raw_points": 0, "cache_ready": False,
+        }
+        roster_gap = CacheCoverage(
+            1, 0, (day,), ((day, ("roster_coverage",)),),
+        )
+        _METRIC_CACHE.clear()
+        _COVERAGE_CACHE.clear()
+        with (
+            patch.dict(os.environ, {"EFFICIENCY_PERSIST_METRIC_CACHE": "0"}),
+            patch("efficiency_report.psycopg.connect"),
+            patch("efficiency_report.load_shapes", return_value={}),
+            patch("efficiency_report.load_database_registry", return_value=fixture_registry()),
+            patch("efficiency_report.load_daily_rows", side_effect=lambda *_: [dict(ford), dict(missing)]),
+            patch("efficiency_report.load_cache_coverage", return_value=roster_gap),
+            patch("efficiency_report.iter_daily_gps", return_value=[(
+                "34MPM505", points(day, [(0, 2, 2, 60), (4, 2, 2, 61), (8, 2, 2, 62)]),
+            )]),
+        ):
+            result = generate_efficiency_report(
+                "read-only", settings(date_from=day, date_to=day)
+            )
+        present, absent = result["vehicles"]
+        self.assertEqual(present["plate"], "34MPM505")
+        self.assertEqual(present["score"], 0)
+        self.assertEqual((present["position"], present["rank"]), (1, 1))
+        self.assertEqual((absent["position"], absent["rank"]), (2, None))
+        self.assertIsNone(absent["score"])
+        self.assertEqual(result["coverage"]["roster_coverage_days"], [day.isoformat()])
+        self.assertTrue(result["coverage"]["score_preliminary"])
+        self.assertEqual(result["coverage"]["incomplete_days"], [day.isoformat()])
+        book = load_workbook(io.BytesIO(workbook_from_report(result)))
+        try:
+            sheet = book["Рейтинг ТС"]
+            self.assertEqual([sheet.cell(i, 1).value for i in (2, 3)], [1, 2])
+            self.assertEqual([sheet.cell(i, 24).value for i in (2, 3)], [1, None])
+        finally:
+            book.close()
+
+        gps_stale = CacheCoverage(
+            1, 0, (day,), ((day, ("roster_coverage", "gps_received")),),
+        )
+        rows = [dict(ford), dict(missing)]
+        apply_cache_coverage(rows, gps_stale)
+        self.assertFalse(rows[0]["cache_ready"], "Поздние GPS должны блокировать оценку")
+        self.assertFalse(rows[1]["cache_ready"])
+        rows = [dict(ford)]
+        apply_cache_coverage(rows, CacheCoverage(1, 0, (day,)))
+        self.assertFalse(rows[0]["cache_ready"], "Неизвестная причина устаревания блокирует балл")
+        rows = [dict(ford)]
+        apply_cache_coverage(rows, roster_gap)
+        partial = aggregate_report(
+            rows, {(day, "34MPM505"): GPSDailyMetrics(points=3)},
+            settings(office_zone_codes=["OFFICE"], allowed_zone_codes=["ALLOWED"]),
+        )["vehicles"][0]
+        self.assertTrue(partial["preliminary"])
+        self.assertEqual(partial["data_status"], "Предварительно")
+
     def test_persistent_metrics_survive_restart_but_invalidate_on_changes(self):
         day = date(2026, 11, 6)
         row = {
@@ -388,6 +461,8 @@ class RatingTest(unittest.TestCase):
         report=aggregate_report(rows,{},settings())
         self.assertEqual(report["vehicles"][0]["eligible_days"],1)
         self.assertIsNone(report["vehicles"][0]["score"])
+        self.assertEqual(report["vehicles"][0]["position"], 1)
+        self.assertIsNone(report["vehicles"][0]["rank"])
         self.assertEqual(report["summary"]["vehicles"],1)
         self.assertEqual(report["coverage"]["gps_missing_vehicles"],["34 TEST 01"])
         rows[0]["cache_ready"]=False
@@ -453,6 +528,11 @@ class RatingTest(unittest.TestCase):
 
 
 class PortalRouteTest(unittest.TestCase):
+    def test_visible_number_is_independent_of_score_rank(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn("r.position??(i+1)", html)
+        self.assertNotIn("r.rank||'—'", html)
+
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()
         apply_efficiency_portal(app, lambda: "not-used-during-registration")
