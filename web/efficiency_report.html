@@ -118,9 +118,9 @@
     <section class="kpis" id="kpis"></section>
     <section class="main-grid">
       <div class="panel table-panel">
-        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="color-legend">Цвет относится к показателю: зелёный — достигнут ориентир; жёлтый — частичное выполнение; красный — ниже ориентира или зафиксировано превышение. Для среднего пробега сравнивается норматив модели.</div></div>
+        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="color-legend">Цвет относится к показателю: зелёный — достигнут ориентир; жёлтый — частичное выполнение; красный — ниже ориентира или зафиксировано превышение. Норматив установлен для пробега внутри Аккую; для пробега вне площадки норматива нет.</div></div>
         <div class="table-scroll"><table><thead><tr>
-          <th class="td-sticky">№ строки / Госномер</th><th>Дирекция / пользователь</th><th>Дней с нормативом пробега<br>выполнено / план</th><th class="right">Средний пробег внутри Аккую<br>км/плановый рабочий день</th><th class="right">Средний пробег вне Аккую<br>км/плановый рабочий день</th><th class="center">Доля пробега внутри Аккую<br>за весь период, %</th><th class="center">Время движения<br>внутри Аккую</th><th class="center">Стоянки в выбранных<br>офисных зонах</th><th class="center">Обед<br>выездов / возвращений, шт.</th><th class="center">Выходных дней<br>с движением внутри Аккую</th><th class="right">Пробег вне<br>разрешённых зон, км</th><th class="center">Эпизоды превышения<br>скорости, шт.</th><th class="center">Итоговый балл<br>0–100</th>
+          <th class="td-sticky">№ строки / Госномер</th><th>Дирекция / пользователь</th><th>Дней с нормативом пробега<br>выполнено / план</th><th class="right">Средний пробег внутри Аккую<br>км/плановый рабочий день</th><th class="right">Средний пробег вне Аккую<br>за рабочий день, км</th><th class="center">Доля пробега внутри Аккую<br>за весь период, %</th><th class="center">Время движения<br>внутри Аккую</th><th class="center">Стоянки в выбранных<br>офисных зонах</th><th class="center">Обед<br>выездов / возвращений, шт.</th><th class="center">Выходных дней<br>с движением внутри Аккую</th><th class="right">Пробег вне<br>разрешённых зон, км</th><th class="center">Эпизоды превышения<br>скорости, шт.</th><th class="center">Итоговый балл<br>0–100</th>
         </tr></thead><tbody id="tableBody"><tr><td colspan="13" class="center" style="padding:35px">Нажмите «Показать отчёт»</td></tr></tbody></table></div>
         <div class="table-foot"><div>Н/Д — показатель нельзя достоверно рассчитать; «Не настроено» — не выбраны нужные геозоны. Оценка без геозон предварительная.</div><div id="footerCount"></div></div>
       </div>
@@ -270,7 +270,7 @@
     const cards=[
       ['Автомобилей в отчёте',s.vehicles,'включая автомобили без GPS-данных'],
       ['Доля плановых рабочих дней с выполненным нормативом пробега',s.eligible_days?Math.round(100*s.norm_days/s.eligible_days)+'%':'Н/Д','выполнено '+s.norm_days+' из '+s.eligible_days+' дней по всем автомобилям'],
-      ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','пробег внутри / общий пробег за весь период'],
+      ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','доля вне Аккую: '+(s.outside_share_percent==null?'Н/Д':fmt(s.outside_share_percent)+'%')+' · от общего пробега'],
       ['Суммарное время движения внутри Аккую',minutes(s.moving_minutes),'по всем автомобилям, подтверждённые GPS-интервалы'],
       ['Суммарное время стоянок в выбранных офисных зонах',minutes(s.office_parking_minutes),report.settings.office_zone_codes.length?'по всем автомобилям, остановки дольше '+report.settings.parking_min_minutes+' мин':'офисные геозоны ещё не выбраны'],
       ['Эпизоды превышения скорости',s.speed_events,'внутри и вне Аккую, тоннельные зоны исключены']
@@ -286,9 +286,9 @@
         '<td>'+tag(r.norm_days+' / '+r.eligible_days,normDaysClass(r.norm_days,r.eligible_days,r.gps_days),'Дней с подтверждённым выполнением суточной нормы из числа плановых рабочих дней')+'</td>'+
         '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),insideAverageClass(r.inside_km_per_day,averageNorm),'Средний пробег внутри Аккую за плановый рабочий день. Норматив: от '+fmt(averageNorm,0)+' км')+
           (averageNorm==null?'':'<div class="second">норма: от '+fmt(averageNorm,0)+' км за рабочий день</div>')+'</td>'+
-        '<td class="right">'+fmt(r.outside_km_per_day)+'</td>'+
+        '<td class="right" title="Средний пробег за будни по разнарядке; норматив для пробега вне Аккую не устанавливался">'+fmt(r.outside_km_per_day)+'<div class="second">норматив не установлен</div></td>'+
         '<td class="center">'+tag(r.inside_share_percent==null?'Н/Д':fmt(r.inside_share_percent)+'%',r.inside_share_percent==null?'na':r.inside_share_percent>=75?'good':r.inside_share_percent>=50?'mid':'bad','Визуальный ориентир: зелёный от 75%, жёлтый от 50%, красный ниже 50%')+
-          '<div class="second">отношение внутри к вне: '+(r.inside_to_outside_percent==null?'Н/Д':fmt(r.inside_to_outside_percent)+'%')+'</div></td>'+
+          '<div class="second">доля пробега вне Аккую: '+(r.outside_share_percent==null?'Н/Д':fmt(r.outside_share_percent)+'%')+'</div></td>'+
         '<td class="center">'+(r.gps_days?minutes(r.moving_minutes):'Н/Д')+
           '<div class="second" title="Доля движения от суммы времени движения и офисных стоянок">доля времени в движении: '+(r.motion_vs_office_percent==null?'Н/Д':fmt(r.motion_vs_office_percent)+'%')+'</div></td>'+
         '<td class="center">'+tag(noGps?'Н/Д':minutes(r.office_parking_minutes),noGps||r.office_parking_minutes==null?'na':r.office_parking_minutes>r.moving_minutes?'bad':'good',r.office_parking_minutes>r.moving_minutes?'Время офисных стоянок больше времени движения внутри Аккую':'Подтверждённое время стоянок в выбранных офисных геозонах')+'</td>'+
@@ -306,7 +306,7 @@
     if(!report.settings.office_zone_codes.length||!report.settings.allowed_zone_codes.length)reasons.push('ненастроенных геозон');
     if(report.coverage.provisional_days.length)reasons.push('незакрытых суток');
     if((report.coverage.roster_coverage_days||[]).length)reasons.push('неполного охвата разнарядки');
-    $('footnote').textContent='Средний пробег — только за плановые будни из разнарядки; доля пробега внутри — за весь выбранный период. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
+    $('footnote').textContent='Средний пробег внутри и вне Аккую — за рабочие дни по разнарядке; норматив установлен только для пробега внутри. Доли пробега внутри и вне Аккую рассчитаны за весь период и вместе составляют 100%. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
   }
   function showSpeed(plate) {
     if(!lastReport)return;

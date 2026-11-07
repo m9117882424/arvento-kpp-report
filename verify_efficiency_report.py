@@ -437,6 +437,34 @@ class RatingTest(unittest.TestCase):
         self.assertEqual(car["outside_km_per_day"],20)
         self.assertEqual(car["eligible_days"],1)
         self.assertEqual(car["inside_daily_norm_km"],50)
+        self.assertEqual((car["inside_share_percent"],car["outside_share_percent"]),(63.6,36.4))
+        self.assertEqual((result["summary"]["inside_share_percent"],result["summary"]["outside_share_percent"]),(63.6,36.4))
+
+    def test_outside_share_is_complement_not_inside_outside_ratio(self):
+        day=date(2026,11,6)
+        rows=[{
+            "report_day":day,"normalized_plate":"34TEST01","plate":"34 TEST 01",
+            "company":"TSM","user_name":"Тест","model":"FORD TRANSIT",
+            "directorate":"Механизация","in_roster":True,
+            "inside_km":958,"outside_km":42,"total_km":1000,
+            "raw_points":3,"cache_ready":True,
+        }]
+        gps={(day,"34TEST01"):GPSDailyMetrics(points=3)}
+        result=aggregate_report(rows,gps,settings())
+        car=result["vehicles"][0]
+        self.assertEqual((car["inside_share_percent"],car["outside_share_percent"]),(95.8,4.2))
+        self.assertEqual((result["summary"]["inside_share_percent"],result["summary"]["outside_share_percent"]),(95.8,4.2))
+        self.assertGreater(car["inside_to_outside_percent"],2000)
+        book=load_workbook(io.BytesIO(workbook_from_report(result)))
+        try:
+            rating=book["Рейтинг ТС"]
+            self.assertEqual(rating.cell(1,12).value,"Доля пробега вне Аккую, %")
+            self.assertEqual(rating.cell(2,11).value,95.8)
+            self.assertEqual(rating.cell(2,12).value,4.2)
+            self.assertEqual(rating.cell(2,26).value,42)
+            self.assertEqual(rating.cell(2,26).fill.patternType,None)
+        finally:
+            book.close()
 
     def test_high_weekday_average_is_independent_of_partial_norm_days(self):
         days=[date(2026,10,19)+timedelta(days=offset) for offset in range(19)]
@@ -466,6 +494,7 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(car["inside_km_per_day"],expected_average)
             self.assertEqual(car["inside_daily_norm_km"],50)
             self.assertGreater(car["inside_km_per_day"],car["inside_daily_norm_km"])
+            self.assertEqual((car["inside_share_percent"],car["outside_share_percent"]),(100.0,0.0))
         book=load_workbook(io.BytesIO(workbook_from_report(report)))
         try:
             ranking=book["Рейтинг ТС"]
@@ -504,6 +533,8 @@ class RatingTest(unittest.TestCase):
         self.assertIsNone(report["vehicles"][0]["rank"])
         self.assertEqual(report["summary"]["vehicles"],1)
         self.assertEqual(report["coverage"]["gps_missing_vehicles"],["34 TEST 01"])
+        self.assertIsNone(report["vehicles"][0]["outside_share_percent"])
+        self.assertIsNone(report["summary"]["outside_share_percent"])
         rows[0]["cache_ready"]=False
         rows[0]["raw_points"]=3
         gps={(day,"34TEST01"):GPSDailyMetrics(points=3,moving_minutes=12)}
@@ -530,6 +561,7 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
             self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(1,25).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
+            self.assertEqual(book.worksheets[0].cell(1,26).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
             self.assertEqual(book.worksheets[0].cell(2,25).value,50)
@@ -583,6 +615,9 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("Средний пробег внутри Аккую", html)
         self.assertIn("норма: от ", html)
         self.assertIn("доля времени в движении", html)
+        self.assertIn("r.outside_share_percent", html)
+        self.assertIn("норматив не установлен", html)
+        self.assertNotIn("r.inside_to_outside_percent", html)
 
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()
