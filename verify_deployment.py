@@ -33,6 +33,7 @@ REQUIRED_FILES = (
     "deploy/release.sh",
     "deploy/restore-drill.sh",
     "deploy/arvento-sync-and-cache.sh",
+    "deploy/arvento-efficiency-cache-warmup.sh",
     "deploy/install.sh",
     "deploy/nginx/arvento-report.conf.example",
     "deploy/systemd/arvento-backup.service",
@@ -41,6 +42,8 @@ REQUIRED_FILES = (
     "deploy/systemd/arvento-intraday-pipeline.timer",
     "deploy/systemd/arvento-nightly-correction.service",
     "deploy/systemd/arvento-nightly-correction.timer",
+    "deploy/systemd/arvento-efficiency-cache.service",
+    "deploy/systemd/arvento-efficiency-cache.timer",
 )
 
 # These modules remain only because canonical wrappers import them. They are not

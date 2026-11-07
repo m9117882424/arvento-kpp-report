@@ -16,7 +16,7 @@ import threading
 import time as clock
 import unicodedata
 from collections import OrderedDict, defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
@@ -34,6 +34,7 @@ from business_rules import (
     MIN_SPEED_EVENT_DURATION_SECONDS,
 )
 from cache_freshness import CacheCoverage, load_cache_coverage
+from efficiency_metric_cache import DailyMetricStore, metric_digest, persistent_cache_enabled
 from geozone_registry import load_database_registry, point_in_polygon
 from roster_registry import normalize_plate
 from site_boundary_speed import (
@@ -213,6 +214,36 @@ class GPSDailyMetrics:
     speed_outside: int = 0
     speed_events: list[dict[str, Any]] = field(default_factory=list)
     points: int = 0
+
+
+def _restore_daily_metrics(payload: Mapping[str, Any]) -> GPSDailyMetrics | None:
+    """Reject incomplete/corrupt persisted rows instead of trusting old JSON."""
+    if not isinstance(payload, dict) or set(payload) != {item.name for item in fields(GPSDailyMetrics)}:
+        return None
+    integer_fields = (
+        "office_stops", "lunch_exits", "lunch_returns", "speed_site", "speed_outside", "points",
+    )
+    float_fields = (
+        "moving_minutes", "office_parking_minutes", "unauthorized_minutes", "unauthorized_km",
+    )
+    for name in integer_fields:
+        value = payload[name]
+        if type(value) is not int or value < 0:
+            return None
+    for name in float_fields:
+        value = payload[name]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or value < 0:
+            return None
+    if type(payload["weekend_site_movement"]) is not bool:
+        return None
+    events = payload["speed_events"]
+    if not isinstance(events, list) or len(events) > 100_000 or any(
+        not isinstance(event, dict)
+        or not {"plate", "start", "finish", "max_speed_kmh"}.issubset(event)
+        for event in events
+    ):
+        return None
+    return GPSDailyMetrics(**payload)
 
 
 # Derived metrics (not raw tracks) are small enough to retain across requests.
@@ -734,6 +765,9 @@ def generate_efficiency_report(
         result = aggregate_report([], {}, settings)
         result["coverage"]["gps_metric_cache_hits"] = 0
         result["coverage"]["gps_metric_cache_misses"] = 0
+        result["coverage"]["gps_metric_persisted_hits"] = 0
+        result["coverage"]["gps_metric_persisted_writes"] = 0
+        result["coverage"]["gps_metric_persisted_available"] = persistent_cache_enabled()
         result["coverage"]["stale_reasons"] = [
             {"date": day.isoformat(), "reasons": list(reasons)}
             for day, reasons in coverage.stale_reasons
@@ -745,6 +779,7 @@ def generate_efficiency_report(
     )
     day_plate_map: dict[date, list[str]] = defaultdict(list)
     pending_keys: dict[tuple[date, str], tuple[Any, ...]] = {}
+    pending_digests: dict[tuple[date, str], str] = {}
     gps: dict[tuple[date, str], GPSDailyMetrics] = {}
     today_local = datetime.now(TZ).date()
     cache_hits = 0
@@ -767,27 +802,59 @@ def generate_efficiency_report(
             day_plate_map[day].append(plate)
             if item["cache_ready"] and day < today_local:
                 pending_keys[(day, plate)] = key
+                pending_digests[(day, plate)] = metric_digest(key)
+    persisted_hits = persisted_writes = 0
+    persist_available = persistent_cache_enabled()
     if day_plate_map:
-        with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
-            for day, plates in sorted(day_plate_map.items()):
-                for normalized, track in iter_daily_gps(conn, day, sorted(set(plates))):
-                    metrics = analyze_daily_track(track, registry, office, allowed, settings)
-                    gps[(day, normalized)] = metrics
-                    key = pending_keys.get((day, normalized))
-                    if key is not None:
-                        _remember_metric(key, metrics)
-                # A car with confirmed zero GPS points must also be cached: it
-                # remains unranked, but changing filters should be inexpensive.
-                for plate in plates:
-                    if (day, plate) not in gps:
-                        empty = GPSDailyMetrics()
-                        gps[(day, plate)] = empty
-                        key = pending_keys.get((day, plate))
-                        if key is not None:
-                            _remember_metric(key, empty)
+        with DailyMetricStore(database_url) as store:
+            saved = store.load(list(pending_digests.values()))
+            for day_plate, digest in pending_digests.items():
+                payload = saved.get(digest)
+                restored = _restore_daily_metrics(payload) if payload is not None else None
+                if restored is not None:
+                    gps[day_plate] = restored
+                    _remember_metric(pending_keys[day_plate], restored)
+                    persisted_hits += 1
+                    cache_hits += 1
+
+            remaining = {
+                day: sorted({plate for plate in plates if (day, plate) not in gps})
+                for day, plates in day_plate_map.items()
+            }
+            if any(remaining.values()):
+                with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
+                    for day, plates in sorted(remaining.items()):
+                        if not plates:
+                            continue
+                        to_persist: list[tuple[str, date, str, Mapping[str, Any]]] = []
+
+                        def remember(plate: str, metrics: GPSDailyMetrics) -> None:
+                            gps[(day, plate)] = metrics
+                            key = pending_keys.get((day, plate))
+                            if key is not None:
+                                _remember_metric(key, metrics)
+                                to_persist.append((
+                                    pending_digests[(day, plate)], day, plate, asdict(metrics),
+                                ))
+
+                        for normalized, track in iter_daily_gps(conn, day, plates):
+                            remember(normalized, analyze_daily_track(
+                                track, registry, office, allowed, settings,
+                            ))
+                        # Zero-point vehicles must stay in the report and cache.
+                        for plate in plates:
+                            if (day, plate) not in gps:
+                                remember(plate, GPSDailyMetrics())
+                        # Commit after each complete day: a later failing day
+                        # must not discard the safely calculated earlier days.
+                        persisted_writes += store.save(to_persist)
+            persist_available = store.enabled
     result = aggregate_report(rows, gps, settings)
     result["coverage"]["gps_metric_cache_hits"] = cache_hits
     result["coverage"]["gps_metric_cache_misses"] = len(rows) - cache_hits
+    result["coverage"]["gps_metric_persisted_hits"] = persisted_hits
+    result["coverage"]["gps_metric_persisted_writes"] = persisted_writes
+    result["coverage"]["gps_metric_persisted_available"] = persist_available
     result["coverage"]["stale_reasons"] = [
         {"date": day.isoformat(), "reasons": list(reasons)}
         for day, reasons in coverage.stale_reasons

@@ -1,0 +1,12 @@
+[Unit]
+Description=Warm Arvento efficiency GPS metrics after the nightly source cache
+
+[Timer]
+OnCalendar=*-*-* 04:40:00 Europe/Istanbul
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+Unit=arvento-efficiency-cache.service
+
+[Install]
+WantedBy=timers.target

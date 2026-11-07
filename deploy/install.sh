@@ -111,6 +111,8 @@ wait_for_health report-portal 60
 log "Установка production scripts"
 install -m 0755 "$ROOT/deploy/arvento-sync-and-cache.sh" \
     /usr/local/sbin/arvento-sync-and-cache
+install -m 0755 "$ROOT/deploy/arvento-efficiency-cache-warmup.sh" \
+    /usr/local/sbin/arvento-efficiency-cache-warmup
 install -m 0755 "$ROOT/deploy/arvento-backup.sh" \
     /usr/local/sbin/arvento-backup
 install -m 0755 "$ROOT/deploy/arvento-healthcheck.sh" \
@@ -227,6 +229,8 @@ if [[ "$ENABLE_TIMERS" == "1" ]]; then
         arvento-intraday-pipeline.timer \
         arvento-nightly-correction.timer \
         arvento-backup.timer
+    # The new efficiency warmup is intentionally installed but NOT enabled
+    # automatically. It requires a controlled post-release production review.
 else
     log "Timers установлены, но не включены: INSTALL_ENABLE_TIMERS=$ENABLE_TIMERS"
 fi

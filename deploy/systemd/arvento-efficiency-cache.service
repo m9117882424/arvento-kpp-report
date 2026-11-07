@@ -1,0 +1,25 @@
+[Unit]
+Description=Arvento efficiency completed-day GPS metric cache warmup
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=-/etc/default/arvento-report
+ExecStart=/usr/local/sbin/arvento-efficiency-cache-warmup
+TimeoutStartSec=25min
+TimeoutStopSec=45s
+KillMode=control-group
+Nice=15
+CPUWeight=20
+IOWeight=20
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+UMask=0077
+StandardOutput=journal
+StandardError=journal

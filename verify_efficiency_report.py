@@ -5,9 +5,12 @@ from __future__ import annotations
 
 import io
 import asyncio
+import os
+import sys
 import unittest
+from dataclasses import asdict
 from datetime import date, datetime, timedelta
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 from openpyxl import load_workbook
@@ -20,6 +23,7 @@ from efficiency_report import (
     GPSPoint,
     _COVERAGE_CACHE,
     _METRIC_CACHE,
+    _restore_daily_metrics,
     aggregate_report,
     analyze_daily_track,
     choose_shapes,
@@ -30,6 +34,8 @@ from efficiency_report import (
     workbook_from_report,
 )
 from cache_freshness import CacheCoverage
+from efficiency_metric_cache import metric_digest
+from efficiency_metric_cache import DailyMetricStore
 from geozone_registry import Geozone, Registry
 from site_boundary_speed import detect_speed_violations_by_polygon
 from efficiency_portal import apply_efficiency_portal
@@ -205,6 +211,100 @@ class GPSMetricTest(unittest.TestCase):
 
 
 class RatingTest(unittest.TestCase):
+    def test_persistent_metrics_survive_restart_but_invalidate_on_changes(self):
+        day = date(2026, 11, 6)
+        row = {
+            "report_day": day, "normalized_plate": "34TEST01", "plate": "34 TEST 01",
+            "company": "TSM", "user_name": "Тест", "model": "FORD KUGA",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 35, "outside_km": 5, "total_km": 40,
+            "raw_points": 3, "cache_ready": True,
+            "cache_gps_event_time": datetime(2026, 11, 6, 15, tzinfo=TZ),
+            "cache_gps_received_at": datetime(2026, 11, 6, 16, tzinfo=TZ),
+            "cache_geofence_updated_at": datetime(2026, 11, 1, 9, tzinfo=TZ),
+        }
+        track = points(day, [(0, 2, 2, 15), (60, 2.1, 2.1, 15), (120, 2.2, 2.2, 15)])
+        registry = fixture_registry()
+        registry.version_refs = ("SITE@1",)
+
+        class FakeStore:
+            records = {}
+
+            def __init__(self, url):
+                self.enabled = True
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                pass
+
+            def load(self, digests):
+                return {key: self.records[key] for key in digests if key in self.records}
+
+            def save(self, records):
+                for digest, _day, _plate, payload in records:
+                    self.records[digest] = payload
+                return len(records)
+
+        _METRIC_CACHE.clear()
+        _COVERAGE_CACHE.clear()
+        with (
+            patch("efficiency_report.psycopg.connect"),
+            patch("efficiency_report.load_shapes", return_value={}),
+            patch("efficiency_report.load_database_registry", return_value=registry),
+            patch("efficiency_report.load_daily_rows", side_effect=lambda conn, conf: [dict(row)]),
+            patch("efficiency_report.load_cache_coverage", return_value=CacheCoverage(1, 1, ())) as coverage,
+            patch("efficiency_report.iter_daily_gps", return_value=[("34TEST01", track)]) as tracks,
+            patch("efficiency_report.DailyMetricStore", FakeStore),
+        ):
+            base = settings(date_from=day, date_to=day, plates=["34TEST01"])
+            cold = generate_efficiency_report("readonly", base)
+            self.assertEqual(cold["coverage"]["gps_metric_persisted_writes"], 1)
+            self.assertEqual(len(FakeStore.records), 1)
+            _METRIC_CACHE.clear()  # Simulated restart of the portal process.
+            warm = generate_efficiency_report(
+                "readonly", settings(date_from=day, date_to=day, directorates=["Механизация"])
+            )
+            self.assertEqual(warm["coverage"]["gps_metric_persisted_hits"], 1)
+            self.assertEqual(warm["coverage"]["gps_metric_cache_misses"], 0)
+            self.assertEqual(warm["vehicles"][0]["moving_minutes"], 2)
+            self.assertEqual(tracks.call_count, 1, "Перезапуск не должен перечитывать GPS")
+            _METRIC_CACHE.clear()
+            altered = generate_efficiency_report(
+                "readonly", settings(date_from=day, date_to=day, site_speed_threshold_kmh=55)
+            )
+            self.assertEqual(altered["coverage"]["gps_metric_persisted_hits"], 0)
+            self.assertEqual(tracks.call_count, 2)
+            _METRIC_CACHE.clear()
+            registry.version_refs = ("SITE@2",)
+            generate_efficiency_report("readonly", base)
+            self.assertEqual(tracks.call_count, 3, "Версия геозоны должна менять ключ")
+            _METRIC_CACHE.clear()
+            row["cache_gps_received_at"] += timedelta(seconds=1)
+            generate_efficiency_report("readonly", base)
+            self.assertEqual(tracks.call_count, 4, "Поздний GPS должен менять ключ")
+            _METRIC_CACHE.clear()
+            _COVERAGE_CACHE.clear()
+            coverage.return_value = CacheCoverage(1, 0, (day,), ((day, ("gps_received",)),))
+            stale = generate_efficiency_report("readonly", base)
+            self.assertEqual(tracks.call_count, 5, "Устаревший сводный кэш нельзя брать с диска")
+            self.assertEqual(stale["coverage"]["gps_metric_persisted_hits"], 0)
+            self.assertEqual(stale["coverage"]["gps_metric_persisted_writes"], 0)
+            self.assertIsNone(stale["vehicles"][0]["score"])
+
+    def test_stale_or_corrupt_metrics_never_count_as_persistent_hit(self):
+        self.assertIsNone(_restore_daily_metrics({"points": 1}))
+        malformed = asdict(GPSDailyMetrics(points=3))
+        malformed["moving_minutes"] = float("nan")
+        self.assertIsNone(_restore_daily_metrics(malformed))
+        self.assertIsNone(_restore_daily_metrics({**asdict(GPSDailyMetrics()), "points": True}))
+        self.assertEqual(_restore_daily_metrics(asdict(GPSDailyMetrics(points=0))).points, 0)
+        self.assertEqual(metric_digest((date(2026, 11, 6), "34TEST01")),
+                         metric_digest((date(2026, 11, 6), "34TEST01")))
+        self.assertNotEqual(metric_digest((date(2026, 11, 6), "34TEST01")),
+                            metric_digest((date(2026, 11, 6), "34TEST02")))
+
     def test_historical_gps_metrics_reused_across_filter_changes(self):
         day=date(2026,11,6)
         base_row={
@@ -363,6 +463,78 @@ class PortalRouteTest(unittest.TestCase):
 
         with patch("efficiency_portal.generate_efficiency_report", return_value=sample):
             asyncio.run(lifecycle())
+
+
+class PersistenceBoundaryTest(unittest.TestCase):
+    def test_jsonb_lookup_and_upsert_are_parameterized(self):
+        key = metric_digest(("verified", date(2026, 11, 6)))
+        payload = asdict(GPSDailyMetrics(points=3, moving_minutes=2))
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [(key, payload)]
+        with (
+            patch("efficiency_metric_cache.psycopg.connect", return_value=connection),
+            patch.dict(os.environ, {"EFFICIENCY_PERSIST_METRIC_CACHE": "1"}),
+        ):
+            with DailyMetricStore("readonly") as store:
+                self.assertEqual(store.load([key]), {key: payload})
+                self.assertEqual(store.save([(key, date(2026, 11, 6), "34TEST01", payload)]), 1)
+        query, args = cursor.execute.call_args.args
+        self.assertIn("cache_key = ANY(%s::text[])", query)
+        self.assertEqual(args, ([key],))
+        statement, records = cursor.executemany.call_args.args
+        self.assertIn("ON CONFLICT (cache_key)", statement)
+        self.assertEqual(records[0][:3], (key, date(2026, 11, 6), "34TEST01"))
+        self.assertEqual(connection.commit.call_count, 2)
+
+    def test_database_cache_failure_falls_back_without_writing(self):
+        import psycopg
+
+        with (
+            patch("efficiency_metric_cache.psycopg.connect", side_effect=psycopg.OperationalError("offline")),
+            patch.dict(os.environ, {"EFFICIENCY_PERSIST_METRIC_CACHE": "1"}),
+        ):
+            with DailyMetricStore("readonly") as store:
+                self.assertEqual(store.load(["0" * 64]), {})
+                self.assertFalse(store.enabled)
+                self.assertEqual(store.save([("0" * 64, date(2026, 11, 6), "34TEST01", {})]), 0)
+
+    def test_warmup_skips_incomplete_cache_before_gps(self):
+        import efficiency_cache_worker
+
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "readonly", "EFFICIENCY_PERSIST_METRIC_CACHE": "1"}),
+            patch.object(sys, "argv", ["efficiency_cache_worker.py", "--date", "2026-11-06"]),
+            patch("efficiency_cache_worker.psycopg.connect"),
+            patch("efficiency_cache_worker.load_cache_coverage", return_value=CacheCoverage(
+                1, 0, (date(2026, 11, 6),),
+                ((date(2026, 11, 6), ("gps_received",)),),
+            )),
+            patch("efficiency_cache_worker.generate_efficiency_report") as generate,
+        ):
+            self.assertEqual(efficiency_cache_worker.main(), 1)
+            generate.assert_not_called()
+
+    def test_warmup_reports_failure_if_persistent_store_is_unavailable(self):
+        import efficiency_cache_worker
+
+        result = {
+            "summary": {"vehicles": 2},
+            "coverage": {
+                "incomplete_days": [], "provisional_days": [],
+                "gps_metric_cache_hits": 0, "gps_metric_cache_misses": 2,
+                "gps_metric_persisted_hits": 0, "gps_metric_persisted_writes": 0,
+                "gps_metric_persisted_available": False,
+            },
+        }
+        with (
+            patch.dict(os.environ, {"DATABASE_URL": "readonly", "EFFICIENCY_PERSIST_METRIC_CACHE": "1"}),
+            patch.object(sys, "argv", ["efficiency_cache_worker.py", "--date", "2026-11-06"]),
+            patch("efficiency_cache_worker.psycopg.connect"),
+            patch("efficiency_cache_worker.load_cache_coverage", return_value=CacheCoverage(1, 1, ())),
+            patch("efficiency_cache_worker.generate_efficiency_report", return_value=result),
+        ):
+            self.assertEqual(efficiency_cache_worker.main(), 1)
 
 
 if __name__=="__main__":

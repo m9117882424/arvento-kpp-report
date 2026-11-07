@@ -20,6 +20,7 @@ def main() -> None:
         "001_cache_freshness.sql",
         "002_operational_geofences.sql",
         "003_roster_cache_policy.sql",
+        "004_efficiency_gps_daily_metrics.sql",
     ]
     assert len(migration_checksum(migrations[0])) == 64
     checksum = migration_checksum(migrations[0])
@@ -52,6 +53,9 @@ def main() -> None:
     assert portal_entrypoint.app.state.database_migrations_registered is True
     geofence_sql = migrations[1].read_text(encoding="utf-8")
     assert "geofence_versions" in geofence_sql
+    metric_sql = migrations[3].read_text(encoding="utf-8")
+    assert "efficiency_gps_daily_metrics" in metric_sql
+    assert "metrics JSONB NOT NULL" in metric_sql
     print(f"OK: versioned migrations registered; files={len(migrations)}")
 
 
