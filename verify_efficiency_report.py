@@ -213,6 +213,82 @@ class GPSMetricTest(unittest.TestCase):
 
 
 class RatingTest(unittest.TestCase):
+    def test_portal_has_two_mobile_rankings_and_daily_movement_label(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn('id="ranksBest"', html)
+        self.assertIn('id="ranksWorst"', html)
+        self.assertIn("ТОП-10 эффективных", html)
+        self.assertIn("ТОП-10 малоэффективных", html)
+        self.assertIn("moving_minutes_per_day", html)
+        self.assertIn("moving_minutes_per_vehicle_workday", html)
+        self.assertIn(".ranking-column{display:grid", html)
+        self.assertNotIn(".rank-panel{display:none}", html)
+        self.assertIn(".slice(0,10)", html)
+
+    def test_average_moving_time_uses_planned_weekdays_and_weighted_fleet_days(self):
+        def row(plate, day, in_roster=True):
+            return {
+                "report_day": day, "normalized_plate": plate, "plate": plate,
+                "company": "TSM", "user_name": "Тест", "model": "FORD TRANSIT",
+                "directorate": "Механизация", "in_roster": in_roster,
+                "inside_km": 0, "outside_km": 0, "total_km": 0,
+                "raw_points": 3, "cache_ready": True,
+            }
+
+        wednesday = date(2026, 11, 4)
+        friday = date(2026, 11, 6)
+        saturday = date(2026, 11, 7)
+        monday = date(2026, 11, 9)
+        rows = [
+            row("34A", wednesday, False), row("34A", friday),
+            row("34A", saturday), row("34A", monday),
+            row("34B", monday), row("34NO", friday),
+        ]
+        gps = {
+            (wednesday, "34A"): GPSDailyMetrics(points=3, moving_minutes=90),
+            (friday, "34A"): GPSDailyMetrics(points=3, moving_minutes=60),
+            (saturday, "34A"): GPSDailyMetrics(points=3, moving_minutes=180),
+            (monday, "34A"): GPSDailyMetrics(points=3, moving_minutes=0),
+            (monday, "34B"): GPSDailyMetrics(points=3, moving_minutes=120),
+        }
+        report = aggregate_report(
+            rows, gps, settings(date_from=wednesday, date_to=monday)
+        )
+        vehicles = {vehicle["plate"]: vehicle for vehicle in report["vehicles"]}
+        self.assertEqual(vehicles["34A"]["eligible_days"], 2)
+        self.assertEqual(vehicles["34A"]["gps_workday_days"], 2)
+        self.assertEqual(vehicles["34A"]["moving_minutes"], 330)
+        self.assertEqual(vehicles["34A"]["moving_minutes_per_day"], 30)
+        self.assertEqual(vehicles["34B"]["moving_minutes_per_day"], 120)
+        self.assertIsNone(vehicles["34NO"]["moving_minutes_per_day"])
+        self.assertEqual(report["summary"]["moving_minutes"], 450)
+        self.assertEqual(report["summary"]["moving_minutes_per_vehicle_workday"], 60)
+        self.assertEqual(report["summary"]["moving_average_vehicle_count"], 2)
+        self.assertEqual(report["summary"]["moving_average_workdays"], 3)
+
+    def test_zero_movement_with_gps_is_not_missing_and_weekend_only_is_unavailable(self):
+        friday = date(2026, 11, 6)
+        saturday = date(2026, 11, 7)
+        base = {
+            "company": "TSM", "user_name": "Тест", "model": "FORD TRANSIT",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 0, "outside_km": 0, "total_km": 0,
+            "raw_points": 3, "cache_ready": True,
+        }
+        rows = [
+            {**base, "report_day": friday, "plate": "34ZERO", "normalized_plate": "34ZERO"},
+            {**base, "report_day": saturday, "plate": "34WEEKEND", "normalized_plate": "34WEEKEND"},
+        ]
+        gps = {
+            (friday, "34ZERO"): GPSDailyMetrics(points=3, moving_minutes=0),
+            (saturday, "34WEEKEND"): GPSDailyMetrics(points=3, moving_minutes=120),
+        }
+        report = aggregate_report(rows, gps, settings(date_from=friday, date_to=saturday))
+        vehicles = {vehicle["plate"]: vehicle for vehicle in report["vehicles"]}
+        self.assertEqual(vehicles["34ZERO"]["moving_minutes_per_day"], 0)
+        self.assertIsNone(vehicles["34WEEKEND"]["moving_minutes_per_day"])
+        self.assertEqual(report["summary"]["moving_minutes_per_vehicle_workday"], 0)
+
     def test_missing_other_vehicle_does_not_hide_valid_ford_score_or_number(self):
         day = date(2026, 11, 6)
         ford = {
@@ -556,12 +632,15 @@ class RatingTest(unittest.TestCase):
         book=load_workbook(io.BytesIO(data))
         try:
             self.assertEqual(book.sheetnames,[
-                "Рейтинг ТС","По дням","Превышения скорости","Методика"
+                "Рейтинг ТС","По дням","Превышения скорости","ТОП-10","Методика"
             ])
             self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
             self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(1,25).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(1,26).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
+            self.assertEqual(book.worksheets[0].cell(1,13).value,"Среднее время движения внутри Аккую за плановый рабочий день, мин")
+            self.assertEqual(book.worksheets[0].cell(2,13).value,20)
+            self.assertEqual(book["По дням"].cell(2,10).value,20)
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
             self.assertEqual(book.worksheets[0].cell(2,25).value,50)
@@ -569,6 +648,36 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(book.worksheets[0].cell(2,19).value,1)
             self.assertEqual(book.worksheets[0].cell(2,19).fill.fgColor.rgb,"00FDE2E2")
             self.assertIn("Средний пробег за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+            self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+        finally:
+            book.close()
+
+    def test_top_ten_export_uses_highest_and_lowest_scores_without_missing(self):
+        day = date(2026, 11, 6)
+        rows = [{
+            "report_day": day, "normalized_plate": f"34CAR{i:02d}", "plate": f"34CAR{i:02d}",
+            "company": "TSM", "user_name": "Тест", "model": "FORD TRANSIT",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 0, "outside_km": 0, "total_km": 0,
+            "raw_points": 3, "cache_ready": True,
+        } for i in range(13)]
+        rows.append({**rows[0], "normalized_plate": "34NO", "plate": "34NO"})
+        gps = {(day, f"34CAR{i:02d}"): GPSDailyMetrics(points=3) for i in range(13)}
+        report = aggregate_report(rows, gps, settings(date_from=day, date_to=day))
+        for vehicle in report["vehicles"]:
+            if vehicle["plate"] != "34NO":
+                vehicle["score"] = int(vehicle["plate"][-2:])
+        # Verify export is independent of the incoming vehicle order.
+        report["vehicles"].reverse()
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            leaders = book["ТОП-10"]
+            self.assertEqual(leaders.max_row, 21)
+            self.assertEqual([leaders.cell(i, 3).value for i in range(2, 12)],
+                             [f"34CAR{i:02d}" for i in range(12, 2, -1)])
+            self.assertEqual([leaders.cell(i, 3).value for i in range(12, 22)],
+                             [f"34CAR{i:02d}" for i in range(10)])
+            self.assertTrue(all(leaders.cell(i, 3).value != "34NO" for i in range(2, 22)))
         finally:
             book.close()
 
