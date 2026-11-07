@@ -37,6 +37,7 @@ RUN bash -n \
         /app/deploy/arvento-backup.sh \
         /app/deploy/arvento-healthcheck.sh \
         /app/deploy/arvento-sync-and-cache.sh \
+        /app/deploy/arvento-efficiency-cache-warmup.sh \
         /app/deploy/post-deploy-smoke.sh \
         /app/deploy/release.sh \
         /app/deploy/restore-drill.sh \

@@ -16,6 +16,7 @@ from consolidated_time_logic import apply_consolidated_date_preview
 from database_status_patch import apply_database_status_patch
 from database_migrations import register_database_migrations
 from extended_roster_fields import apply_extended_roster_fields
+from efficiency_portal import apply_efficiency_portal
 from fleet_dashboard_api import apply_fleet_dashboard_api
 from fuel_enriched_consolidated_report import generate_multi_roster_report
 from generation_jobs import apply_generation_jobs
@@ -53,6 +54,7 @@ apply_database_status_patch(
     portal.implementation.TZ,
 )
 apply_fleet_dashboard_api(portal.app, portal.implementation.db_url)
+apply_efficiency_portal(portal.app, portal.implementation.db_url)
 apply_download_routes(portal.app)
 apply_generation_jobs(portal.app)
 app = portal.app

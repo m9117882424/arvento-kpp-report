@@ -34,6 +34,7 @@ from speed_violation_report import (
     _valid_speed,
     validate_speed_thresholds,
 )
+from business_rules import MIN_SPEED_EVENT_DURATION_SECONDS
 
 
 def _as_point(point: Any) -> Point:
@@ -78,8 +79,11 @@ def detect_speed_violations_by_polygon(
     registry: Registry,
     site_threshold_kmh: float = DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     outside_threshold_kmh: float = DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
+    min_duration_seconds: int = MIN_SPEED_EVENT_DURATION_SECONDS,
 ) -> tuple[list[SpeedViolation], list[SpeedViolation]]:
     """Detect smooth speed events using polygon-based site classification."""
+    if not isinstance(min_duration_seconds, int) or not 0 <= min_duration_seconds <= 3600:
+        raise ValueError("Длительность превышения должна быть от 0 до 3600 секунд")
     site_threshold, outside_threshold = validate_speed_thresholds(
         site_threshold_kmh,
         outside_threshold_kmh,
@@ -94,7 +98,7 @@ def detect_speed_violations_by_polygon(
         if active is None:
             return
         points = active["points"]
-        if _event_is_smooth(points):
+        if _event_is_smooth(points, min_duration_seconds=min_duration_seconds):
             max_point = max(points, key=lambda point: float(point.speed))
             violation = SpeedViolation(
                 plate=points[0].plate,

@@ -60,6 +60,11 @@ Installer:
 
 Полная инструкция: [`SERVER_DEPLOY.md`](SERVER_DEPLOY.md).
 
+Новый интерактивный отчёт **«Эффективность ТС»** доступен на `/efficiency`:
+сводный кэш, множественные фильтры, подтверждённые стоянки и нарушения
+скорости с исключением тоннелей, рейтинг 0–100 и Excel.
+Методика: [`docs/efficiency-report.md`](docs/efficiency-report.md).
+
 План перехода к удобно сопровождаемому продукту:
 [`docs/MAINTENANCE_ROADMAP.md`](docs/MAINTENANCE_ROADMAP.md).
 
