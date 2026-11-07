@@ -115,7 +115,8 @@ class DailyMetricStore:
                     """INSERT INTO efficiency_gps_daily_metrics
                            (cache_key, report_day, normalized_plate, metrics)
                        VALUES (%s, %s, %s, %s)
-                       ON CONFLICT (cache_key) DO UPDATE SET
+                       ON CONFLICT (report_day, normalized_plate) DO UPDATE SET
+                           cache_key = EXCLUDED.cache_key,
                            metrics = EXCLUDED.metrics, stored_at = now()""",
                     [
                         (digest, day, plate, Jsonb(dict(payload)))

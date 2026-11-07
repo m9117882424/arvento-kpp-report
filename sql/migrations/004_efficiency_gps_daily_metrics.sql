@@ -7,8 +7,9 @@ CREATE TABLE IF NOT EXISTS efficiency_gps_daily_metrics (
     report_day DATE NOT NULL,
     normalized_plate TEXT NOT NULL CHECK (length(normalized_plate) BETWEEN 1 AND 40),
     metrics JSONB NOT NULL CHECK (jsonb_typeof(metrics) = 'object'),
-    stored_at TIMESTAMPTZ NOT NULL DEFAULT now()
+    stored_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    -- Bound growth when users experiment with many different settings:
+    -- only the last completed variant for each car/day is kept on disk.
+    CONSTRAINT efficiency_gps_daily_metrics_day_plate_unique
+        UNIQUE (report_day, normalized_plate)
 );
-
-CREATE INDEX IF NOT EXISTS efficiency_gps_daily_metrics_day_plate_idx
-    ON efficiency_gps_daily_metrics(report_day, normalized_plate);

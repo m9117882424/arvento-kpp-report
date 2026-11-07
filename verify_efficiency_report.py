@@ -483,7 +483,7 @@ class PersistenceBoundaryTest(unittest.TestCase):
         self.assertIn("cache_key = ANY(%s::text[])", query)
         self.assertEqual(args, ([key],))
         statement, records = cursor.executemany.call_args.args
-        self.assertIn("ON CONFLICT (cache_key)", statement)
+        self.assertIn("ON CONFLICT (report_day, normalized_plate)", statement)
         self.assertEqual(records[0][:3], (key, date(2026, 11, 6), "34TEST01"))
         self.assertEqual(connection.commit.call_count, 2)
 

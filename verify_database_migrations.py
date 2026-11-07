@@ -56,6 +56,7 @@ def main() -> None:
     metric_sql = migrations[3].read_text(encoding="utf-8")
     assert "efficiency_gps_daily_metrics" in metric_sql
     assert "metrics JSONB NOT NULL" in metric_sql
+    assert "UNIQUE (report_day, normalized_plate)" in metric_sql
     print(f"OK: versioned migrations registered; files={len(migrations)}")
 
 
