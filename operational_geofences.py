@@ -37,6 +37,12 @@ def ensure_geofence_schema(connection: psycopg.Connection[Any]) -> None:
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
             );
 
+            ALTER TABLE geofences
+                ADD COLUMN IF NOT EXISTS parking_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS allowed_area_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+                ADD COLUMN IF NOT EXISTS speed_rule TEXT NOT NULL DEFAULT 'inherit',
+                ADD COLUMN IF NOT EXISTS speed_threshold_kmh DOUBLE PRECISION;
+
             CREATE TABLE IF NOT EXISTS geofence_versions (
                 id BIGSERIAL PRIMARY KEY,
                 geofence_id BIGINT NOT NULL REFERENCES geofences(id) ON DELETE CASCADE,
@@ -148,12 +154,13 @@ def seed_static_operational_geofences(
         for code, name, feature_type, geometry in _static_features(geozones_path, route_kml):
             cursor.execute(
                 """
-                INSERT INTO geofences(code, name, geofence_type, is_active)
-                VALUES (%s,%s,%s,TRUE)
+                INSERT INTO geofences(code, name, geofence_type, is_active, speed_rule)
+                VALUES (%s,%s,%s,TRUE,%s)
                 ON CONFLICT (code) DO NOTHING
                 RETURNING id
                 """,
-                (code, name, feature_type),
+                (code, name, feature_type,
+                 "exclude" if feature_type == "SPEED_EXCLUSION" else "inherit"),
             )
             row = cursor.fetchone()
             if row is None:

@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import psycopg
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from operational_geofences import (
     ALLOWED_TYPES,
@@ -31,6 +31,26 @@ MAP_DEFAULT_ZOOM = _SETTINGS.map_default_zoom
 app = FastAPI(title="Arvento Geofence Editor", version="1.0.0")
 
 
+class GeofenceChecks(BaseModel):
+    """Independent report checks; a zone may participate in several at once."""
+
+    parking_enabled: bool = False
+    allowed_area_enabled: bool = False
+    speed_rule: Literal["inherit", "exclude", "limit"] = "inherit"
+    speed_threshold_kmh: float | None = Field(
+        default=None, ge=5, le=250, allow_inf_nan=False
+    )
+
+    @model_validator(mode="after")
+    def validate_speed_rule(self) -> "GeofenceChecks":
+        if (self.speed_rule == "limit") != (self.speed_threshold_kmh is not None):
+            raise ValueError(
+                "Для собственного порога скорости нужно указать значение 5–250 км/ч; "
+                "для остальных режимов поле должно быть пустым"
+            )
+        return self
+
+
 class GeofencePayload(BaseModel):
     code: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=255)
@@ -38,6 +58,25 @@ class GeofencePayload(BaseModel):
     geometry: dict[str, Any]
     comment: str | None = None
     is_active: bool = True
+    # Older clients may omit checks: retain existing values when editing.
+    checks: GeofenceChecks | None = None
+
+
+def default_geofence_checks(geofence_type: str) -> GeofenceChecks:
+    return GeofenceChecks(
+        speed_rule="exclude"
+        if geofence_type.upper() in {"SPEED_EXCLUSION", "TUNNEL"}
+        else "inherit"
+    )
+
+
+def stored_geofence_checks(record: tuple[Any, ...]) -> GeofenceChecks:
+    return GeofenceChecks(
+        parking_enabled=bool(record[0]),
+        allowed_area_enabled=bool(record[1]),
+        speed_rule=str(record[2]),
+        speed_threshold_kmh=float(record[3]) if record[3] is not None else None,
+    )
 
 
 def ensure_schema() -> None:
@@ -86,6 +125,8 @@ def list_geofences() -> dict[str, Any]:
         cur.execute(
             """
             SELECT g.id, g.code, g.name, g.geofence_type, g.is_active,
+                   g.parking_enabled, g.allowed_area_enabled,
+                   g.speed_rule, g.speed_threshold_kmh,
                    v.version, v.comment,
                    ST_AsGeoJSON(v.geometry)::json AS geometry
             FROM geofences g
@@ -103,6 +144,12 @@ def list_geofences() -> dict[str, Any]:
                     "code": row["code"],
                     "name": row["name"],
                     "geofence_type": row["geofence_type"],
+                    "checks": {
+                        "parking_enabled": row["parking_enabled"],
+                        "allowed_area_enabled": row["allowed_area_enabled"],
+                        "speed_rule": row["speed_rule"],
+                        "speed_threshold_kmh": row["speed_threshold_kmh"],
+                    },
                     "is_active": row["is_active"],
                     "version": row["version"],
                     "comment": row["comment"],
@@ -142,6 +189,13 @@ def validate_geofence_role(
         raise HTTPException(status_code=422, detail="Для КПП требуется линия")
     if feature_type in POLYGON_TYPES and geometry_type not in {"POLYGON", "MULTIPOLYGON"}:
         raise HTTPException(status_code=422, detail=f"Для типа {feature_type} требуется полигон")
+    if payload.checks is not None and geometry_type not in {"POLYGON", "MULTIPOLYGON"}:
+        checks = payload.checks
+        if checks.parking_enabled or checks.allowed_area_enabled or checks.speed_rule != "inherit":
+            raise HTTPException(
+                status_code=422,
+                detail="Для стоянок, разрешённой территории и контроля скорости требуется полигон",
+            )
     if payload.is_active and feature_type in {"SITE", "ROUTE"}:
         cur.execute(
             """
@@ -165,14 +219,22 @@ def create_geofence(payload: GeofencePayload) -> dict[str, Any]:
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         geometry_type = validate_geometry(cur, payload.geometry)
         feature_type = validate_geofence_role(cur, payload, geometry_type)
+        checks = payload.checks or default_geofence_checks(feature_type)
         try:
             cur.execute(
                 """
-                INSERT INTO geofences(code, name, geofence_type, is_active)
-                VALUES(%s, %s, %s, %s)
+                INSERT INTO geofences(
+                    code, name, geofence_type, is_active,
+                    parking_enabled, allowed_area_enabled, speed_rule, speed_threshold_kmh
+                )
+                VALUES(%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (payload.code.strip(), payload.name.strip(), feature_type, payload.is_active),
+                (
+                    payload.code.strip(), payload.name.strip(), feature_type, payload.is_active,
+                    checks.parking_enabled, checks.allowed_area_enabled,
+                    checks.speed_rule, checks.speed_threshold_kmh,
+                ),
             )
             geofence_id = cur.fetchone()[0]
             cur.execute(
@@ -193,17 +255,33 @@ def create_geofence(payload: GeofencePayload) -> dict[str, Any]:
 def update_geofence(geofence_id: int, payload: GeofencePayload) -> dict[str, Any]:
     with psycopg.connect(DATABASE_URL) as conn, conn.cursor() as cur:
         geometry_type = validate_geometry(cur, payload.geometry)
-        cur.execute("SELECT id FROM geofences WHERE id=%s FOR UPDATE", (geofence_id,))
-        if not cur.fetchone():
+        cur.execute(
+            """SELECT parking_enabled, allowed_area_enabled, speed_rule, speed_threshold_kmh
+               FROM geofences WHERE id=%s FOR UPDATE""",
+            (geofence_id,),
+        )
+        existing_checks = cur.fetchone()
+        if not existing_checks:
             raise HTTPException(status_code=404, detail="Геозона не найдена")
+        checks = payload.checks or stored_geofence_checks(existing_checks)
         feature_type = validate_geofence_role(cur, payload, geometry_type, geofence_id)
+        if geometry_type not in {"POLYGON", "MULTIPOLYGON"} and (
+            checks.parking_enabled or checks.allowed_area_enabled or checks.speed_rule != "inherit"
+        ):
+            raise HTTPException(status_code=422, detail="Проверки разрешены только для полигонов")
         cur.execute(
             """
             UPDATE geofences
-            SET code=%s, name=%s, geofence_type=%s, is_active=%s, updated_at=now()
+            SET code=%s, name=%s, geofence_type=%s, is_active=%s,
+                parking_enabled=%s, allowed_area_enabled=%s,
+                speed_rule=%s, speed_threshold_kmh=%s, updated_at=now()
             WHERE id=%s
             """,
-            (payload.code.strip(), payload.name.strip(), feature_type, payload.is_active, geofence_id),
+            (
+                payload.code.strip(), payload.name.strip(), feature_type, payload.is_active,
+                checks.parking_enabled, checks.allowed_area_enabled,
+                checks.speed_rule, checks.speed_threshold_kmh, geofence_id,
+            ),
         )
         cur.execute("UPDATE geofence_versions SET valid_to=now() WHERE geofence_id=%s AND valid_to IS NULL", (geofence_id,))
         cur.execute("SELECT COALESCE(MAX(version), 0) + 1 FROM geofence_versions WHERE geofence_id=%s", (geofence_id,))

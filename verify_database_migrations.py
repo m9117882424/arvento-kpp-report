@@ -21,6 +21,7 @@ def main() -> None:
         "002_operational_geofences.sql",
         "003_roster_cache_policy.sql",
         "004_efficiency_gps_daily_metrics.sql",
+        "005_geofence_independent_checks.sql",
     ]
     assert len(migration_checksum(migrations[0])) == 64
     checksum = migration_checksum(migrations[0])
@@ -57,6 +58,10 @@ def main() -> None:
     assert "efficiency_gps_daily_metrics" in metric_sql
     assert "metrics JSONB NOT NULL" in metric_sql
     assert "UNIQUE (report_day, normalized_plate)" in metric_sql
+    checks_sql = migrations[4].read_text(encoding="utf-8")
+    for column in ("parking_enabled", "allowed_area_enabled", "speed_rule", "speed_threshold_kmh"):
+        assert column in checks_sql
+    assert "UPDATE geofences" in checks_sql
     print(f"OK: versioned migrations registered; files={len(migrations)}")
 
 

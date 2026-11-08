@@ -34,6 +34,10 @@ class Geozone:
     center: Optional[tuple[float, float]] = None
     radius_m: Optional[float] = None
     points: Optional[list[tuple[float, float]]] = None
+    holes: Optional[list[list[tuple[float, float]]]] = None
+    # None means a legacy/static zone: retain its purpose-based behaviour.
+    speed_rule: Optional[str] = None
+    speed_threshold_kmh: Optional[float] = None
 
 
 @dataclass
@@ -94,7 +98,9 @@ def load_static_registry(path: Path) -> Registry:
     return Registry(gates=gates, zones=zones, source=f"static:{path.name}")
 
 
-def _polygon_parts(geometry: dict) -> list[list[tuple[float, float]]]:
+def _polygon_parts(
+    geometry: dict,
+) -> list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]]:
     geometry_type = str(geometry.get("type", ""))
     coordinates = geometry.get("coordinates") or []
     if geometry_type == "Polygon":
@@ -104,14 +110,17 @@ def _polygon_parts(geometry: dict) -> list[list[tuple[float, float]]]:
     else:
         return []
 
-    result: list[list[tuple[float, float]]] = []
+    result: list[tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]] = []
     for polygon in coordinate_parts:
-        exterior = polygon[0] if polygon else []
-        points = [(float(lat), float(lon)) for lon, lat, *_rest in exterior]
-        if len(points) >= 2 and points[0] == points[-1]:
-            points.pop()
-        if len(points) >= 3:
-            result.append(points)
+        rings: list[list[tuple[float, float]]] = []
+        for ring in polygon:
+            points = [(float(lat), float(lon)) for lon, lat, *_rest in ring]
+            if len(points) >= 2 and points[0] == points[-1]:
+                points.pop()
+            if len(points) >= 3:
+                rings.append(points)
+        if rings:
+            result.append((rings[0], rings[1:]))
     return result
 
 
@@ -122,6 +131,8 @@ def load_database_registry(database_url: str) -> Registry:
             connection.execute(
                 """
                 SELECT g.code, g.name, g.geofence_type, v.id AS version_id,
+                       g.parking_enabled, g.allowed_area_enabled,
+                       g.speed_rule, g.speed_threshold_kmh,
                        v.version, ST_AsGeoJSON(v.geometry)::json AS geometry
                 FROM geofences AS g
                 JOIN geofence_versions AS v
@@ -138,10 +149,20 @@ def load_database_registry(database_url: str) -> Registry:
     versions: list[str] = []
     for row in rows:
         feature_type = str(row["geofence_type"] or "").strip().upper()
+        speed_rule = str(row.get("speed_rule") or "inherit")
+        speed_threshold = (
+            float(row["speed_threshold_kmh"])
+            if row.get("speed_threshold_kmh") is not None else None
+        )
         geometry = row["geometry"] or {}
         geometry_type = str(geometry.get("type", ""))
         coordinates = geometry.get("coordinates") or []
-        versions.append(f"{row['code']}@{row['version']}#{row['version_id']}")
+        versions.append(
+            f"{row['code']}@{row['version']}#{row['version_id']}"
+            f"|parking={int(bool(row.get('parking_enabled')))}"
+            f"|allowed={int(bool(row.get('allowed_area_enabled')))}"
+            f"|speed={speed_rule}:{speed_threshold}"
+        )
 
         if feature_type == "GATE" and geometry_type == "LineString" and len(coordinates) >= 2:
             first, last = coordinates[0], coordinates[-1]
@@ -156,8 +177,7 @@ def load_database_registry(database_url: str) -> Registry:
 
         parts = _polygon_parts(geometry)
         if feature_type == "ROUTE":
-            routes.extend(parts)
-            continue
+            routes.extend(exterior for exterior, _ in parts)
 
         if feature_type == "SITE":
             purpose = SITE_BOUNDARY_PURPOSE
@@ -165,7 +185,7 @@ def load_database_registry(database_url: str) -> Registry:
             purpose = "speed_exclusion"
         else:
             purpose = feature_type.casefold()
-        for index, points in enumerate(parts, start=1):
+        for index, (points, holes) in enumerate(parts, start=1):
             name = str(row["name"])
             if len(parts) > 1:
                 name = f"{name} ({index})"
@@ -175,6 +195,9 @@ def load_database_registry(database_url: str) -> Registry:
                     zone_type="polygon",
                     purpose=purpose,
                     points=points,
+                    holes=holes,
+                    speed_rule=speed_rule,
+                    speed_threshold_kmh=speed_threshold,
                 )
             )
 
@@ -237,15 +260,24 @@ def point_in_zone(lat: float, lon: float, zone: Geozone) -> bool:
     if zone.zone_type == "circle" and zone.center and zone.radius_m is not None:
         return haversine_m(lat, lon, zone.center[0], zone.center[1]) <= zone.radius_m
     if zone.zone_type == "polygon" and zone.points:
-        return point_in_polygon(lat, lon, zone.points)
+        return point_in_polygon(lat, lon, zone.points) and not any(
+            point_in_polygon(lat, lon, hole) for hole in zone.holes or []
+        )
     return False
+
+
+def is_speed_excluded_zone(zone: Geozone) -> bool:
+    """An explicit check overrides the old type-based tunnel convention."""
+    return zone.speed_rule == "exclude" or (
+        zone.speed_rule is None and zone.purpose == "speed_exclusion"
+    )
 
 
 def suppress_speed_in_exclusions(
     track: Sequence[Any], registry: Registry
 ) -> list[Any]:
     """Clone tunnel points with speed hidden while preserving mileage fields."""
-    exclusions = [zone for zone in registry.zones if zone.purpose == "speed_exclusion"]
+    exclusions = [zone for zone in registry.zones if is_speed_excluded_zone(zone)]
     if not exclusions:
         return list(track)
     result: list[Any] = []

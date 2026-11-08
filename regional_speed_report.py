@@ -22,7 +22,9 @@ from openpyxl import load_workbook
 from excel_formatting import save_report_workbook
 
 from consolidated_report import DEFAULT_ROUTE_KML, load_kml_polygon
-from geozone_registry import Registry, find_site_boundary, point_in_polygon, point_in_zone
+from geozone_registry import (
+    Registry, find_site_boundary, is_speed_excluded_zone, point_in_polygon, point_in_zone,
+)
 from speed_violation_report import (
     DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     DEFAULT_SITE_SPEED_THRESHOLD_KMH,
@@ -86,7 +88,7 @@ def classify_speed_category(
     """Classify one GPS point using site → route → outside-region priority."""
     lat = float(point.lat)
     lon = float(point.lon)
-    exclusions = [zone for zone in registry.zones if zone.purpose == "speed_exclusion"]
+    exclusions = [zone for zone in registry.zones if is_speed_excluded_zone(zone)]
     if any(point_in_zone(lat, lon, zone) for zone in exclusions):
         return None
 

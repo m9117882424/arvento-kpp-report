@@ -24,6 +24,11 @@
     .zone-list { margin-top: 14px; border-top: 1px solid #e5e7eb; padding-top: 10px; }
     .zone-item { padding: 8px; border: 1px solid #e5e7eb; border-radius: 6px; margin-bottom: 7px; cursor: pointer; }
     .zone-item:hover { background: #f9fafb; }
+    .checks { margin: 14px 0; padding: 10px 12px 14px; border: 1px solid #d4e1ef; border-radius: 10px; background: #f8fbff; }
+    .checks legend { padding: 0 5px; font-size: 14px; font-weight: 700; color: #1e3a5f; }
+    .checks .check-option { display: flex; align-items: flex-start; gap: 9px; margin: 9px 0; cursor: pointer; line-height: 1.4; }
+    .checks .check-option input { width: auto; margin: 2px 0 0; }
+    #speedLimitRow[hidden] { display: none !important; }
     @media (max-width: 800px) {
       body { display: block; }
       aside { border-right: 0; border-bottom: 1px solid #d1d5db; }
@@ -47,7 +52,7 @@
   <label for="name">Название</label>
   <input id="name" placeholder="Основная территория">
 
-  <label for="type">Тип</label>
+  <label for="type">Назначение геозоны</label>
   <select id="type">
     <option value="SITE">Территория</option>
     <option value="GATE">КПП / линия</option>
@@ -60,6 +65,22 @@
     <option value="WORK_ZONE">Рабочая зона</option>
     <option value="CONTROL_POINT">Контрольная точка</option>
   </select>
+
+  <fieldset class="checks">
+    <legend>Какие проверки включены</legend>
+    <p class="muted">Можно включить несколько проверок для одного полигона. Назначение зоны от этого не меняется.</p>
+    <label class="check-option"><input id="parkingEnabled" type="checkbox"> Учитывать стоянки в отчёте эффективности</label>
+    <label class="check-option"><input id="allowedAreaEnabled" type="checkbox"> Считать разрешённой территорией для движения</label>
+    <label for="speedRule">Контроль скорости в этой зоне</label>
+    <select id="speedRule">
+      <option value="inherit">Общий порог внутри / вне Аккую</option>
+      <option value="exclude">Не фиксировать превышения (например, тоннель)</option>
+      <option value="limit">Собственный порог для отчёта эффективности</option>
+    </select>
+    <label id="speedLimitRow" for="speedLimit" hidden>Порог фиксации превышения, км/ч
+      <input id="speedLimit" type="number" min="5" max="250" step="0.1" placeholder="Например, 30">
+    </label>
+  </fieldset>
 
   <label for="comment">Комментарий</label>
   <textarea id="comment"></textarea>
@@ -95,6 +116,10 @@
   let config = null;
 
   function setStatus(text) { statusEl.textContent = text; }
+
+  function updateSpeedLimitVisibility() {
+    document.getElementById('speedLimitRow').hidden = document.getElementById('speedRule').value !== 'limit';
+  }
 
   async function loadScript(src, timeoutMs = 8000) {
     return new Promise((resolve, reject) => {
@@ -158,6 +183,11 @@
     document.getElementById('code').value = '';
     document.getElementById('name').value = '';
     document.getElementById('type').value = 'SITE';
+    document.getElementById('parkingEnabled').checked = false;
+    document.getElementById('allowedAreaEnabled').checked = false;
+    document.getElementById('speedRule').value = 'inherit';
+    document.getElementById('speedLimit').value = '';
+    updateSpeedLimitVisibility();
     document.getElementById('comment').value = '';
     document.getElementById('active').checked = true;
   }
@@ -168,6 +198,12 @@
     document.getElementById('code').value = p.code || '';
     document.getElementById('name').value = p.name || '';
     document.getElementById('type').value = p.geofence_type || 'SITE';
+    const checks = p.checks || {};
+    document.getElementById('parkingEnabled').checked = checks.parking_enabled === true;
+    document.getElementById('allowedAreaEnabled').checked = checks.allowed_area_enabled === true;
+    document.getElementById('speedRule').value = checks.speed_rule || (p.geofence_type === 'SPEED_EXCLUSION' ? 'exclude' : 'inherit');
+    document.getElementById('speedLimit').value = checks.speed_threshold_kmh ?? '';
+    updateSpeedLimitVisibility();
     document.getElementById('comment').value = p.comment || '';
     document.getElementById('active').checked = p.is_active !== false;
   }
@@ -190,7 +226,12 @@
     data.features.forEach(feature => {
       const item = document.createElement('div');
       item.className = 'zone-item';
-      item.innerHTML = `<strong>${feature.properties.name}</strong><br><span class="muted">${feature.properties.code} · ${feature.properties.geofence_type} · v${feature.properties.version}</span>`;
+      const heading = document.createElement('strong');
+      heading.textContent = feature.properties.name;
+      const details = document.createElement('span');
+      details.className = 'muted';
+      details.textContent = `${feature.properties.code} · ${feature.properties.geofence_type} · v${feature.properties.version}`;
+      item.append(heading, document.createElement('br'), details);
       item.addEventListener('click', () => loadFeature(feature));
       zonesEl.appendChild(item);
     });
@@ -209,6 +250,14 @@
       geofence_type: document.getElementById('type').value,
       comment: document.getElementById('comment').value.trim() || null,
       is_active: document.getElementById('active').checked,
+      checks: {
+        parking_enabled: document.getElementById('parkingEnabled').checked,
+        allowed_area_enabled: document.getElementById('allowedAreaEnabled').checked,
+        speed_rule: document.getElementById('speedRule').value,
+        speed_threshold_kmh: document.getElementById('speedRule').value === 'limit'
+          ? (document.getElementById('speedLimit').value.trim() ? Number(document.getElementById('speedLimit').value) : null)
+          : null
+      },
       geometry
     };
     if (!payload.code || !payload.name) {
@@ -262,6 +311,14 @@
     document.getElementById('save').addEventListener('click', saveZone);
     document.getElementById('newZone').addEventListener('click', clearForm);
     document.getElementById('deleteZone').addEventListener('click', disableZone);
+    document.getElementById('speedRule').addEventListener('change', updateSpeedLimitVisibility);
+    document.getElementById('type').addEventListener('change', () => {
+      if (currentId !== null) return;
+      document.getElementById('speedRule').value =
+        document.getElementById('type').value === 'SPEED_EXCLUSION' ? 'exclude' : 'inherit';
+      document.getElementById('speedLimit').value = '';
+      updateSpeedLimitVisibility();
+    });
 
     await loadZones();
     if (config.defaultMapProvider === 'google') await enableGoogle();
