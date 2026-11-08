@@ -116,6 +116,19 @@ def detect_speed_violations_by_polygon(
     for point, on_site in classify_site_state_by_polygon(track, registry):
         limit = SITE_SPEED_LIMIT_KMH if on_site else OUTSIDE_SPEED_LIMIT_KMH
         threshold = site_threshold if on_site else outside_threshold
+        # Multiple independent geofence checks may overlap.  The strictest
+        # explicitly configured threshold wins; exclusions have already
+        # suppressed the corresponding point's speed.
+        zone_thresholds = [
+            float(zone.speed_threshold_kmh)
+            for zone in registry.zones
+            if zone.speed_rule == "limit"
+            and zone.speed_threshold_kmh is not None
+            and point_in_zone(float(point.lat), float(point.lon), zone)
+        ]
+        if zone_thresholds:
+            threshold = min(zone_thresholds)
+            limit = threshold
         speed = _valid_speed(point.speed)
         exceeds = speed is not None and speed > threshold
 
@@ -124,6 +137,7 @@ def detect_speed_violations_by_polygon(
             gap = (point.timestamp - previous.timestamp).total_seconds()
             if (
                 active["on_site"] != on_site
+                or active["threshold"] != threshold
                 or gap <= 0
                 or gap > MAX_SPEED_EVENT_GAP_SECONDS
                 or not exceeds

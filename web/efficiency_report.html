@@ -187,10 +187,12 @@
     updateCaption(field);
   }
   function drawZones() {
-    const all=(options.zones||[]).filter(z=>!['GATE','SPEED_EXCLUSION','TUNNEL'].includes(z.type));
+    const all=(options.zones||[]).filter(z=>z.type!=='GATE');
     for(const [id,key] of [['officeZones','office_zone_codes'],['allowedZones','allowed_zone_codes']]) {
       const box=$(id);box.replaceChildren();
-      const allowed=key==='office_zone_codes' ? all.filter(z=>['OFFICE','PARKING','WORK_ZONE'].includes(z.type)) : all;
+      const allowed=key==='office_zone_codes'
+        ? all.filter(z=>z.parking_enabled||['OFFICE','PARKING','WORK_ZONE'].includes(z.type))
+        : all.filter(z=>z.allowed_area_enabled||!['SPEED_EXCLUSION','TUNNEL'].includes(z.type));
       if(!allowed.length){box.textContent='Геозоны не созданы';continue;}
       for(const zone of allowed) {
         const label=document.createElement('label');
@@ -201,8 +203,9 @@
     }
     const excluded=(options.speed_exclusion_zones||[]).map(z=>z.name);
     $('zoneNotice').textContent='Основная территория Аккую используется всегда. '+
-      (excluded.length?'Для скорости исключены тоннели: '+excluded.join(', ')+'.':'Активных тоннельных исключений не найдено — требуется проверить геозоны.')+
-      ' Пока офисные / разрешённые зоны не выбраны, соответствующие показатели не входят в балл.';
+      (excluded.length?'Контроль скорости отключён в зонах: '+excluded.join(', ')+'. ':'Зоны исключения скорости не настроены. ')+
+      'Проверки стоянок и разрешённой территории автоматически выбираются по настройкам геозон; выбор можно изменить вручную. '+
+      'Если зоны не выбраны, соответствующие показатели не входят в балл.';
   }
   async function reloadOptions() {
     const dateFrom=$('dateFrom').value,dateTo=$('dateTo').value;
@@ -215,6 +218,8 @@
       $('speedSite').value=data.defaults.site_speed_threshold_kmh;
       $('speedOutside').value=data.defaults.outside_speed_threshold_kmh;
       $('speedDuration').value=data.defaults.speed_min_duration_seconds;
+      for(const code of data.defaults.office_zone_codes||[])zones.office_zone_codes.add(code);
+      for(const code of data.defaults.allowed_zone_codes||[])zones.allowed_zone_codes.add(code);
       defaultsLoaded=true;
     }
     for(const field of Object.keys(labels))drawChoices(field);

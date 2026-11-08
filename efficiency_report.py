@@ -114,6 +114,10 @@ class Shape:
     kind: str
     # Each polygon consists of an exterior ring and zero or more holes.
     polygons: tuple[tuple[tuple[tuple[float, float], ...], ...], ...]
+    parking_enabled: bool = False
+    allowed_area_enabled: bool = False
+    speed_rule: str = "inherit"
+    speed_threshold_kmh: float | None = None
 
     def contains(self, lat: float, lon: float) -> bool:
         for rings in self.polygons:
@@ -128,7 +132,11 @@ class Shape:
         return False
 
 
-def shape_from_geojson(code: str, name: str, kind: str, geometry: Mapping[str, Any]) -> Shape | None:
+def shape_from_geojson(
+    code: str, name: str, kind: str, geometry: Mapping[str, Any],
+    *, parking_enabled: bool = False, allowed_area_enabled: bool = False,
+    speed_rule: str = "inherit", speed_threshold_kmh: float | None = None,
+) -> Shape | None:
     kind_geo = geometry.get("type")
     if kind_geo == "Polygon":
         polygons = [geometry.get("coordinates") or []]
@@ -147,13 +155,17 @@ def shape_from_geojson(code: str, name: str, kind: str, geometry: Mapping[str, A
             rings_out.append(tuple(rings))
     if not rings_out:
         return None
-    return Shape(code, name, kind.upper(), tuple(rings_out))
+    return Shape(
+        code, name, kind.upper(), tuple(rings_out),
+        parking_enabled, allowed_area_enabled, speed_rule, speed_threshold_kmh,
+    )
 
 
 def load_shapes(connection: psycopg.Connection[Any]) -> dict[str, Shape]:
     rows = connection.execute(
         """
-        SELECT g.code, g.name, g.geofence_type, ST_AsGeoJSON(v.geometry)::json
+        SELECT g.code, g.name, g.geofence_type, ST_AsGeoJSON(v.geometry)::json,
+               g.parking_enabled, g.allowed_area_enabled, g.speed_rule, g.speed_threshold_kmh
         FROM geofences g
         JOIN geofence_versions v ON v.geofence_id=g.id AND v.valid_to IS NULL
         WHERE g.is_active
@@ -161,8 +173,13 @@ def load_shapes(connection: psycopg.Connection[Any]) -> dict[str, Shape]:
         """
     ).fetchall()
     result: dict[str, Shape] = {}
-    for code, name, kind, geom in rows:
-        shape = shape_from_geojson(code, name, kind, geom if isinstance(geom, dict) else json.loads(geom))
+    for code, name, kind, geom, parking, allowed, speed_rule, speed_limit in rows:
+        shape = shape_from_geojson(
+            code, name, kind, geom if isinstance(geom, dict) else json.loads(geom),
+            parking_enabled=bool(parking), allowed_area_enabled=bool(allowed),
+            speed_rule=str(speed_rule),
+            speed_threshold_kmh=float(speed_limit) if speed_limit is not None else None,
+        )
         if shape:
             result[shape.code] = shape
     return result
@@ -174,13 +191,21 @@ def choose_shapes(
     missing = sorted(set(requested) - available.keys())
     if missing:
         raise ValueError(f"Геозоны {purpose} не найдены или отключены: {', '.join(missing)}")
-    forbidden = [code for code in requested if available[code].kind in {"SPEED_EXCLUSION", "TUNNEL"}]
+    forbidden = [
+        code for code in requested
+        if available[code].kind in {"SPEED_EXCLUSION", "TUNNEL"}
+        and not (
+            available[code].parking_enabled if purpose == "стоянок"
+            else available[code].allowed_area_enabled
+        )
+    ]
     if forbidden:
         raise ValueError(f"Тоннельные зоны не могут быть зонами {purpose}: {', '.join(forbidden)}")
     if purpose == "стоянок":
         not_offices = [
             code for code in requested
-            if available[code].kind not in {"OFFICE", "PARKING", "WORK_ZONE"}
+            if not available[code].parking_enabled
+            and available[code].kind not in {"OFFICE", "PARKING", "WORK_ZONE"}
         ]
         if not_offices:
             raise ValueError(
@@ -944,19 +969,27 @@ def filter_options(database_url: str, start: date, finish: date) -> dict[str, An
         "users": sorted({row["user_name"] for row in rows if row["user_name"]}),
         "models": sorted({row["model"] for row in rows if row["model"]}),
         "zones": [
-            {"code": s.code, "name": s.name, "type": s.kind}
+            {
+                "code": s.code, "name": s.name, "type": s.kind,
+                "parking_enabled": s.parking_enabled,
+                "allowed_area_enabled": s.allowed_area_enabled,
+                "speed_rule": s.speed_rule,
+            }
             for s in shapes.values()
             if s.kind not in {"SPEED_EXCLUSION", "TUNNEL"}
+            or s.parking_enabled or s.allowed_area_enabled
         ],
         "speed_exclusion_zones": [
             {"code": s.code, "name": s.name}
             for s in shapes.values()
-            if s.kind in {"SPEED_EXCLUSION", "TUNNEL"}
+            if s.speed_rule == "exclude"
         ],
         "defaults": {
             "site_speed_threshold_kmh": DEFAULT_SITE_SPEED_THRESHOLD_KMH,
             "outside_speed_threshold_kmh": DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
             "speed_min_duration_seconds": MIN_SPEED_EVENT_DURATION_SECONDS,
+            "office_zone_codes": sorted(s.code for s in shapes.values() if s.parking_enabled),
+            "allowed_zone_codes": sorted(s.code for s in shapes.values() if s.allowed_area_enabled),
         },
     }
 

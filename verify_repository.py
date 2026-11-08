@@ -123,7 +123,7 @@ REQUIRED_SUPPORT_MODULES = {
         "append_regional_speed_sheets",
         'ROUTE_SHEET_NAME = "Скорость Ташуджу - Аккую"',
         'REGION_SHEET_NAME = "Скорость вне региона"',
-        'purpose == "speed_exclusion"',
+        "is_speed_excluded_zone",
         "_round_speed_sheet",
     ),
     "sitecustomize.py": (
