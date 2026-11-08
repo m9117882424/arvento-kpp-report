@@ -62,6 +62,8 @@ def main() -> None:
     for column in ("parking_enabled", "allowed_area_enabled", "speed_rule", "speed_threshold_kmh"):
         assert column in checks_sql
     assert "UPDATE geofences" in checks_sql
+    # PostgreSQL CHECK accepts UNKNOWN (NULL); explicit non-NULL is required.
+    assert "speed_threshold_kmh IS NOT NULL" in checks_sql
     print(f"OK: versioned migrations registered; files={len(migrations)}")
 
 

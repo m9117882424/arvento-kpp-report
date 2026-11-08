@@ -17,6 +17,7 @@ ALTER TABLE geofences
         CHECK (speed_rule IN ('inherit', 'exclude', 'limit')),
     ADD CONSTRAINT geofences_speed_threshold_valid
         CHECK (
-            (speed_rule = 'limit' AND speed_threshold_kmh BETWEEN 5 AND 250)
+            (speed_rule = 'limit' AND speed_threshold_kmh IS NOT NULL
+                AND speed_threshold_kmh BETWEEN 5 AND 250)
             OR (speed_rule <> 'limit' AND speed_threshold_kmh IS NULL)
         );
