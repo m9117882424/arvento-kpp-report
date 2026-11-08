@@ -645,6 +645,14 @@ def compute_score(
     return max(0, min(100, round(raw - penalty)))
 
 
+def parking_band(total_minutes: float | None, planned_days: int = 1) -> str | None:
+    """Colour office parking against <=2.5h, <=4h and >4h per planned weekday."""
+    if total_minutes is None or planned_days <= 0:
+        return None
+    minutes_per_day = total_minutes / planned_days
+    return "good" if minutes_per_day <= 150 else "mid" if minutes_per_day <= 240 else "bad"
+
+
 def aggregate_report(
     rows: Sequence[Mapping[str, Any]],
     gps_by_day: Mapping[tuple[date, str], GPSDailyMetrics],
@@ -666,18 +674,14 @@ def aggregate_report(
     for normalized, days in grouped.items():
         days = sorted(days, key=lambda r: r["report_day"])
         current = days[-1]
-        total_inside = sum(float(r["inside_km"] or 0) for r in days)
-        total_outside = sum(float(r["outside_km"] or 0) for r in days)
-        # Weekends/non-roster dates contribute to overall mileage and site
-        # activity but cannot inflate the mean per planned working day.
-        weekday_inside = sum(
-            float(r["inside_km"] or 0)
-            for r in days if r["in_roster"] and r["report_day"].weekday() < 5
-        )
-        weekday_outside = sum(
-            float(r["outside_km"] or 0)
-            for r in days if r["in_roster"] and r["report_day"].weekday() < 5
-        )
+        # Only planned weekdays contribute to efficiency. Weekends remain in
+        # the report exclusively for site-presence and speeding events.
+        workdays = [
+            row for row in days
+            if row["in_roster"] and row["report_day"].weekday() < 5
+        ]
+        total_inside = sum(float(r["inside_km"] or 0) for r in workdays)
+        total_outside = sum(float(r["outside_km"] or 0) for r in workdays)
         eligible_days = 0
         norm_days = 0
         weekend_days = 0
@@ -689,6 +693,7 @@ def aggregate_report(
         stops = lunch_exits = lunch_returns = speed_site = speed_outside = 0
         for row in days:
             day = row["report_day"]
+            is_workday = row["in_roster"] and day.weekday() < 5
             if not row["cache_ready"]:
                 incomplete_days.add(day)
             if day >= today_local:
@@ -696,12 +701,19 @@ def aggregate_report(
             gps = gps_by_day.get((day, normalized), GPSDailyMetrics())
             if gps.points > 0:
                 gps_days += 1
-            if row["in_roster"] and day.weekday() < 5:
+            if is_workday:
                 eligible_days += 1
                 if gps.points > 0:
                     gps_workday_days += 1
                     weekday_moving += gps.moving_minutes
                     weekday_office += gps.office_parking_minutes
+                moving += gps.moving_minutes
+                office += gps.office_parking_minutes
+                stops += gps.office_stops
+                unauthorized_km += gps.unauthorized_km
+                unauthorized_minutes += gps.unauthorized_minutes
+                lunch_exits += gps.lunch_exits
+                lunch_returns += gps.lunch_returns
                 norm = (
                     settings.transit_min_inside_km
                     if is_transit(str(row["model"]))
@@ -711,13 +723,7 @@ def aggregate_report(
                     norm_days += 1
             if day.weekday() >= 5 and gps.weekend_site_movement:
                 weekend_days += 1
-            moving += gps.moving_minutes
-            office += gps.office_parking_minutes
-            stops += gps.office_stops
-            unauthorized_km += gps.unauthorized_km
-            unauthorized_minutes += gps.unauthorized_minutes
-            lunch_exits += gps.lunch_exits
-            lunch_returns += gps.lunch_returns
+            # Speed is checked on weekends as well as on planned workdays.
             speed_site += gps.speed_site
             speed_outside += gps.speed_outside
             all_events.extend(gps.speed_events)
@@ -725,10 +731,11 @@ def aggregate_report(
                 "date": day.isoformat(), "plate": row["plate"],
                 "model": row["model"], "directorate": row["directorate"],
                 "user": row["user_name"], "in_roster": row["in_roster"],
-                "cache_ready": row["cache_ready"], "inside_km": round(float(row["inside_km"] or 0), 2),
-                "outside_km": round(float(row["outside_km"] or 0), 2),
-                "moving_minutes": round(gps.moving_minutes, 1),
-                "office_minutes": round(gps.office_parking_minutes, 1),
+                "cache_ready": row["cache_ready"],
+                "inside_km": round(float(row["inside_km"] or 0), 2) if is_workday else None,
+                "outside_km": round(float(row["outside_km"] or 0), 2) if is_workday else None,
+                "moving_minutes": round(gps.moving_minutes, 1) if is_workday else None,
+                "office_minutes": round(gps.office_parking_minutes, 1) if is_workday else None,
                 "speed_events": gps.speed_site + gps.speed_outside,
                 "gps_points": gps.points,
             })
@@ -738,7 +745,7 @@ def aggregate_report(
                 moving, office, unauthorized_km, speed_site + speed_outside,
                 bool(settings.office_zone_codes), bool(settings.allowed_zone_codes),
             )
-            if gps_days and all(r["cache_ready"] for r in days) else None
+            if gps_workday_days and all(r["cache_ready"] for r in days) else None
         )
         preliminary = (
             not (settings.office_zone_codes and settings.allowed_zone_codes)
@@ -773,8 +780,8 @@ def aggregate_report(
             "days": len(days),
             "inside_km": round(total_inside, 2),
             "outside_km": round(total_outside, 2),
-            "inside_km_per_day": round(weekday_inside / eligible_days, 1) if eligible_days else None,
-            "outside_km_per_day": round(weekday_outside / eligible_days, 1) if eligible_days else None,
+            "inside_km_per_day": round(total_inside / eligible_days, 1) if eligible_days else None,
+            "outside_km_per_day": round(total_outside / eligible_days, 1) if eligible_days else None,
             "inside_share_percent": inside_share_percent,
             "outside_share_percent": round(100 - inside_share_percent, 1)
             if inside_share_percent is not None else None,
@@ -783,7 +790,8 @@ def aggregate_report(
             "moving_minutes": round(moving, 1),
             "moving_minutes_per_day": round(weekday_moving / eligible_days, 1)
             if eligible_days and gps_workday_days else None,
-            "office_parking_minutes": round(office, 1) if settings.office_zone_codes else None,
+            "office_parking_minutes": round(office, 1)
+            if settings.office_zone_codes and gps_workday_days else None,
             "office_parking_minutes_per_day": round(weekday_office / eligible_days, 1)
             if settings.office_zone_codes and eligible_days and gps_workday_days else None,
             "motion_vs_office_percent": round(100 * moving / (moving + office), 1)
@@ -843,7 +851,7 @@ def aggregate_report(
         "coverage": {
             "incomplete_days": [day.isoformat() for day in sorted(incomplete_days)],
             "provisional_days": [day.isoformat() for day in sorted(provisional_days)],
-            "gps_missing_vehicles": [v["plate"] for v in vehicles if not v["gps_days"]],
+            "gps_missing_vehicles": [v["plate"] for v in vehicles if not v["gps_workday_days"]],
             "score_preliminary": (
                 not (settings.office_zone_codes and settings.allowed_zone_codes)
                 or bool(provisional_days)
@@ -1037,6 +1045,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     ]
     _append_safe_excel_row(sheet, headers)
     header_col = {label: index for index, label in enumerate(headers, 1)}
+    parking_fills = {"good": "E0F4E8", "mid": "FFF0CD", "bad": "FDE2E2"}
     for vehicle in report["vehicles"]:
         cells = [
             vehicle["position"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
@@ -1059,6 +1068,17 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         avg = vehicle["inside_km_per_day"]
         if avg is not None:
             sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
+        for parking_label, value, days in (
+            ("Суммарное время стоянок в выбранных офисных зонах, мин",
+             vehicle["office_parking_minutes"], vehicle["eligible_days"]),
+            ("Среднее время офисных стоянок за плановый рабочий день, мин",
+             vehicle["office_parking_minutes_per_day"], 1),
+        ):
+            band = parking_band(value, days)
+            if band is not None:
+                sheet.cell(line, header_col[parking_label]).fill = PatternFill(
+                    "solid", fgColor=parking_fills[band]
+                )
         if vehicle["speed_events"]:
             for col in (
                 header_col["Эпизодов превышения скорости внутри Аккую"],
@@ -1128,16 +1148,17 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
     _append_safe_excel_row(notes, ["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
     _append_safe_excel_row(notes, ["Часовой пояс", "Europe/Istanbul"])
-    _append_safe_excel_row(notes, ["Выходные", "суббота и воскресенье; требуется движение внутри площадки"])
+    _append_safe_excel_row(notes, ["Выходные", "Суббота и воскресенье участвуют только в показателе присутствия ТС на площадке и нарушениях скорости (включая штраф в итоговом балле); прочие показатели рассчитываются за плановые рабочие будни по разнарядке"])
     _append_safe_excel_row(notes, ["Норматив пробега внутри Аккую", f'Ford Transit — от {report["settings"]["transit_min_inside_km"]} км за плановый рабочий день; другие модели — от {report["settings"]["other_min_inside_km"]} км (текущие настройки)'])
     _append_safe_excel_row(notes, ["Средний пробег за плановый рабочий день", "Сумма пробега только за будни по разнарядке / число плановых будней; пробег в выходные на среднее не влияет"])
     _append_safe_excel_row(notes, ["Цвет среднего пробега внутри", "Зелёный — среднее не ниже нормы по модели; красный — среднее ниже нормы. Дни с выполненным нормативом считаются отдельно по каждому дню"])
-    _append_safe_excel_row(notes, ["Доля пробега внутри Аккую", "Общий пробег внутри за период / общий пробег внутри и вне за период; включает выходные"])
-    _append_safe_excel_row(notes, ["Доля пробега вне Аккую", "100% минус доля пробега внутри Аккую; обе доли относятся к общему пробегу за период и в сумме дают 100%"])
+    _append_safe_excel_row(notes, ["Доля пробега внутри Аккую", "Общий пробег внутри Аккую за плановые рабочие будни / общий пробег внутри и вне за те же дни; выходные исключены"])
+    _append_safe_excel_row(notes, ["Доля пробега вне Аккую", "100% минус доля пробега внутри Аккую; обе доли относятся к общему пробегу за плановые рабочие будни и в сумме дают 100%"])
     _append_safe_excel_row(notes, ["Средний пробег вне Аккую", "Пробег вне Аккую за будни по разнарядке / число таких дней. Норматив внешнего пробега не установлен, этот показатель не оценивается цветом"])
     _append_safe_excel_row(notes, ["Среднее время движения внутри Аккую за плановый рабочий день", "Подтверждённое GPS-время движения внутри Аккую только в плановые будни по разнарядке / все плановые будни ТС, включая дни с нулевым движением. Движение в выходные исключено. Если GPS отсутствует на всех плановых буднях, значение Н/Д"])
     _append_safe_excel_row(notes, ["Среднее время движения по автопарку", "Сумма движения в плановые будни для ТС с GPS в такие дни / сумма всех плановых будней этих ТС; среднее взвешено по автомобиледням, а не по количеству машин. Время движения в выходные и ТС без GPS за все плановые будни исключаются"])
-    _append_safe_excel_row(notes, ["Суммарное время офисных стоянок", "Сумма подтверждённых стоянок дольше заданного порога в выбранных офисных геозонах за весь период, включая выходные и дни вне разнарядки. Пересекающиеся зоны не удваивают время"])
+    _append_safe_excel_row(notes, ["Суммарное время офисных стоянок", "Сумма подтверждённых стоянок дольше заданного порога только за плановые рабочие будни по разнарядке. Выходные и дни вне разнарядки исключены. Пересекающиеся зоны не удваивают время"])
+    _append_safe_excel_row(notes, ["Цвет офисных стоянок", "Зелёный — до 2 ч 30 мин включительно за плановый рабочий день, жёлтый — свыше 2 ч 30 мин до 4 ч включительно, красный — свыше 4 ч. Для суммы пороги умножаются на число плановых рабочих дней ТС; выходные исключены из суммы и числа дней. Без GPS в рабочие дни — Н/Д"])
     _append_safe_excel_row(notes, ["Среднее время офисных стоянок за плановый рабочий день", "Стоянки только в плановые будни по разнарядке / число плановых будней ТС, включая дни с нулевыми стоянками. Выходные и дни вне разнарядки исключены. Без GPS на всех плановых буднях или без выбранных офисных геозон — Н/Д"])
     _append_safe_excel_row(notes, ["Среднее время офисных стоянок по автопарку", "Сумма офисных стоянок за плановые будни для ТС, имеющих GPS хотя бы в один такой день / сумма всех плановых будней этих ТС. Среднее взвешено по автомобиледням; машины без GPS на всех плановых буднях исключены"])
     _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])

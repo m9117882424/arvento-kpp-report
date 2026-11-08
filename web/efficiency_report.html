@@ -122,16 +122,16 @@
     <section class="kpis" id="kpis"></section>
     <section class="main-grid">
       <div class="panel table-panel">
-        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="color-legend">Цвет относится к показателю: зелёный — достигнут ориентир; жёлтый — частичное выполнение; красный — ниже ориентира или зафиксировано превышение. Норматив установлен для пробега внутри Аккую; для пробега вне площадки норматива нет.</div></div>
+        <div class="table-header"><div><div class="table-title">Рейтинг эффективности по автомобилям</div><div class="table-sub" id="rowCount">Отчёт ещё не сформирован</div></div><div class="color-legend">Цвет относится к показателю. Для офисных стоянок: зелёный — до 2 ч 30 мин за рабочий день, жёлтый — до 4 ч, красный — свыше 4 ч; пороги суммы умножаются на число плановых рабочих дней. Выходные не учитываются. Норматив пробега установлен только внутри Аккую.</div></div>
         <div class="table-scroll"><table><thead><tr>
           <th class="td-sticky" data-sort="plate"><button type="button" class="sort-trigger">№ строки / Госномер <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th data-sort="directorate"><button type="button" class="sort-trigger">Дирекция / пользователь <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th data-sort="norm_days"><button type="button" class="sort-trigger">Дней с нормативом пробега<br>выполнено / план <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="right" data-sort="inside_km_per_day"><button type="button" class="sort-trigger">Средний пробег внутри Аккую<br>км/плановый рабочий день <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="right" data-sort="outside_km_per_day"><button type="button" class="sort-trigger">Средний пробег вне Аккую<br>за рабочий день, км <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
-          <th class="center" data-sort="inside_share_percent"><button type="button" class="sort-trigger">Доля пробега внутри Аккую<br>за весь период, % <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
+          <th class="center" data-sort="inside_share_percent"><button type="button" class="sort-trigger">Доля пробега внутри Аккую<br>за плановые рабочие дни, % <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="moving_minutes_per_day"><button type="button" class="sort-trigger">Среднее время движения внутри Аккую<br>за плановый рабочий день <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
-          <th class="center" data-sort="office_parking_minutes"><button type="button" class="sort-trigger">Сумма стоянок в выбранных<br>офисных зонах <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
+          <th class="center" data-sort="office_parking_minutes"><button type="button" class="sort-trigger">Сумма стоянок в выбранных<br>офисных зонах за рабочие дни <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="office_parking_minutes_per_day"><button type="button" class="sort-trigger">Среднее время офисных стоянок<br>за плановый рабочий день <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="lunch"><button type="button" class="sort-trigger">Обед<br>выездов / возвращений, шт. <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="weekend_site_days"><button type="button" class="sort-trigger">Выходных дней<br>с движением внутри Аккую <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
@@ -168,20 +168,21 @@
   const tag = (v, cls='na', hint='') => '<span class="cell-tag '+cls+'"'+(hint?' title="'+esc(hint)+'"':'')+'>'+esc(v)+'</span>';
   const rating = v => v == null ? 'na' : v >= 85 ? 'good' : v >= 60 ? 'mid' : 'bad';
   const insideAverageClass = (average, minimum) => average==null||minimum==null?'na':average>=minimum?'good':'bad';
+  const parkingClass = (totalMinutes, days=1) => totalMinutes==null||!days?'na':totalMinutes/days<=150?'good':totalMinutes/days<=240?'mid':'bad';
   const normDaysClass = (done, planned, gpsDays) => !planned||!gpsDays?'na':done>=planned?'good':done/planned>=.8?'mid':'bad';
   const sortColumns = {
     plate: {label:'Госномер',get:r=>r.plate},
     directorate: {label:'Дирекция / пользователь',get:r=>[r.directorate||r.company||'',r.user||''].join(' ')},
-    norm_days: {label:'Доля плановых дней с выполненным нормативом',get:r=>r.gps_days&&r.eligible_days?r.norm_days/r.eligible_days:null},
+    norm_days: {label:'Доля плановых дней с выполненным нормативом',get:r=>r.gps_workday_days&&r.eligible_days?r.norm_days/r.eligible_days:null},
     inside_km_per_day: {label:'Средний пробег внутри Аккую',get:r=>r.inside_km_per_day},
     outside_km_per_day: {label:'Средний пробег вне Аккую',get:r=>r.outside_km_per_day},
     inside_share_percent: {label:'Доля пробега внутри Аккую',get:r=>r.inside_share_percent},
     moving_minutes_per_day: {label:'Среднее время движения',get:r=>r.moving_minutes_per_day},
-    office_parking_minutes: {label:'Сумма офисных стоянок',get:r=>r.gps_days?r.office_parking_minutes:null},
+    office_parking_minutes: {label:'Сумма офисных стоянок',get:r=>r.gps_workday_days?r.office_parking_minutes:null},
     office_parking_minutes_per_day: {label:'Среднее время офисных стоянок',get:r=>r.office_parking_minutes_per_day},
-    lunch: {label:'Выезды и возвращения с обеда',get:r=>r.gps_days?r.lunch_exits+r.lunch_returns:null},
+    lunch: {label:'Выезды и возвращения с обеда',get:r=>r.gps_workday_days?r.lunch_exits+r.lunch_returns:null},
     weekend_site_days: {label:'Выходных дней с движением',get:r=>r.gps_days?r.weekend_site_days:null},
-    unauthorized_km: {label:'Пробег вне разрешённых зон',get:r=>r.gps_days?r.unauthorized_km:null},
+    unauthorized_km: {label:'Пробег вне разрешённых зон',get:r=>r.gps_workday_days?r.unauthorized_km:null},
     speed_events: {label:'Эпизоды превышения скорости',get:r=>r.gps_days?r.speed_events:null},
     score: {label:'Итоговый балл',get:r=>r.score},
   };
@@ -349,20 +350,21 @@
     const cards=[
       ['Автомобилей в отчёте',s.vehicles,'включая автомобили без GPS-данных'],
       ['Доля плановых рабочих дней с выполненным нормативом пробега',s.eligible_days?Math.round(100*s.norm_days/s.eligible_days)+'%':'Н/Д','выполнено '+s.norm_days+' из '+s.eligible_days+' дней по всем автомобилям'],
-      ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','доля вне Аккую: '+(s.outside_share_percent==null?'Н/Д':fmt(s.outside_share_percent)+'%')+' · от общего пробега'],
+      ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','доля вне Аккую: '+(s.outside_share_percent==null?'Н/Д':fmt(s.outside_share_percent)+'%')+' · только плановые рабочие дни'],
       ['Среднее время движения внутри Аккую за плановый рабочий день',minutes(s.moving_minutes_per_vehicle_workday),'на один плановый автомобиледень · '+s.moving_average_vehicle_count+' ТС с GPS в будни; нулевые дни учтены'],
-      ['Суммарное время стоянок в выбранных офисных зонах',minutes(s.office_parking_minutes),report.settings.office_zone_codes.length?'включая выходные · среднее за плановый автомобиледень: '+minutes(s.office_parking_minutes_per_vehicle_workday)+' · остановки дольше '+report.settings.parking_min_minutes+' мин':'офисные геозоны ещё не выбраны'],
+      ['Суммарное время стоянок в выбранных офисных зонах',minutes(s.office_parking_minutes),report.settings.office_zone_codes.length?'только плановые будни · среднее за автомобиледень: '+minutes(s.office_parking_minutes_per_vehicle_workday)+' · остановки дольше '+report.settings.parking_min_minutes+' мин':'офисные геозоны ещё не выбраны'],
       ['Эпизоды превышения скорости',s.speed_events,'внутри Аккую и вне площадки только на маршруте Ташуджу — Аккую; тоннели исключены']
     ];
     $('kpis').innerHTML=cards.map(c=>'<div class="panel kpi"><div class="kpi-label">'+esc(c[0])+'</div><div class="kpi-value">'+esc(c[1])+'</div><div class="kpi-note">'+esc(c[2])+'</div></div>').join('');
     $('tableBody').innerHTML=rows.map((r,i)=>{
       const noGps=!r.gps_days;
+      const noWorkGps=!r.gps_workday_days;
       const averageNorm=r.inside_daily_norm_km;
       const speedCell=r.gps_days?tag(r.speed_events,r.speed_events?'bad':'good'):'<span class="cell-tag na">Н/Д</span>';
       return '<tr>'+
         '<td class="td-sticky"><div class="plate">'+(i+1)+'. '+esc(r.plate)+'</div><div class="model">'+esc(r.model)+'</div></td>'+
         '<td><div class="one" title="'+esc(r.directorate)+'">'+esc(r.directorate||r.company||'Не указано')+'</div><div class="second">'+esc(r.user||'Не указан')+'</div></td>'+
-        '<td>'+tag(r.norm_days+' / '+r.eligible_days,normDaysClass(r.norm_days,r.eligible_days,r.gps_days),'Дней с подтверждённым выполнением суточной нормы из числа плановых рабочих дней')+'</td>'+
+        '<td>'+tag(r.norm_days+' / '+r.eligible_days,normDaysClass(r.norm_days,r.eligible_days,r.gps_workday_days),'Дней с подтверждённым выполнением суточной нормы из числа плановых рабочих дней')+'</td>'+
         '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),insideAverageClass(r.inside_km_per_day,averageNorm),'Средний пробег внутри Аккую за плановый рабочий день. Норматив: от '+fmt(averageNorm,0)+' км')+
           (averageNorm==null?'':'<div class="second">норма: от '+fmt(averageNorm,0)+' км за рабочий день</div>')+'</td>'+
         '<td class="right" title="Средний пробег за будни по разнарядке; норматив для пробега вне Аккую не устанавливался">'+fmt(r.outside_km_per_day)+'<div class="second">норматив не установлен</div></td>'+
@@ -370,11 +372,11 @@
           '<div class="second">доля пробега вне Аккую: '+(r.outside_share_percent==null?'Н/Д':fmt(r.outside_share_percent)+'%')+'</div></td>'+
         '<td class="center" title="Подтверждённое движение за плановые будни / число плановых будней ТС; нулевые дни включены, выходные исключены">'+minutes(r.moving_minutes_per_day)+
           '<div class="second" title="Доля движения от суммы времени движения и офисных стоянок">доля времени в движении: '+(r.motion_vs_office_percent==null?'Н/Д':fmt(r.motion_vs_office_percent)+'%')+'</div></td>'+
-        '<td class="center">'+tag(noGps?'Н/Д':minutes(r.office_parking_minutes),noGps||r.office_parking_minutes==null?'na':r.office_parking_minutes>r.moving_minutes?'bad':'good',r.office_parking_minutes>r.moving_minutes?'Время офисных стоянок больше времени движения внутри Аккую':'Подтверждённое время стоянок в выбранных офисных геозонах')+'</td>'+
-        '<td class="center" title="Стоянки в плановые будни по разнарядке / число плановых будней, включая дни без стоянок. Выходные исключены">'+tag(minutes(r.office_parking_minutes_per_day),r.office_parking_minutes_per_day==null?'na':'good')+'</td>'+
-        '<td class="center">'+(noGps?'Н/Д':r.lunch_exits+' / '+r.lunch_returns)+'</td>'+
+        '<td class="center">'+tag(minutes(r.office_parking_minutes),parkingClass(r.office_parking_minutes,r.eligible_days),'Стоянки только за '+r.eligible_days+' плановых рабочих дней. Зелёный: до '+minutes(r.eligible_days*150)+', жёлтый: до '+minutes(r.eligible_days*240)+', красный: выше. Выходные исключены')+'</td>'+
+        '<td class="center" title="Стоянки в плановые будни по разнарядке / число плановых будней, включая дни без стоянок. Выходные исключены">'+tag(minutes(r.office_parking_minutes_per_day),parkingClass(r.office_parking_minutes_per_day),'Зелёный: до 2 ч 30 мин, жёлтый: до 4 ч, красный: свыше 4 ч в день')+'</td>'+
+        '<td class="center">'+(noWorkGps?'Н/Д':r.lunch_exits+' / '+r.lunch_returns)+'</td>'+
         '<td class="center">'+(noGps?'Н/Д':r.weekend_site_days)+'</td>'+
-        '<td class="right">'+tag(r.unauthorized_km==null?'Не настроено':noGps?'Н/Д':fmt(r.unauthorized_km),noGps||r.unauthorized_km==null?'na':r.unauthorized_km?'bad':'good')+'</td>'+
+        '<td class="right">'+tag(r.unauthorized_km==null?'Не настроено':noWorkGps?'Н/Д':fmt(r.unauthorized_km),noWorkGps||r.unauthorized_km==null?'na':r.unauthorized_km?'bad':'good')+'</td>'+
         '<td class="center">'+(r.speed_events?'<button type="button" class="linkbutton" data-speed="'+esc(r.normalized_plate)+'" title="Показать подтверждённые эпизоды превышения скорости">'+r.speed_events+'</button>':speedCell)+'</td>'+
         '<td class="center"><span class="score '+rating(r.score)+'">'+(r.score==null?'Н/Д':r.score)+'</span>'+(r.data_status==='ok'?'':'<div class="second">'+esc(r.data_status)+'</div>')+'</td></tr>';
     }).join('')||'<tr><td colspan="14" class="center" style="padding:35px">По выбранным фильтрам автомобилей нет</td></tr>';
@@ -391,7 +393,7 @@
     if(!report.settings.office_zone_codes.length||!report.settings.allowed_zone_codes.length)reasons.push('ненастроенных геозон');
     if(report.coverage.provisional_days.length)reasons.push('незакрытых суток');
     if((report.coverage.roster_coverage_days||[]).length)reasons.push('неполного охвата разнарядки');
-    $('footnote').textContent='Средний пробег, среднее время движения и среднее время офисных стоянок — за плановые рабочие будни по разнарядке, включая нулевые дни. Сумма офисных стоянок учитывает весь период, включая выходные. Если в будни нет GPS, среднее время — Н/Д; отдельные пропуски GPS могут занижать среднее. Выходные не включены в среднее. Норматив установлен только для пробега внутри. Доли пробега рассчитаны за весь период и вместе составляют 100%. Нарушения скорости вне площадки учитываются только в маршрутной геозоне Ташуджу — Аккую. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
+    $('footnote').textContent='Пробег, движение, офисные стоянки, использование разрешённых зон и обед учитываются только за плановые рабочие будни по разнарядке, включая нулевые дни. Стоянки: зелёный до 2 ч 30 мин в день, жёлтый до 4 ч, красный свыше 4 ч; для суммы пороги умножаются на число плановых рабочих дней. Без GPS в будни время стоянок — Н/Д. Выходные (суббота и воскресенье) участвуют только в показателе присутствия ТС на площадке и в нарушениях скорости, включая штраф к баллу. Доли пробега по будням вместе составляют 100%. Нарушения скорости вне площадки учитываются только в маршрутной геозоне Ташуджу — Аккую. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+'.';
   }
   function showSpeed(plate) {
     if(!lastReport)return;

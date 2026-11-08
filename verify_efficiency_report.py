@@ -34,6 +34,7 @@ from efficiency_report import (
     compute_score,
     generate_efficiency_report,
     is_transit,
+    parking_band,
     shape_from_geojson,
     workbook_from_report,
 )
@@ -311,19 +312,19 @@ class RatingTest(unittest.TestCase):
         vehicles = {vehicle["plate"]: vehicle for vehicle in report["vehicles"]}
         self.assertEqual(vehicles["34A"]["eligible_days"], 2)
         self.assertEqual(vehicles["34A"]["gps_workday_days"], 2)
-        self.assertEqual(vehicles["34A"]["moving_minutes"], 330)
+        self.assertEqual(vehicles["34A"]["moving_minutes"], 60)
         self.assertEqual(vehicles["34A"]["moving_minutes_per_day"], 30)
         self.assertEqual(vehicles["34B"]["moving_minutes_per_day"], 120)
         self.assertIsNone(vehicles["34NO"]["moving_minutes_per_day"])
-        self.assertEqual(report["summary"]["moving_minutes"], 450)
+        self.assertEqual(report["summary"]["moving_minutes"], 180)
         self.assertEqual(report["summary"]["moving_minutes_per_vehicle_workday"], 60)
         self.assertEqual(report["summary"]["moving_average_vehicle_count"], 2)
         self.assertEqual(report["summary"]["moving_average_workdays"], 3)
-        self.assertEqual(vehicles["34A"]["office_parking_minutes"], 200)
+        self.assertEqual(vehicles["34A"]["office_parking_minutes"], 30)
         self.assertEqual(vehicles["34A"]["office_parking_minutes_per_day"], 15)
         self.assertEqual(vehicles["34B"]["office_parking_minutes_per_day"], 90)
         self.assertIsNone(vehicles["34NO"]["office_parking_minutes_per_day"])
-        self.assertEqual(report["summary"]["office_parking_minutes"], 290)
+        self.assertEqual(report["summary"]["office_parking_minutes"], 120)
         self.assertEqual(report["summary"]["office_parking_minutes_per_vehicle_workday"], 40)
         book = load_workbook(io.BytesIO(workbook_from_report(report)))
         try:
@@ -336,6 +337,107 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(ranking.auto_filter.ref, ranking.dimensions)
         finally:
             book.close()
+
+    def test_weekends_only_affect_site_presence_and_speed(self):
+        friday, saturday = date(2026, 11, 6), date(2026, 11, 7)
+        rows = [
+            {
+                "report_day": day, "normalized_plate": "34TEST01", "plate": "34TEST01",
+                "company": "TSM", "user_name": "Тест", "model": "FIAT EGEA",
+                "directorate": "Механизация", "in_roster": True,
+                "inside_km": inside, "outside_km": outside, "cache_ready": True,
+            }
+            for day, inside, outside in [(friday, 80, 20), (saturday, 900, 100)]
+        ]
+        gps = {
+            (friday, "34TEST01"): GPSDailyMetrics(
+                points=3, moving_minutes=300, office_parking_minutes=150,
+                unauthorized_km=2, lunch_exits=1, office_stops=1,
+            ),
+            (saturday, "34TEST01"): GPSDailyMetrics(
+                points=3, moving_minutes=600, office_parking_minutes=600,
+                unauthorized_km=99, lunch_exits=20, office_stops=8,
+                weekend_site_movement=True, speed_site=2, speed_outside=1,
+            ),
+        }
+        conf = settings(date_from=friday, date_to=saturday,
+                        office_zone_codes=["OFFICE"], allowed_zone_codes=["ALLOWED"])
+        report = aggregate_report(rows, gps, conf)
+        car = report["vehicles"][0]
+        self.assertEqual((car["inside_km"], car["outside_km"]), (80, 20))
+        self.assertEqual((car["moving_minutes"], car["office_parking_minutes"]), (300, 150))
+        self.assertEqual((car["office_parking_minutes_per_day"], car["eligible_days"]), (150, 1))
+        self.assertEqual((car["unauthorized_km"], car["lunch_exits"], car["office_stops"]), (2, 1, 1))
+        self.assertEqual((car["weekend_site_days"], car["speed_site_events"], car["speed_outside_events"]), (1, 2, 1))
+        self.assertEqual(report["summary"]["office_parking_minutes"], 150)
+        self.assertEqual(report["daily"][1]["speed_events"], 3)
+        self.assertIsNone(report["daily"][1]["office_minutes"])
+        self.assertIsNone(report["daily"][1]["moving_minutes"])
+        self.assertIsNone(report["daily"][1]["inside_km"])
+
+        without_weekend = aggregate_report(rows[:1], {(friday, "34TEST01"): gps[(friday, "34TEST01")]}, conf)
+        self.assertEqual(car["score"], without_weekend["vehicles"][0]["score"] - 9)
+
+    def test_parking_thresholds_include_boundaries_and_scale_by_workdays(self):
+        for minutes, expected in [
+            (0, "good"), (149.9, "good"), (150, "good"),
+            (150.1, "mid"), (240, "mid"), (240.1, "bad"),
+        ]:
+            self.assertEqual(parking_band(minutes), expected)
+        for minutes, expected in [(300, "good"), (480, "mid"), (480.1, "bad")]:
+            self.assertEqual(parking_band(minutes, 2), expected)
+        self.assertIsNone(parking_band(None))
+        self.assertIsNone(parking_band(100, 0))
+
+    def test_excel_parking_totals_and_averages_share_same_traffic_light(self):
+        day = date(2026, 11, 6)
+        rows, gps = [], {}
+        for plate, parking in [("34GREEN", 150), ("34YELLOW", 240), ("34RED", 240.1)]:
+            rows.append({
+                "report_day": day, "normalized_plate": plate, "plate": plate,
+                "company": "TSM", "user_name": "Тест", "model": "FIAT EGEA",
+                "directorate": "Механизация", "in_roster": True,
+                "inside_km": 40, "outside_km": 0, "cache_ready": True,
+            })
+            gps[(day, plate)] = GPSDailyMetrics(points=3, office_parking_minutes=parking)
+        report = aggregate_report(rows, gps, settings(
+            date_from=day, date_to=day, office_zone_codes=["OFFICE"]
+        ))
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            ranking = book["Рейтинг ТС"]
+            expected = {"34GREEN": "00E0F4E8", "34YELLOW": "00FFF0CD", "34RED": "00FDE2E2"}
+            for line in range(2, ranking.max_row + 1):
+                plate = ranking.cell(line, 2).value
+                self.assertEqual(ranking.cell(line, 14).fill.fgColor.rgb, expected[plate])
+                self.assertEqual(ranking.cell(line, 15).fill.fgColor.rgb, expected[plate])
+            self.assertIn("Цвет офисных стоянок", [
+                cell[0].value for cell in book["Методика"].iter_rows(min_row=2)
+            ])
+        finally:
+            book.close()
+
+    def test_weekend_only_gps_does_not_turn_missing_workday_into_zero(self):
+        friday, saturday = date(2026, 11, 6), date(2026, 11, 7)
+        rows = [{
+            "report_day": day, "normalized_plate": "34TEST01", "plate": "34TEST01",
+            "company": "TSM", "user_name": "Тест", "model": "FIAT EGEA",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 0, "outside_km": 0, "cache_ready": True,
+        } for day in (friday, saturday)]
+        gps = {(saturday, "34TEST01"): GPSDailyMetrics(
+            points=3, office_parking_minutes=360, weekend_site_movement=True, speed_site=1
+        )}
+        report = aggregate_report(rows, gps, settings(
+            date_from=friday, date_to=saturday, office_zone_codes=["OFFICE"]
+        ))
+        car = report["vehicles"][0]
+        self.assertEqual(car["gps_days"], 1)
+        self.assertEqual(car["gps_workday_days"], 0)
+        self.assertIsNone(car["office_parking_minutes"])
+        self.assertIsNone(car["office_parking_minutes_per_day"])
+        self.assertIsNone(car["score"])
+        self.assertEqual((car["weekend_site_days"], car["speed_events"]), (1, 1))
 
     def test_zero_movement_with_gps_is_not_missing_and_weekend_only_is_unavailable(self):
         friday = date(2026, 11, 6)
@@ -565,7 +667,7 @@ class RatingTest(unittest.TestCase):
         _METRIC_CACHE.clear()
         _COVERAGE_CACHE.clear()
 
-    def test_weekend_mileage_does_not_inflate_weekday_average(self):
+    def test_weekend_mileage_does_not_enter_efficiency_totals_or_averages(self):
         rows=[]
         for day,inside,outside in [
             (date(2026,11,6),10,20),(date(2026,11,7),200,100)
@@ -583,13 +685,13 @@ class RatingTest(unittest.TestCase):
         }
         result=aggregate_report(rows,gps,settings())
         car=result["vehicles"][0]
-        self.assertEqual(car["inside_km"],210)
+        self.assertEqual(car["inside_km"],10)
         self.assertEqual(car["inside_km_per_day"],10)
         self.assertEqual(car["outside_km_per_day"],20)
         self.assertEqual(car["eligible_days"],1)
         self.assertEqual(car["inside_daily_norm_km"],50)
-        self.assertEqual((car["inside_share_percent"],car["outside_share_percent"]),(63.6,36.4))
-        self.assertEqual((result["summary"]["inside_share_percent"],result["summary"]["outside_share_percent"]),(63.6,36.4))
+        self.assertEqual((car["inside_share_percent"],car["outside_share_percent"]),(33.3,66.7))
+        self.assertEqual((result["summary"]["inside_share_percent"],result["summary"]["outside_share_percent"]),(33.3,66.7))
 
     def test_outside_share_is_complement_not_inside_outside_ratio(self):
         day=date(2026,11,6)
@@ -844,7 +946,7 @@ class PortalRouteTest(unittest.TestCase):
     def test_average_badge_uses_its_own_norm_and_labels_are_explicit(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
         self.assertIn("insideAverageClass(r.inside_km_per_day,averageNorm)", html)
-        self.assertIn("normDaysClass(r.norm_days,r.eligible_days,r.gps_days)", html)
+        self.assertIn("normDaysClass(r.norm_days,r.eligible_days,r.gps_workday_days)", html)
         self.assertNotIn("r.norm_days===r.eligible_days?'good':'bad'", html)
         self.assertIn("Средний пробег внутри Аккую", html)
         self.assertIn("норма: от ", html)
@@ -852,6 +954,13 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("r.outside_share_percent", html)
         self.assertIn("норматив не установлен", html)
         self.assertNotIn("r.inside_to_outside_percent", html)
+
+    def test_office_parking_traffic_light_uses_weekday_scaled_thresholds(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn("totalMinutes/days<=150?'good':totalMinutes/days<=240?'mid':'bad'", html)
+        self.assertIn("parkingClass(r.office_parking_minutes,r.eligible_days)", html)
+        self.assertIn("parkingClass(r.office_parking_minutes_per_day)", html)
+        self.assertIn("Выходные (суббота и воскресенье) участвуют только", html)
 
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()
