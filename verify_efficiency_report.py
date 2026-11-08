@@ -356,7 +356,9 @@ class RatingTest(unittest.TestCase):
         try:
             sheet = book["Рейтинг ТС"]
             self.assertEqual([sheet.cell(i, 1).value for i in (2, 3)], [1, 2])
-            self.assertEqual([sheet.cell(i, 24).value for i in (2, 3)], [1, None])
+            rank_col = next(col for col in range(1, sheet.max_column + 1)
+                            if sheet.cell(1, col).value == "Место в рейтинге")
+            self.assertEqual([sheet.cell(i, rank_col).value for i in (2, 3)], [1, None])
         finally:
             book.close()
 
