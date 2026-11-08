@@ -245,14 +245,14 @@ class RatingTest(unittest.TestCase):
             row("34B", monday), row("34NO", friday),
         ]
         gps = {
-            (wednesday, "34A"): GPSDailyMetrics(points=3, moving_minutes=90),
-            (friday, "34A"): GPSDailyMetrics(points=3, moving_minutes=60),
-            (saturday, "34A"): GPSDailyMetrics(points=3, moving_minutes=180),
-            (monday, "34A"): GPSDailyMetrics(points=3, moving_minutes=0),
-            (monday, "34B"): GPSDailyMetrics(points=3, moving_minutes=120),
+            (wednesday, "34A"): GPSDailyMetrics(points=3, moving_minutes=90, office_parking_minutes=50),
+            (friday, "34A"): GPSDailyMetrics(points=3, moving_minutes=60, office_parking_minutes=30),
+            (saturday, "34A"): GPSDailyMetrics(points=3, moving_minutes=180, office_parking_minutes=120),
+            (monday, "34A"): GPSDailyMetrics(points=3, moving_minutes=0, office_parking_minutes=0),
+            (monday, "34B"): GPSDailyMetrics(points=3, moving_minutes=120, office_parking_minutes=90),
         }
         report = aggregate_report(
-            rows, gps, settings(date_from=wednesday, date_to=monday)
+            rows, gps, settings(date_from=wednesday, date_to=monday, office_zone_codes=["OFFICE"])
         )
         vehicles = {vehicle["plate"]: vehicle for vehicle in report["vehicles"]}
         self.assertEqual(vehicles["34A"]["eligible_days"], 2)
@@ -265,6 +265,23 @@ class RatingTest(unittest.TestCase):
         self.assertEqual(report["summary"]["moving_minutes_per_vehicle_workday"], 60)
         self.assertEqual(report["summary"]["moving_average_vehicle_count"], 2)
         self.assertEqual(report["summary"]["moving_average_workdays"], 3)
+        self.assertEqual(vehicles["34A"]["office_parking_minutes"], 200)
+        self.assertEqual(vehicles["34A"]["office_parking_minutes_per_day"], 15)
+        self.assertEqual(vehicles["34B"]["office_parking_minutes_per_day"], 90)
+        self.assertIsNone(vehicles["34NO"]["office_parking_minutes_per_day"])
+        self.assertEqual(report["summary"]["office_parking_minutes"], 290)
+        self.assertEqual(report["summary"]["office_parking_minutes_per_vehicle_workday"], 40)
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            ranking = book["Рейтинг ТС"]
+            self.assertEqual(ranking.cell(1, 14).value, "Суммарное время стоянок в выбранных офисных зонах, мин")
+            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок за плановый рабочий день, мин")
+            for line in range(2, ranking.max_row + 1):
+                plate = ranking.cell(line, 2).value
+                self.assertEqual(ranking.cell(line, 15).value, vehicles[plate]["office_parking_minutes_per_day"])
+            self.assertEqual(ranking.auto_filter.ref, ranking.dimensions)
+        finally:
+            book.close()
 
     def test_zero_movement_with_gps_is_not_missing_and_weekend_only_is_unavailable(self):
         friday = date(2026, 11, 6)
@@ -288,6 +305,8 @@ class RatingTest(unittest.TestCase):
         self.assertEqual(vehicles["34ZERO"]["moving_minutes_per_day"], 0)
         self.assertIsNone(vehicles["34WEEKEND"]["moving_minutes_per_day"])
         self.assertEqual(report["summary"]["moving_minutes_per_vehicle_workday"], 0)
+        self.assertIsNone(vehicles["34ZERO"]["office_parking_minutes_per_day"])
+        self.assertIsNone(report["summary"]["office_parking_minutes_per_vehicle_workday"])
 
     def test_missing_other_vehicle_does_not_hide_valid_ford_score_or_number(self):
         day = date(2026, 11, 6)
@@ -337,7 +356,9 @@ class RatingTest(unittest.TestCase):
         try:
             sheet = book["Рейтинг ТС"]
             self.assertEqual([sheet.cell(i, 1).value for i in (2, 3)], [1, 2])
-            self.assertEqual([sheet.cell(i, 24).value for i in (2, 3)], [1, None])
+            rank_col = next(col for col in range(1, sheet.max_column + 1)
+                            if sheet.cell(1, col).value == "Место в рейтинге")
+            self.assertEqual([sheet.cell(i, rank_col).value for i in (2, 3)], [1, None])
         finally:
             book.close()
 
@@ -537,8 +558,8 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(rating.cell(1,12).value,"Доля пробега вне Аккую, %")
             self.assertEqual(rating.cell(2,11).value,95.8)
             self.assertEqual(rating.cell(2,12).value,4.2)
-            self.assertEqual(rating.cell(2,26).value,42)
-            self.assertEqual(rating.cell(2,26).fill.patternType,None)
+            self.assertEqual(rating.cell(2,27).value,42)
+            self.assertEqual(rating.cell(2,27).fill.patternType,None)
         finally:
             book.close()
 
@@ -636,19 +657,20 @@ class RatingTest(unittest.TestCase):
             ])
             self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
             self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
-            self.assertEqual(book.worksheets[0].cell(1,25).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
-            self.assertEqual(book.worksheets[0].cell(1,26).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
+            self.assertEqual(book.worksheets[0].cell(1,26).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
+            self.assertEqual(book.worksheets[0].cell(1,27).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
             self.assertEqual(book.worksheets[0].cell(1,13).value,"Среднее время движения внутри Аккую за плановый рабочий день, мин")
             self.assertEqual(book.worksheets[0].cell(2,13).value,20)
             self.assertEqual(book["По дням"].cell(2,10).value,20)
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
-            self.assertEqual(book.worksheets[0].cell(2,25).value,50)
+            self.assertEqual(book.worksheets[0].cell(2,26).value,50)
             self.assertEqual(book.worksheets[0].cell(2,9).fill.fgColor.rgb,"00FDE2E2")
-            self.assertEqual(book.worksheets[0].cell(2,19).value,1)
-            self.assertEqual(book.worksheets[0].cell(2,19).fill.fgColor.rgb,"00FDE2E2")
+            self.assertEqual(book.worksheets[0].cell(2,20).value,1)
+            self.assertEqual(book.worksheets[0].cell(2,20).fill.fgColor.rgb,"00FDE2E2")
             self.assertIn("Средний пробег за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+            self.assertIn("Среднее время офисных стоянок за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
         finally:
             book.close()
 
@@ -742,8 +764,22 @@ class PortalRouteTest(unittest.TestCase):
 
     def test_visible_number_is_independent_of_score_rank(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
-        self.assertIn("r.position??(i+1)", html)
+        self.assertIn("(i+1)+'. '+esc(r.plate)", html)
         self.assertNotIn("r.rank||'—'", html)
+
+    def test_all_table_columns_are_sortable_with_distinct_office_metrics(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        for field in (
+            "plate", "directorate", "norm_days", "inside_km_per_day", "outside_km_per_day",
+            "inside_share_percent", "moving_minutes_per_day", "office_parking_minutes",
+            "office_parking_minutes_per_day", "lunch", "weekend_site_days", "unauthorized_km",
+            "speed_events", "score",
+        ):
+            self.assertIn(f'data-sort="{field}"', html)
+        self.assertEqual(html.count('data-sort="'), 14)
+        self.assertIn("sortedVehicles(report.vehicles)", html)
+        self.assertIn("th.setAttribute('aria-sort'", html)
+        self.assertIn('colspan="14"', html)
 
     def test_average_badge_uses_its_own_norm_and_labels_are_explicit(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")

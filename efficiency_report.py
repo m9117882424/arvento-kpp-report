@@ -652,6 +652,7 @@ def aggregate_report(
     all_events: list[dict[str, Any]] = []
     detail: list[dict[str, Any]] = []
     fleet_weekday_moving_minutes = 0.0
+    fleet_weekday_office_minutes = 0.0
     fleet_planned_vehicle_days_with_gps = 0
     fleet_vehicles_with_weekday_gps = 0
     incomplete_days = set()
@@ -678,6 +679,7 @@ def aggregate_report(
         gps_days = 0
         gps_workday_days = 0
         weekday_moving = 0.0
+        weekday_office = 0.0
         moving = office = unauthorized_km = unauthorized_minutes = 0.0
         stops = lunch_exits = lunch_returns = speed_site = speed_outside = 0
         for row in days:
@@ -694,6 +696,7 @@ def aggregate_report(
                 if gps.points > 0:
                     gps_workday_days += 1
                     weekday_moving += gps.moving_minutes
+                    weekday_office += gps.office_parking_minutes
                 norm = (
                     settings.transit_min_inside_km
                     if is_transit(str(row["model"]))
@@ -743,6 +746,7 @@ def aggregate_report(
             # Zero-movement planned days remain in the denominator. Vehicles
             # without GPS on any planned day cannot be treated as zero activity.
             fleet_weekday_moving_minutes += weekday_moving
+            fleet_weekday_office_minutes += weekday_office
             fleet_planned_vehicle_days_with_gps += eligible_days
             fleet_vehicles_with_weekday_gps += 1
         vehicle = {
@@ -775,6 +779,8 @@ def aggregate_report(
             "moving_minutes_per_day": round(weekday_moving / eligible_days, 1)
             if eligible_days and gps_workday_days else None,
             "office_parking_minutes": round(office, 1) if settings.office_zone_codes else None,
+            "office_parking_minutes_per_day": round(weekday_office / eligible_days, 1)
+            if settings.office_zone_codes and eligible_days and gps_workday_days else None,
             "motion_vs_office_percent": round(100 * moving / (moving + office), 1)
             if settings.office_zone_codes and moving + office > 0 else None,
             "office_stops": stops if settings.office_zone_codes else None,
@@ -823,6 +829,9 @@ def aggregate_report(
             "moving_average_workdays": fleet_planned_vehicle_days_with_gps,
             "office_parking_minutes": round(sum(v["office_parking_minutes"] or 0 for v in vehicles), 1)
             if settings.office_zone_codes else None,
+            "office_parking_minutes_per_vehicle_workday": round(
+                fleet_weekday_office_minutes / fleet_planned_vehicle_days_with_gps, 1
+            ) if settings.office_zone_codes and fleet_planned_vehicle_days_with_gps else None,
             "speed_events": sum(v["speed_events"] for v in vehicles),
             "weekend_site_days": sum(v["weekend_site_days"] for v in vehicles),
         },
@@ -1012,7 +1021,9 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
         "Средний пробег внутри Аккую, км/плановый рабочий день", "Общий пробег вне Аккую, км",
         "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Среднее время движения внутри Аккую за плановый рабочий день, мин",
-        "Время стоянок в выбранных офисных зонах, мин", "Доля движения среди движения и офисных стоянок, %",
+        "Суммарное время стоянок в выбранных офисных зонах, мин",
+        "Среднее время офисных стоянок за плановый рабочий день, мин",
+        "Доля движения среди движения и офисных стоянок, %",
         "Выездов / возвращений с обеда, шт.", "Выходных дней с движением внутри Аккую",
         "Пробег вне разрешённых зон по GPS, км", "Эпизодов превышения скорости внутри Аккую", "Эпизодов превышения скорости вне Аккую",
         "Штраф за превышения скорости, баллы", "Итоговый балл, 0–100", "Статус оценки",
@@ -1020,6 +1031,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "Средний пробег вне Аккую за рабочий день, км (без норматива)",
     ]
     _append_safe_excel_row(sheet, headers)
+    header_col = {label: index for index, label in enumerate(headers, 1)}
     for vehicle in report["vehicles"]:
         cells = [
             vehicle["position"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
@@ -1027,7 +1039,8 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
             vehicle["outside_share_percent"], vehicle["moving_minutes_per_day"],
-            vehicle["office_parking_minutes"], vehicle["motion_vs_office_percent"],
+            vehicle["office_parking_minutes"], vehicle["office_parking_minutes_per_day"],
+            vehicle["motion_vs_office_percent"],
             f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
             vehicle["speed_site_events"], vehicle["speed_outside_events"],
@@ -1042,15 +1055,18 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         if avg is not None:
             sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
         if vehicle["speed_events"]:
-            for col in (19, 20):
+            for col in (
+                header_col["Эпизодов превышения скорости внутри Аккую"],
+                header_col["Эпизодов превышения скорости вне Аккую"],
+            ):
                 sheet.cell(line, col).fill = PatternFill("solid", fgColor="FDE2E2")
         if vehicle["score"] is not None:
-            sheet.cell(line, 22).fill = PatternFill(
+            sheet.cell(line, header_col["Итоговый балл, 0–100"]).fill = PatternFill(
                 "solid", fgColor="E0F4E8" if vehicle["score"] >= 85 else "FFF0CD"
                 if vehicle["score"] >= 60 else "FDE2E2"
             )
         if vehicle["unauthorized_km"]:
-            sheet.cell(line, 18).fill = PatternFill("solid", fgColor="FDE2E2")
+            sheet.cell(line, header_col["Пробег вне разрешённых зон по GPS, км"]).fill = PatternFill("solid", fgColor="FDE2E2")
     sheet.freeze_panes = "C2"
     sheet.auto_filter.ref = sheet.dimensions
 
@@ -1116,6 +1132,9 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Средний пробег вне Аккую", "Пробег вне Аккую за будни по разнарядке / число таких дней. Норматив внешнего пробега не установлен, этот показатель не оценивается цветом"])
     _append_safe_excel_row(notes, ["Среднее время движения внутри Аккую за плановый рабочий день", "Подтверждённое GPS-время движения внутри Аккую только в плановые будни по разнарядке / все плановые будни ТС, включая дни с нулевым движением. Движение в выходные исключено. Если GPS отсутствует на всех плановых буднях, значение Н/Д"])
     _append_safe_excel_row(notes, ["Среднее время движения по автопарку", "Сумма движения в плановые будни для ТС с GPS в такие дни / сумма всех плановых будней этих ТС; среднее взвешено по автомобиледням, а не по количеству машин. Время движения в выходные и ТС без GPS за все плановые будни исключаются"])
+    _append_safe_excel_row(notes, ["Суммарное время офисных стоянок", "Сумма подтверждённых стоянок дольше заданного порога в выбранных офисных геозонах за весь период, включая выходные и дни вне разнарядки. Пересекающиеся зоны не удваивают время"])
+    _append_safe_excel_row(notes, ["Среднее время офисных стоянок за плановый рабочий день", "Стоянки только в плановые будни по разнарядке / число плановых будней ТС, включая дни с нулевыми стоянками. Выходные и дни вне разнарядки исключены. Без GPS на всех плановых буднях или без выбранных офисных геозон — Н/Д"])
+    _append_safe_excel_row(notes, ["Среднее время офисных стоянок по автопарку", "Сумма офисных стоянок за плановые будни для ТС, имеющих GPS хотя бы в один такой день / сумма всех плановых будней этих ТС. Среднее взвешено по автомобиледням; машины без GPS на всех плановых буднях исключены"])
     _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])
     _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
     _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
