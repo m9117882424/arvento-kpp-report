@@ -20,6 +20,7 @@ from arvento_io import Point
 from geozone_registry import (
     Registry,
     find_site_boundary,
+    point_in_polygon,
     point_in_zone,
     suppress_speed_in_exclusions,
 )
@@ -80,10 +81,14 @@ def detect_speed_violations_by_polygon(
     site_threshold_kmh: float = DEFAULT_SITE_SPEED_THRESHOLD_KMH,
     outside_threshold_kmh: float = DEFAULT_OUTSIDE_SPEED_THRESHOLD_KMH,
     min_duration_seconds: int = MIN_SPEED_EVENT_DURATION_SECONDS,
+    outside_route_only: bool = False,
 ) -> tuple[list[SpeedViolation], list[SpeedViolation]]:
-    """Detect smooth speed events using polygon-based site classification."""
+    """Detect speed events; optionally restrict outside-site events to ROUTE."""
     if not isinstance(min_duration_seconds, int) or not 0 <= min_duration_seconds <= 3600:
         raise ValueError("Длительность превышения должна быть от 0 до 3600 секунд")
+    route_polygon = registry.route_polygon if outside_route_only else None
+    if outside_route_only and (not route_polygon or len(route_polygon) < 3):
+        raise ValueError("Для контроля скорости вне площадки требуется геозона ROUTE Ташуджу — Аккую")
     site_threshold, outside_threshold = validate_speed_thresholds(
         site_threshold_kmh,
         outside_threshold_kmh,
@@ -114,6 +119,13 @@ def detect_speed_violations_by_polygon(
         active = None
 
     for point, on_site in classify_site_state_by_polygon(track, registry):
+        if outside_route_only and not on_site and not point_in_polygon(
+            float(point.lat), float(point.lon), route_polygon
+        ):
+            # An off-route point splits an ongoing event: two short corridor
+            # fragments cannot be joined into a false prolonged violation.
+            close_active()
+            continue
         limit = SITE_SPEED_LIMIT_KMH if on_site else OUTSIDE_SPEED_LIMIT_KMH
         threshold = site_threshold if on_site else outside_threshold
         # Multiple independent geofence checks may overlap.  The strictest

@@ -113,10 +113,10 @@
         <div class="setting-control"><label>Офисные геозоны (мультивыбор)</label><div class="zone-choice" id="officeZones"><div class="minihelp">Загрузка…</div></div><div class="minihelp">Пока не выбраны — стоянки в балле не считаются</div></div>
         <div class="setting-control"><label>Разрешённые геозоны (мультивыбор)</label><div class="zone-choice" id="allowedZones"><div class="minihelp">Загрузка…</div></div><div class="minihelp">Пока не выбраны — контроль вне зон отключён</div></div>
         <div class="setting-control"><label>Порог превышения скорости внутри Аккую, км/ч</label><input id="speedSite" type="number" min="5" max="200" step=".1" value="50"></div>
-        <div class="setting-control"><label>Порог превышения скорости вне Аккую, км/ч</label><input id="speedOutside" type="number" min="20" max="250" step=".1" value="103"></div>
+        <div class="setting-control"><label>Порог скорости на маршруте Ташуджу — Аккую вне площадки, км/ч</label><input id="speedOutside" type="number" min="20" max="250" step=".1" value="103"></div>
         <div class="setting-control"><label>Минимальная длительность превышения скорости, сек</label><input id="speedDuration" type="number" min="0" max="3600" step="1" value="3"><div class="minihelp">Также требуются минимум 3 GPS-точки подряд</div></div>
       </div>
-      <div class="settings-notice" id="zoneNotice">Основная территория Аккую используется всегда. Тоннельные геозоны исключаются из фиксации превышений автоматически.</div>
+      <div class="settings-notice" id="zoneNotice">Основная территория Аккую используется всегда. Вне площадки скорость контролируется только на маршруте Ташуджу — Аккую; тоннельные геозоны исключены.</div>
     </section>
     <div id="status" class="status">Получаем список автомобилей и геозон…</div>
     <section class="kpis" id="kpis"></section>
@@ -136,7 +136,7 @@
           <th class="center" data-sort="lunch"><button type="button" class="sort-trigger">Обед<br>выездов / возвращений, шт. <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="weekend_site_days"><button type="button" class="sort-trigger">Выходных дней<br>с движением внутри Аккую <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="right" data-sort="unauthorized_km"><button type="button" class="sort-trigger">Пробег вне<br>разрешённых зон, км <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
-          <th class="center" data-sort="speed_events"><button type="button" class="sort-trigger">Эпизоды превышения<br>скорости, шт. <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
+          <th class="center" data-sort="speed_events" title="Внутри Аккую и на маршруте Ташуджу — Аккую вне площадки"><button type="button" class="sort-trigger">Эпизоды превышения<br>скорости, шт. <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="score"><button type="button" class="sort-trigger">Итоговый балл<br>0–100 <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
         </tr></thead><tbody id="tableBody"><tr><td colspan="14" class="center" style="padding:35px">Нажмите «Показать отчёт»</td></tr></tbody></table></div>
         <div class="table-foot"><div>Н/Д — показатель нельзя достоверно рассчитать; «Не настроено» — не выбраны нужные геозоны. Оценка без геозон предварительная.</div><div id="footerCount"></div></div>
@@ -270,6 +270,7 @@
     $('zoneNotice').textContent='Основная территория Аккую используется всегда. '+
       (excluded.length?'Контроль скорости отключён в зонах: '+excluded.join(', ')+'. ':'Зоны исключения скорости не настроены. ')+
       'Проверки стоянок и разрешённой территории автоматически выбираются по настройкам геозон; выбор можно изменить вручную. '+
+      'Превышения скорости вне площадки учитываются только в пределах маршрута Ташуджу — Аккую. ' +
       'Если зоны не выбраны, соответствующие показатели не входят в балл.';
   }
   async function reloadOptions() {
@@ -351,7 +352,7 @@
       ['Доля пробега внутри Аккую',s.inside_share_percent==null?'Н/Д':fmt(s.inside_share_percent)+'%','доля вне Аккую: '+(s.outside_share_percent==null?'Н/Д':fmt(s.outside_share_percent)+'%')+' · от общего пробега'],
       ['Среднее время движения внутри Аккую за плановый рабочий день',minutes(s.moving_minutes_per_vehicle_workday),'на один плановый автомобиледень · '+s.moving_average_vehicle_count+' ТС с GPS в будни; нулевые дни учтены'],
       ['Суммарное время стоянок в выбранных офисных зонах',minutes(s.office_parking_minutes),report.settings.office_zone_codes.length?'включая выходные · среднее за плановый автомобиледень: '+minutes(s.office_parking_minutes_per_vehicle_workday)+' · остановки дольше '+report.settings.parking_min_minutes+' мин':'офисные геозоны ещё не выбраны'],
-      ['Эпизоды превышения скорости',s.speed_events,'внутри и вне Аккую, тоннельные зоны исключены']
+      ['Эпизоды превышения скорости',s.speed_events,'внутри Аккую и вне площадки только на маршруте Ташуджу — Аккую; тоннели исключены']
     ];
     $('kpis').innerHTML=cards.map(c=>'<div class="panel kpi"><div class="kpi-label">'+esc(c[0])+'</div><div class="kpi-value">'+esc(c[1])+'</div><div class="kpi-note">'+esc(c[2])+'</div></div>').join('');
     $('tableBody').innerHTML=rows.map((r,i)=>{
@@ -390,7 +391,7 @@
     if(!report.settings.office_zone_codes.length||!report.settings.allowed_zone_codes.length)reasons.push('ненастроенных геозон');
     if(report.coverage.provisional_days.length)reasons.push('незакрытых суток');
     if((report.coverage.roster_coverage_days||[]).length)reasons.push('неполного охвата разнарядки');
-    $('footnote').textContent='Средний пробег, среднее время движения и среднее время офисных стоянок — за плановые рабочие будни по разнарядке, включая нулевые дни. Сумма офисных стоянок учитывает весь период, включая выходные. Если в будни нет GPS, среднее время — Н/Д; отдельные пропуски GPS могут занижать среднее. Выходные не включены в среднее. Норматив установлен только для пробега внутри. Доли пробега рассчитаны за весь период и вместе составляют 100%. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
+    $('footnote').textContent='Средний пробег, среднее время движения и среднее время офисных стоянок — за плановые рабочие будни по разнарядке, включая нулевые дни. Сумма офисных стоянок учитывает весь период, включая выходные. Если в будни нет GPS, среднее время — Н/Д; отдельные пропуски GPS могут занижать среднее. Выходные не включены в среднее. Норматив установлен только для пробега внутри. Доли пробега рассчитаны за весь период и вместе составляют 100%. Нарушения скорости вне площадки учитываются только в маршрутной геозоне Ташуджу — Аккую. '+report.coverage.notice+' Рейтинг '+(reasons.length?'предварительный из-за '+reasons.join(', ')+'.':'включает выбранные геозоны.')+' Выходные: суббота и воскресенье.';
   }
   function showSpeed(plate) {
     if(!lastReport)return;
