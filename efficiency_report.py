@@ -46,6 +46,9 @@ from speed_violation_report import _valid_speed, validate_speed_thresholds
 
 
 TZ = ZoneInfo("Europe/Istanbul")
+# Keep old persisted GPS metric results from preserving off-route violations
+# after switching the efficiency report to the Taşucu–Akkuyu route scope.
+OUTSIDE_SPEED_SCOPE_VERSION = "tasucu_akkuyu_route_v1"
 MAX_PERIOD_DAYS = 31
 MAX_INTERVAL_SECONDS = 300
 MAX_OFFICE_GAP_SECONDS = 900
@@ -291,6 +294,7 @@ def _metric_settings_signature(settings: EfficiencySettings) -> tuple[Any, ...]:
         settings.site_speed_threshold_kmh,
         settings.outside_speed_threshold_kmh,
         settings.speed_min_duration_seconds,
+        OUTSIDE_SPEED_SCOPE_VERSION,
     )
 
 
@@ -451,6 +455,7 @@ def analyze_daily_track(
         settings.site_speed_threshold_kmh,
         settings.outside_speed_threshold_kmh,
         min_duration_seconds=settings.speed_min_duration_seconds,
+        outside_route_only=True,
     )
     metrics.speed_site = len(site_events)
     metrics.speed_outside = len(outside_events)
@@ -1138,6 +1143,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Доля движения среди движения и офисных стоянок", "Время подтверждённого движения внутри Аккую / (это время движения + время стоянок в выбранных офисных зонах)"])
     _append_safe_excel_row(notes, ["Стоянка", "Полная длительность подтверждённого непрерывного интервала строго больше порога"])
     _append_safe_excel_row(notes, ["Тоннели", "SPEED_EXCLUSION/TUNNEL всегда исключаются из контроля скорости"])
+    _append_safe_excel_row(notes, ["Превышения скорости вне площадки", "Учитываются только точки GPS внутри активного полигона ROUTE_AKKUYU_TASUCU (маршрут Ташуджу — Аккую). Вне его границ события не учитываются, не попадают в штраф и не объединяются через границу маршрута. Контроль внутри Аккую не ограничивается маршрутом"])
     _append_safe_excel_row(notes, ["Скорость", "Не менее 3 последовательных правдоподобных GPS-точек и заданной длительности"])
     _append_safe_excel_row(notes, ["Итоговый балл", "50% норматив дней + 25% движение/стоянки + 15% доля пробега внутри + 10% разрешённые зоны"])
     _append_safe_excel_row(notes, ["Ненастроенные геозоны", "Соответствующий компонент исключается, остальные веса пропорционально нормируются; балл предварительный"])

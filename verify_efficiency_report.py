@@ -24,6 +24,8 @@ from efficiency_report import (
     GPSPoint,
     _COVERAGE_CACHE,
     _METRIC_CACHE,
+    OUTSIDE_SPEED_SCOPE_VERSION,
+    _metric_settings_signature,
     _restore_daily_metrics,
     apply_cache_coverage,
     aggregate_report,
@@ -72,6 +74,7 @@ def fixture_registry() -> Registry:
             Geozone("Тоннель", "polygon", "speed_exclusion",
                     points=[(5, 5), (5, 6), (6, 6), (6, 5)]),
         ],
+        route_polygon=[(11, 1), (11, 4), (13, 4), (13, 1)],
     )
 
 
@@ -197,6 +200,57 @@ class GPSMetricTest(unittest.TestCase):
             min_duration_seconds=3,
         )
         self.assertEqual(found,[], "Тоннель не должен склеивать эпизоды скорости")
+
+    def test_outside_speed_only_on_tasucu_akkuyu_route(self):
+        registry = fixture_registry()
+        track = points(date(2026, 11, 6), [
+            (0, 2, 2, 60), (4, 2, 2, 61), (8, 2, 2, 62),
+            (40, 15, 2, 120), (44, 15, 2, 121), (48, 15, 2, 122),
+            (400, 12, 2, 120), (404, 12, 2, 121), (408, 12, 2, 122),
+        ])
+        site, unrestricted = detect_speed_violations_by_polygon(
+            track, registry, 50, 103, min_duration_seconds=3,
+        )
+        self.assertEqual((len(site), len(unrestricted)), (1, 2))
+        site, outside = detect_speed_violations_by_polygon(
+            track, registry, 50, 103, min_duration_seconds=3,
+            outside_route_only=True,
+        )
+        self.assertEqual((len(site), len(outside)), (1, 1))
+        self.assertEqual(float(outside[0].max_point.lat), 12)
+        daily = analyze_daily_track(track, registry, [], [], settings())
+        self.assertEqual((daily.speed_site, daily.speed_outside), (1, 1))
+        self.assertEqual(len(daily.speed_events), 2)
+
+        # An off-route point must break a violation, not bridge two brief
+        # bursts into an event that seemingly lasted inside the corridor.
+        crossing = points(date(2026, 11, 6), [
+            (0, 12, 2, 120), (4, 12, 2, 121),
+            (8, 15, 2, 122),
+            (12, 12, 2, 123), (16, 12, 2, 124),
+        ])
+        self.assertEqual(detect_speed_violations_by_polygon(
+            crossing, registry, 50, 103, outside_route_only=True,
+        )[1], [])
+
+        # The existing tunnel exclusion also applies inside the route.
+        registry.zones.append(Geozone(
+            "Тоннель на маршруте", "polygon", "speed_exclusion",
+            points=[(11.5, 1.5), (11.5, 2.5), (12.5, 2.5), (12.5, 1.5)],
+        ))
+        self.assertEqual(detect_speed_violations_by_polygon(
+            track, registry, 50, 103, outside_route_only=True,
+        )[1], [])
+
+    def test_outside_route_required_and_cached_metrics_versioned(self):
+        registry = fixture_registry()
+        registry.route_polygon = None
+        with self.assertRaisesRegex(ValueError, "ROUTE"):
+            detect_speed_violations_by_polygon(
+                points(date(2026, 11, 6), [(0, 15, 2, 120)]),
+                registry, outside_route_only=True,
+            )
+        self.assertEqual(_metric_settings_signature(settings())[-1], OUTSIDE_SPEED_SCOPE_VERSION)
 
     def test_outside_zone_selectable_and_off_when_empty(self):
         track=points(date(2026,11,6),[(0,3,3,15),(60,3.2,3.2,15),(120,3.4,3.4,15)])
@@ -671,6 +725,7 @@ class RatingTest(unittest.TestCase):
             self.assertIn("Средний пробег за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время офисных стоянок за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+            self.assertIn("Превышения скорости вне площадки",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
         finally:
             book.close()
 
@@ -780,6 +835,11 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("sortedVehicles(report.vehicles)", html)
         self.assertIn("th.setAttribute('aria-sort'", html)
         self.assertIn('colspan="14"', html)
+
+    def test_outside_speed_scope_is_explained_to_operators(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn("только на маршруте Ташуджу — Аккую", html)
+        self.assertIn("Нарушения скорости вне площадки учитываются только", html)
 
     def test_average_badge_uses_its_own_norm_and_labels_are_explicit(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
