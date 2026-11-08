@@ -70,6 +70,14 @@ class EditorControlsTest(unittest.TestCase):
             self.assertIn(f'id="{field}"', html)
         self.assertIn("speed_threshold_kmh", html)
 
+    def test_google_layer_uses_one_map_not_one_map_per_tile(self) -> None:
+        html = (Path(__file__).parent / "web" / "geofence_editor.html").read_text(encoding="utf-8")
+        self.assertEqual(html.count("new google.maps.Map("), 1)
+        self.assertNotIn("googleLayer.createTile", html)
+        self.assertNotIn("L.gridLayer(", html)
+        self.assertIn("map.on('move zoom resize', scheduleGoogleSync)", html)
+        self.assertIn("window.gm_authFailure", html)
+
 
 class EfficiencyControlsTest(unittest.TestCase):
     def test_any_purpose_can_be_office_and_allowed(self) -> None:

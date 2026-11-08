@@ -10,7 +10,8 @@
     html, body { height: 100%; margin: 0; font-family: Arial, sans-serif; }
     body { display: grid; grid-template-columns: minmax(280px, 340px) 1fr; background: #f3f4f6; }
     aside { padding: 16px; overflow-y: auto; background: white; border-right: 1px solid #d1d5db; }
-    #map { height: 100vh; min-height: 520px; }
+    #map { height: 100vh; min-height: 520px; position: relative; }
+    .google-base-layer { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
     h1 { margin: 0 0 14px; font-size: 20px; }
     label { display: block; margin-top: 10px; font-size: 13px; color: #374151; }
     input, select, textarea, button { box-sizing: border-box; width: 100%; margin-top: 5px; padding: 9px; font-size: 14px; }
@@ -110,7 +111,11 @@
   const drawnItems = new L.FeatureGroup();
   let map;
   let osmLayer;
-  let googleLayer = null;
+  let googleBackdrop = null;
+  let googleMap = null;
+  let googleActive = false;
+  let googleAuthorizationRejected = false;
+  let googleSyncScheduled = false;
   let currentLayer = null;
   let currentId = null;
   let config = null;
@@ -138,9 +143,25 @@
   }
 
   function showOsm(reason = '') {
-    if (googleLayer && map.hasLayer(googleLayer)) map.removeLayer(googleLayer);
+    googleActive = false;
+    if (googleBackdrop) googleBackdrop.style.display = 'none';
     if (!map.hasLayer(osmLayer)) osmLayer.addTo(map);
     setStatus(reason ? `${reason}. Используется OpenStreetMap.` : 'Используется OpenStreetMap.');
+  }
+
+  function syncGoogleView() {
+    googleSyncScheduled = false;
+    if (!googleActive || !googleMap) return;
+    const center = map.getCenter();
+    googleMap.setCenter({lat: center.lat, lng: center.lng});
+    const zoom = map.getZoom();
+    if (googleMap.getZoom() !== zoom) googleMap.setZoom(zoom);
+  }
+
+  function scheduleGoogleSync() {
+    if (!googleActive || !googleMap || googleSyncScheduled) return;
+    googleSyncScheduled = true;
+    requestAnimationFrame(syncGoogleView);
   }
 
   async function enableGoogle() {
@@ -149,26 +170,32 @@
       return;
     }
     try {
+      window.gm_authFailure = () => {
+        googleAuthorizationRejected = true;
+        showOsm('Google отклонил ключ или домен');
+      };
       if (!window.google || !window.google.maps) {
         await loadScript(`https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(config.googleMapsApiKey)}&v=weekly`);
       }
-      if (!googleLayer) {
-        googleLayer = L.gridLayer({ tileSize: 256, attribution: 'Google' });
-        googleLayer.createTile = function(coords) {
-          const tile = document.createElement('div');
-          tile.style.width = '256px';
-          tile.style.height = '256px';
-          const point = map.unproject(L.point(coords.x * 256 + 128, coords.y * 256 + 128), coords.z);
-          const mini = new google.maps.Map(tile, {
-            center: {lat: point.lat, lng: point.lng}, zoom: coords.z,
-            mapTypeId: 'satellite', disableDefaultUI: true,
-            gestureHandling: 'none', keyboardShortcuts: false
-          });
-          return tile;
-        };
+      if (googleAuthorizationRejected) throw new Error('Google отклонил ключ или домен');
+      if (!googleBackdrop) {
+        googleBackdrop = document.createElement('div');
+        googleBackdrop.className = 'google-base-layer';
+        map.getContainer().prepend(googleBackdrop);
       }
+      googleBackdrop.style.display = 'block';
+      if (!googleMap) {
+        const center = map.getCenter();
+        googleMap = new google.maps.Map(googleBackdrop, {
+          center: {lat: center.lat, lng: center.lng}, zoom: map.getZoom(),
+          mapTypeId: 'satellite', disableDefaultUI: true,
+          gestureHandling: 'none', keyboardShortcuts: false,
+          clickableIcons: false
+        });
+      }
+      googleActive = true;
       if (map.hasLayer(osmLayer)) map.removeLayer(osmLayer);
-      googleLayer.addTo(map);
+      scheduleGoogleSync();
       setStatus('Используется Google Satellite.');
     } catch (error) {
       if (config.osmFallbackEnabled) showOsm(error.message);
@@ -293,6 +320,7 @@
       maxZoom: 19,
       attribution: '&copy; OpenStreetMap contributors'
     }).addTo(map);
+    map.on('move zoom resize', scheduleGoogleSync);
     drawnItems.addTo(map);
     map.addControl(new L.Control.Draw({
       edit: {featureGroup: drawnItems, remove: true},
