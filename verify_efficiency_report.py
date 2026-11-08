@@ -206,7 +206,7 @@ class GPSMetricTest(unittest.TestCase):
         track = points(date(2026, 11, 6), [
             (0, 2, 2, 60), (4, 2, 2, 61), (8, 2, 2, 62),
             (40, 15, 2, 120), (44, 15, 2, 121), (48, 15, 2, 122),
-            (80, 12, 2, 120), (84, 12, 2, 121), (88, 12, 2, 122),
+            (400, 12, 2, 120), (404, 12, 2, 121), (408, 12, 2, 122),
         ])
         site, unrestricted = detect_speed_violations_by_polygon(
             track, registry, 50, 103, min_duration_seconds=3,
