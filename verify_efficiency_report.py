@@ -34,6 +34,8 @@ from efficiency_report import (
     compute_score,
     generate_efficiency_report,
     is_transit,
+    load_daily_rows,
+    filter_options,
     parking_band,
     shape_from_geojson,
     workbook_from_report,
@@ -96,9 +98,50 @@ class EfficiencySettingsTest(unittest.TestCase):
         self.assertEqual(conf.other_min_inside_km, 30)
         self.assertEqual(conf.parking_min_minutes, 5)
         self.assertEqual(conf.speed_min_duration_seconds, 3)
+        self.assertFalse(conf.latest_roster_only)
+        self.assertTrue(settings(latest_roster_only=True).latest_roster_only)
         self.assertTrue(is_transit("FORD TRANSİT"))
         self.assertTrue(is_transit("Ford Transit Custom"))
         self.assertFalse(is_transit("FORD Tourneo Courier"))
+
+    def test_latest_roster_query_restricts_plates_without_changing_historical_rosters(self):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = []
+        for enabled in (False, True):
+            result = load_daily_rows(connection, settings(latest_roster_only=enabled))
+            self.assertEqual(result, [])
+            sql, params = cursor.execute.call_args.args
+            self.assertEqual(params[-1], enabled)
+            self.assertEqual(len(params), 7)
+            self.assertIn("NOT %s::boolean", sql)
+            self.assertIn("SELECT MAX(roster_day) FROM consolidated_roster_snapshots", sql)
+            self.assertIn("newest.normalized_plate = COALESCE(r.normalized_plate,c.normalized_plate)", sql)
+            self.assertIn("WHERE roster_day <= d.report_day ORDER BY roster_day DESC LIMIT 1", sql)
+            self.assertIn("(r.normalized_plate IS NOT NULL) AS in_roster", sql)
+
+    def test_filter_options_respects_checkbox_and_discloses_newest_roster(self):
+        connection = MagicMock()
+        connection.cursor.return_value.__enter__.return_value.fetchone.return_value = (
+            date(2026, 11, 9), 205,
+        )
+        with (
+            patch("efficiency_report.psycopg.connect") as connect,
+            patch("efficiency_report.load_daily_rows", return_value=[{
+                "plate": "34NEW01", "directorate": "Механизация", "user_name": "Тест",
+                "model": "Fiat",
+            }]) as load,
+            patch("efficiency_report.load_shapes", return_value={}),
+        ):
+            connect.return_value.__enter__.return_value = connection
+            result = filter_options(
+                "readonly", date(2026, 11, 2), date(2026, 11, 7),
+                latest_roster_only=True,
+            )
+        self.assertTrue(load.call_args.args[1].latest_roster_only)
+        self.assertEqual(result["plates"], ["34NEW01"])
+        self.assertEqual(result["latest_roster_day"], "2026-11-09")
+        self.assertEqual(result["latest_roster_vehicles"], 205)
 
     def test_invalid_period_and_speed(self):
         with self.assertRaises(ValidationError):
@@ -962,6 +1005,16 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("parkingClass(r.office_parking_minutes_per_day)", html)
         self.assertIn("Выходные (суббота и воскресенье) участвуют только", html)
 
+    def test_latest_roster_toggle_is_available_to_all_users_and_sent_to_both_apis(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
+        self.assertIn('type="checkbox" id="latestRosterOnly"', html)
+        self.assertIn("Машины только из свежей разнарядки", html)
+        self.assertIn("'&latest_roster_only='+$('latestRosterOnly').checked", html)
+        self.assertIn("latest_roster_only:$('latestRosterOnly').checked", html)
+        self.assertIn("reloadOptions({pruneSelections:true})", html)
+        self.assertIn("$('latestRosterOnly').checked=false", html)
+        self.assertIn("data.latest_roster_day", html)
+
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()
         apply_efficiency_portal(app, lambda: "not-used-during-registration")
@@ -985,6 +1038,14 @@ class PortalRouteTest(unittest.TestCase):
         self.assertEqual(admin("another-user").body, b'{"can_edit_geozones":false}')
         self.assertEqual(admin("maksim").body, b'{"can_edit_geozones":true}')
         self.assertEqual(admin("maksim").headers["cache-control"], "private, no-store")
+
+        options = next(
+            route.endpoint for route in app.routes
+            if route.path == "/api/efficiency/options"
+        )
+        with patch("efficiency_portal.filter_options", return_value={}) as fetch:
+            options(date(2026, 11, 2), date(2026, 11, 7), True)
+        self.assertTrue(fetch.call_args.kwargs["latest_roster_only"])
 
     def test_background_job_result_and_excel(self):
         app = FastAPI()
@@ -1013,6 +1074,38 @@ class PortalRouteTest(unittest.TestCase):
 
         with patch("efficiency_portal.generate_efficiency_report", return_value=sample):
             asyncio.run(lifecycle())
+
+    def test_latest_roster_job_does_not_reuse_completed_historical_result(self):
+        from efficiency_portal import _JOBS
+
+        app = FastAPI()
+        apply_efficiency_portal(app, lambda: "read-only-database")
+        endpoints = {route.path: route.endpoint for route in app.routes}
+        conf = settings(date_to=date(2026, 11, 6), latest_roster_only=True)
+        sample = aggregate_report([], {}, conf)
+
+        async def lifecycle():
+            first = await endpoints["/api/efficiency/jobs"](conf)
+            for _ in range(30):
+                state = await endpoints["/api/efficiency/jobs/{job_id}"](first["job_id"])
+                if state["status"] in {"succeeded", "failed"}:
+                    break
+                await asyncio.sleep(.01)
+            self.assertEqual(state["status"], "succeeded")
+            second = await endpoints["/api/efficiency/jobs"](conf)
+            self.assertNotEqual(first["job_id"], second["job_id"])
+            for _ in range(30):
+                state = await endpoints["/api/efficiency/jobs/{job_id}"](second["job_id"])
+                if state["status"] in {"succeeded", "failed"}:
+                    break
+                await asyncio.sleep(.01)
+            self.assertEqual(state["status"], "succeeded")
+
+        with patch("efficiency_portal.generate_efficiency_report", return_value=sample):
+            asyncio.run(lifecycle())
+        for job_id, job in list(_JOBS.items()):
+            if job.settings == conf:
+                _JOBS.pop(job_id, None)
 
 
 class PersistenceBoundaryTest(unittest.TestCase):

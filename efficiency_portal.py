@@ -114,11 +114,15 @@ def apply_efficiency_portal(app: FastAPI, database_url: Callable[[], str]) -> No
     def efficiency_options(
         date_from: date = Query(...),
         date_to: date = Query(...),
+        latest_roster_only: bool = Query(False),
     ) -> dict[str, Any]:
         try:
             if (date_to - date_from).days + 1 > MAX_PERIOD_DAYS or date_to < date_from:
                 raise ValueError(f"Период должен составлять от 1 до {MAX_PERIOD_DAYS} дней")
-            return filter_options(database_url(), date_from, date_to)
+            return filter_options(
+                database_url(), date_from, date_to,
+                latest_roster_only=latest_roster_only,
+            )
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         except Exception:
@@ -132,7 +136,12 @@ def apply_efficiency_portal(app: FastAPI, database_url: Callable[[], str]) -> No
         _cleanup()
         # Identical historical requests should reuse an existing result or
         # running job. Current-day results are never reused after completion.
-        historical = settings.date_to < datetime.now(_LOCAL_TZ).date()
+        # A newly uploaded roster must invalidate completed historical results
+        # when the user requests today's fleet composition.
+        historical = (
+            settings.date_to < datetime.now(_LOCAL_TZ).date()
+            and not settings.latest_roster_only
+        )
         for existing in _JOBS.values():
             if existing.settings == settings and (
                 existing.state in {"queued", "running"}
