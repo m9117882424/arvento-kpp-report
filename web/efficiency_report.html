@@ -57,7 +57,7 @@
     .table-panel{min-width:0;overflow:hidden}.table-header{padding:17px 18px 12px;display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:10px;border-bottom:1px solid #edf0f5}
     .table-title{font-size:14px;font-weight:825}.table-sub{font-size:11px;color:#8c9aaa;margin-top:5px}
     .color-legend{font-size:11px;color:#728198;line-height:1.5;max-width:490px}
-    .table-scroll{overflow:auto;max-height:590px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1450px;font-size:11px}
+    .table-scroll{overflow:auto;max-height:590px}table{border-collapse:separate;border-spacing:0;width:100%;min-width:1530px;font-size:11px}
     thead th{position:sticky;top:0;background:#f5f8fc;color:#728198;font-size:10px;line-height:1.3;font-weight:800;text-align:left;padding:12px 9px;border-bottom:1px solid #e6ebf3;white-space:normal;min-width:110px;max-width:205px;z-index:2}
     .sort-trigger{display:flex;align-items:center;gap:5px;width:100%;padding:0;border:0;background:none;color:inherit;font-size:inherit;font-weight:inherit;line-height:inherit;text-align:left;white-space:normal}
     .sort-trigger:hover{color:#1a63c4}.sort-trigger:focus-visible{outline:2px solid #2675e6;outline-offset:4px;border-radius:3px}
@@ -66,6 +66,7 @@
     tbody td{padding:12px 9px;border-bottom:1px solid #edf1f6;white-space:nowrap;color:#39506b;vertical-align:middle}
     tbody tr:hover{background:#f9fbff}.right{text-align:right}.center{text-align:center}.plate{font-size:11px;font-weight:820;color:#193659}.model{font-size:10px;color:#8d9bad;margin-top:3px}
     .one{font-weight:740;color:#425876;max-width:250px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.second{font-size:10px;color:#95a1b1;white-space:normal;line-height:1.4;max-width:205px;margin-top:3px}
+    .grade-col{min-width:65px;max-width:85px}
     .td-sticky{position:sticky;left:0;background:#fff;z-index:1;box-shadow:inset -1px 0 #edf1f6}thead .td-sticky{z-index:3;background:#f5f8fc}
     .cell-tag{font-weight:820;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;padding:5px 7px;min-width:42px}
     .good{background:#e5f8ef;color:#15825a}.mid{background:#fff3df;color:#aa690b}.bad{background:#fee9e8;color:#c84143}.na{background:#f0f2f5;color:#8b98aa}
@@ -136,6 +137,7 @@
         <div class="table-scroll"><table><thead><tr>
           <th class="td-sticky" data-sort="plate"><button type="button" class="sort-trigger">№ строки / Госномер <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th data-sort="directorate"><button type="button" class="sort-trigger">Дирекция / пользователь <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
+          <th class="center grade-col" data-sort="grade"><button type="button" class="sort-trigger">Грейд <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th data-sort="norm_days"><button type="button" class="sort-trigger">Дней с нормативом пробега<br>выполнено / план <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="right" data-sort="inside_km_per_day"><button type="button" class="sort-trigger">Средний пробег внутри Аккую<br>км/плановый рабочий день <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="right" data-sort="outside_km_per_day"><button type="button" class="sort-trigger">Средний пробег вне Аккую<br>за рабочий день, км <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
@@ -148,7 +150,7 @@
           <th class="right" data-sort="unauthorized_km"><button type="button" class="sort-trigger">Пробег вне<br>разрешённых зон, км <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="speed_events" title="Внутри Аккую и на маршруте Ташуджу — Аккую вне площадки"><button type="button" class="sort-trigger">Эпизоды превышения<br>скорости, шт. <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
           <th class="center" data-sort="score"><button type="button" class="sort-trigger">Итоговый балл<br>0–100 <span class="sort-arrow" aria-hidden="true">↕</span></button></th>
-        </tr></thead><tbody id="tableBody"><tr><td colspan="14" class="center" style="padding:35px">Нажмите «Показать отчёт»</td></tr></tbody></table></div>
+        </tr></thead><tbody id="tableBody"><tr><td colspan="15" class="center" style="padding:35px">Нажмите «Показать отчёт»</td></tr></tbody></table></div>
         <div class="table-foot"><div>Н/Д — показатель нельзя достоверно рассчитать; «Не настроено» — не выбраны нужные геозоны. Оценка без геозон предварительная.</div><div id="footerCount"></div></div>
       </div>
       <div class="ranking-column">
@@ -183,6 +185,7 @@
   const sortColumns = {
     plate: {label:'Госномер',get:r=>r.plate},
     directorate: {label:'Дирекция / пользователь',get:r=>[r.directorate||r.company||'',r.user||''].join(' ')},
+    grade: {label:'Грейд',get:r=>r.grade||null},
     norm_days: {label:'Доля плановых дней с выполненным нормативом',get:r=>r.gps_workday_days&&r.eligible_days?r.norm_days/r.eligible_days:null},
     inside_km_per_day: {label:'Средний пробег внутри Аккую',get:r=>r.inside_km_per_day},
     outside_km_per_day: {label:'Средний пробег вне Аккую',get:r=>r.outside_km_per_day},
@@ -223,7 +226,7 @@
   }
   document.querySelectorAll('th[data-sort]').forEach(th=>th.querySelector('button').addEventListener('click',()=>{
     const key=th.dataset.sort;
-    sortState={key,direction:sortState.key===key?(sortState.direction==='asc'?'desc':'asc'):(key==='plate'||key==='directorate'?'asc':'desc')};
+    sortState={key,direction:sortState.key===key?(sortState.direction==='asc'?'desc':'asc'):(key==='plate'||key==='directorate'||key==='grade'?'asc':'desc')};
     if(lastReport)render(lastReport);
     else updateSortHeaders();
   }));
@@ -397,6 +400,7 @@
       return '<tr>'+
         '<td class="td-sticky"><div class="plate">'+(i+1)+'. '+esc(r.plate)+'</div><div class="model">'+esc(r.model)+'</div></td>'+
         '<td><div class="one" title="'+esc(r.directorate)+'">'+esc(r.directorate||r.company||'Не указано')+'</div><div class="second">'+esc(r.user||'Не указан')+'</div></td>'+
+        '<td class="center grade-col">'+esc(r.grade||'—')+'</td>'+
         '<td>'+tag(r.norm_days+' / '+r.eligible_days,normDaysClass(r.norm_days,r.eligible_days,r.gps_workday_days),'Дней с подтверждённым выполнением суточной нормы из числа плановых рабочих дней')+'</td>'+
         '<td class="right">'+tag(r.inside_km_per_day==null?'Н/Д':fmt(r.inside_km_per_day),insideAverageClass(r.inside_km_per_day,averageNorm),'Средний пробег внутри Аккую за плановый рабочий день. Норматив: от '+fmt(averageNorm,0)+' км')+
           (averageNorm==null?'':'<div class="second">норма: от '+fmt(averageNorm,0)+' км за рабочий день</div>')+'</td>'+
@@ -412,7 +416,7 @@
         '<td class="right">'+tag(r.unauthorized_km==null?'Не настроено':noWorkGps?'Н/Д':fmt(r.unauthorized_km),noWorkGps||r.unauthorized_km==null?'na':r.unauthorized_km?'bad':'good')+'</td>'+
         '<td class="center">'+(r.speed_events?'<button type="button" class="linkbutton" data-speed="'+esc(r.normalized_plate)+'" title="Показать подтверждённые эпизоды превышения скорости">'+r.speed_events+'</button>':speedCell)+'</td>'+
         '<td class="center"><span class="score '+rating(r.score)+'">'+(r.score==null?'Н/Д':r.score)+'</span>'+(r.data_status==='ok'?'':'<div class="second">'+esc(r.data_status)+'</div>')+'</td></tr>';
-    }).join('')||'<tr><td colspan="14" class="center" style="padding:35px">По выбранным фильтрам автомобилей нет</td></tr>';
+    }).join('')||'<tr><td colspan="15" class="center" style="padding:35px">По выбранным фильтрам автомобилей нет</td></tr>';
     const scored=rows.filter(r=>r.score!=null);
     const topBest=[...scored].sort((a,b)=>b.score-a.score||a.plate.localeCompare(b.plate)).slice(0,10);
     const topWorst=[...scored].sort((a,b)=>a.score-b.score||a.plate.localeCompare(b.plate)).slice(0,10);

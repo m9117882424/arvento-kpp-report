@@ -765,7 +765,8 @@ def aggregate_report(
             detail.append({
                 "date": day.isoformat(), "plate": row["plate"],
                 "model": row["model"], "directorate": row["directorate"],
-                "user": row["user_name"], "in_roster": row["in_roster"],
+                "user": row["user_name"], "grade": normalize_grade(row.get("grade")),
+                "in_roster": row["in_roster"],
                 "cache_ready": row["cache_ready"],
                 "inside_km": round(float(row["inside_km"] or 0), 2) if is_workday else None,
                 "outside_km": round(float(row["outside_km"] or 0), 2) if is_workday else None,
@@ -803,6 +804,7 @@ def aggregate_report(
             "model": current["model"],
             "directorate": current["directorate"],
             "user": current["user_name"],
+            "grade": normalize_grade(current.get("grade")),
             "eligible_days": eligible_days,
             "norm_days": norm_days,
             "inside_daily_norm_km": (
@@ -1122,7 +1124,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     sheet = workbook.active
     sheet.title = "Рейтинг ТС"
     headers = [
-        "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
+        "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь", "Грейд",
         "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
         "Средний пробег внутри Аккую, км/день", "Общий пробег вне Аккую, км",
         "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Среднее время движения внутри Аккую за день, чч:мм",
@@ -1141,6 +1143,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     for vehicle in report["vehicles"]:
         cells = [
             vehicle["position"], vehicle["plate"], vehicle["model"], vehicle["directorate"], vehicle["user"],
+            vehicle["grade"],
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
@@ -1156,12 +1159,14 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         ]
         _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
-        for column in (13, 14, 15):
+        for column in (14, 15, 16):
             sheet.cell(line, column).number_format = duration_format
         norm = vehicle["inside_daily_norm_km"]
         avg = vehicle["inside_km_per_day"]
         if avg is not None:
-            sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
+            sheet.cell(line, header_col["Средний пробег внутри Аккую, км/день"]).fill = PatternFill(
+                "solid", fgColor="FDE2E2" if avg < norm else "E0F4E8"
+            )
         for parking_label, value, days in (
             ("Суммарное время стоянок в выбранных офисных зонах, чч:мм",
              vehicle["office_parking_minutes"], vehicle["eligible_days"]),
@@ -1191,18 +1196,19 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
 
     daily = workbook.create_sheet("По дням")
     _append_safe_excel_row(daily, [
-        "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "Есть в разнарядке",
+        "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "Грейд", "Есть в разнарядке",
         "Данные сводного кэша готовы", "Пробег внутри Аккую, км", "Пробег вне Аккую, км", "Время движения внутри Аккую, чч:мм",
         "Стоянки в выбранных офисных зонах, чч:мм", "Эпизоды превышения скорости, шт.", "Количество GPS-точек",
     ])
     for item in report["daily"]:
         _append_safe_excel_row(daily, [
             item["date"], item["plate"], item["model"], item["directorate"], item["user"],
+            item["grade"],
             "Да" if item["in_roster"] else "Нет", "Да" if item["cache_ready"] else "Нет",
             item["inside_km"], item["outside_km"], as_excel_duration(item["moving_minutes"]),
             as_excel_duration(item["office_minutes"]), item["speed_events"], item["gps_points"],
         ])
-        for column in (10, 11):
+        for column in (11, 12):
             daily.cell(daily.max_row, column).number_format = duration_format
     daily.freeze_panes = "C2"
     daily.auto_filter.ref = daily.dimensions
