@@ -1197,6 +1197,7 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn('grades:"Все грейды"', html)
         self.assertIn('grades:new Set()', html)
         self.assertIn('grades:[...choices.grades]', html)
+        self.assertIn('.filters-grid .field:last-child .dropdown{left:auto;right:0}', html)
         self.assertIn('for(const field of Object.keys(labels))', html)
         self.assertIn('for(const set of Object.values(choices))set.clear()', html)
 
