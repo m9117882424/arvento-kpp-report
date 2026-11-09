@@ -70,6 +70,7 @@ COVERAGE_CACHE_TTL_SECONDS = 60
 class EfficiencySettings(BaseModel):
     date_from: date
     date_to: date
+    latest_roster_only: bool = False
     plates: list[str] = Field(default_factory=list, max_length=1500)
     directorates: list[str] = Field(default_factory=list, max_length=250)
     users: list[str] = Field(default_factory=list, max_length=1500)
@@ -477,7 +478,7 @@ def analyze_daily_track(
 def load_daily_rows(
     connection: psycopg.Connection[Any], settings: EfficiencySettings
 ) -> list[dict[str, Any]]:
-    """Apply the latest roster snapshot effective on each day; include zero-GPS cars."""
+    """Use historical daily rosters; optionally restrict plates to the newest roster."""
     query = """
         WITH days AS (
             SELECT generate_series(%s::date, %s::date, interval '1 day')::date AS report_day
@@ -520,12 +521,24 @@ def load_daily_rows(
         LEFT JOIN consolidated_cache_days cd
           ON cd.report_day=COALESCE(r.report_day,c.report_day)
         WHERE COALESCE(r.report_day,c.report_day) BETWEEN %s AND %s
+          AND (
+              NOT %s::boolean
+              OR EXISTS (
+                  SELECT 1
+                  FROM consolidated_roster_entries newest
+                  WHERE newest.roster_day = (
+                      SELECT MAX(roster_day) FROM consolidated_roster_snapshots
+                  )
+                    AND newest.normalized_plate = COALESCE(r.normalized_plate,c.normalized_plate)
+              )
+          )
         ORDER BY report_day,normalized_plate
     """
     params = (
         settings.date_from, settings.date_to,
         settings.date_from, settings.date_to,
         settings.date_from, settings.date_to,
+        settings.latest_roster_only,
     )
     with connection.cursor(row_factory=psycopg.rows.dict_row) as cursor:
         cursor.execute(query, params)
@@ -980,12 +993,24 @@ def generate_efficiency_report(
     return result
 
 
-def filter_options(database_url: str, start: date, finish: date) -> dict[str, Any]:
-    settings = EfficiencySettings(date_from=start, date_to=finish)
+def filter_options(
+    database_url: str, start: date, finish: date, *, latest_roster_only: bool = False,
+) -> dict[str, Any]:
+    settings = EfficiencySettings(
+        date_from=start, date_to=finish, latest_roster_only=latest_roster_only,
+    )
     with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=15000") as conn:
         rows = load_daily_rows(conn, settings)
         shapes = load_shapes(conn)
+        with conn.cursor() as cursor:
+            cursor.execute(
+                """SELECT roster_day, entry_count FROM consolidated_roster_snapshots
+                   ORDER BY roster_day DESC LIMIT 1"""
+            )
+            latest_roster = cursor.fetchone()
     return {
+        "latest_roster_day": latest_roster[0].isoformat() if latest_roster else None,
+        "latest_roster_vehicles": int(latest_roster[1]) if latest_roster else 0,
         "plates": sorted({row["plate"] for row in rows if row["plate"]}),
         "directorates": sorted({row["directorate"] for row in rows if row["directorate"]}),
         "users": sorted({row["user_name"] for row in rows if row["user_name"]}),
@@ -1148,6 +1173,11 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
     _append_safe_excel_row(notes, ["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
     _append_safe_excel_row(notes, ["Часовой пояс", "Europe/Istanbul"])
+    _append_safe_excel_row(notes, [
+        "Машины только из свежей разнарядки",
+        "Да — отчёт включает лишь госномера из самой новой по дате загруженной разнарядки; историческая принадлежность к разнарядкам, рабочие дни и показатели сохраняются на свои даты. Нет — обычная выборка за период. Текущий выбор: "
+        + ("Да" if report["settings"].get("latest_roster_only") else "Нет"),
+    ])
     _append_safe_excel_row(notes, ["Выходные", "Суббота и воскресенье участвуют только в показателе присутствия ТС на площадке и нарушениях скорости (включая штраф в итоговом балле); прочие показатели рассчитываются за плановые рабочие будни по разнарядке"])
     _append_safe_excel_row(notes, ["Норматив пробега внутри Аккую", f'Ford Transit — от {report["settings"]["transit_min_inside_km"]} км за плановый рабочий день; другие модели — от {report["settings"]["other_min_inside_km"]} км (текущие настройки)'])
     _append_safe_excel_row(notes, ["Средний пробег за плановый рабочий день", "Сумма пробега только за будни по разнарядке / число плановых будней; пробег в выходные на среднее не влияет"])

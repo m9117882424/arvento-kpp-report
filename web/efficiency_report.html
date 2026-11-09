@@ -30,6 +30,10 @@
     .dropdown{display:none;position:absolute;z-index:30;top:43px;left:0;width:max(230px,100%);padding:9px;background:#fff;border:1px solid #dbe4f0;border-radius:12px;box-shadow:0 15px 40px #11294a24}
     .multiselect.open .dropdown{display:block}.dropdown input[type=search]{border:1px solid #e1e7f1;border-radius:8px;padding:9px;width:100%;font-size:12px;margin-bottom:6px}
     .options{max-height:190px;overflow:auto}.opt{padding:8px 6px;display:flex;align-items:flex-start;gap:9px;font-size:12px;border-radius:7px;cursor:pointer}.opt:hover{background:#f2f6fc}.opt input{accent-color:#2675e6;flex:0 0 auto}
+    .roster-filter{display:flex;align-items:center;flex-wrap:wrap;gap:8px 16px;margin-top:13px;padding:10px 12px;background:#f6f9fd;border:1px solid #e2eaf5;border-radius:9px}
+    .roster-checkbox{display:inline-flex;align-items:center;gap:9px;color:#354d6e;font-size:12px;font-weight:750;cursor:pointer}
+    .roster-checkbox input{width:16px;height:16px;margin:0;accent-color:var(--blue);cursor:pointer}
+    .roster-hint{color:#8091a8;font-size:11px;line-height:1.4}
     .filter-bottom{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:13px}
     .presets{display:flex;flex-wrap:wrap;align-items:center;gap:5px}.preset{border:1px solid transparent;padding:7px 10px;border-radius:7px;background:#f3f6fb;font-size:11px;color:#718198}.preset.selected{background:#e9f1ff;border-color:#bfd5ff;color:#2068cf;font-weight:760}
     .filter-actions{display:flex;gap:8px}.filter-actions button{padding:8px 15px}
@@ -100,6 +104,10 @@
         <div class="field" data-field="users"><label>Пользователь</label><div class="multiselect"><button class="filter-button" type="button"><span class="filter-caption">Все пользователи</span><span class="arrow">⌄</span></button><div class="dropdown"><input type="search" placeholder="Поиск пользователя"><div class="options"></div></div></div></div>
         <div class="field" data-field="models"><label>Марка / модель</label><div class="multiselect"><button class="filter-button" type="button"><span class="filter-caption">Все марки</span><span class="arrow">⌄</span></button><div class="dropdown"><input type="search" placeholder="Поиск модели"><div class="options"></div></div></div></div>
       </div>
+      <div class="roster-filter">
+        <label class="roster-checkbox" title="Оставляет в отчёте только госномера из самой новой загруженной разнарядки; расчёты за прошлые даты не меняются."><input type="checkbox" id="latestRosterOnly">Машины только из свежей разнарядки</label>
+        <span class="roster-hint" id="latestRosterHint">Получаем дату последней разнарядки…</span>
+      </div>
       <div class="filter-bottom"><div class="presets"><button class="preset" data-period="today">Сегодня</button><button class="preset" data-period="yesterday">Вчера</button><button class="preset selected" data-period="7">7 дней</button><button class="preset" data-period="30">30 дней</button><button class="preset" data-period="month">Месяц</button></div><div class="filter-actions"><button class="ghost" id="resetFilters">Сбросить</button><button class="primary" id="generate">Показать отчёт</button></div></div>
     </section>
     <section class="panel settings">
@@ -161,7 +169,7 @@
   const labels = {plates:"Все госномера",directorates:"Все дирекции",users:"Все пользователи",models:"Все марки"};
   const choices = {plates:new Set(),directorates:new Set(),users:new Set(),models:new Set()};
   const zones = {office_zone_codes:new Set(),allowed_zone_codes:new Set()};
-  let options = {}, lastReport = null, currentJob = null, defaultsLoaded = false;
+  let options = {}, lastReport = null, currentJob = null, defaultsLoaded = false, optionsRequestId = 0;
   const esc = x => String(x ?? '').replace(/[&<>'"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));
   const fmt = (x,d=1) => x == null ? 'Н/Д' : Number(x).toLocaleString('ru-RU',{maximumFractionDigits:d,minimumFractionDigits:d});
   const minutes = x => {if(x == null)return 'Н/Д';const n=Math.round(x);return Math.floor(n/60)+' ч '+String(n%60).padStart(2,'0')+' м';};
@@ -274,11 +282,15 @@
       'Превышения скорости вне площадки учитываются только в пределах маршрута Ташуджу — Аккую. ' +
       'Если зоны не выбраны, соответствующие показатели не входят в балл.';
   }
-  async function reloadOptions() {
+  async function reloadOptions({pruneSelections=false}={}) {
     const dateFrom=$('dateFrom').value,dateTo=$('dateTo').value;
     if(!dateFrom||!dateTo)return;
-    const resp=await fetch('/api/efficiency/options?date_from='+dateFrom+'&date_to='+dateTo,{cache:'no-store'});
+    const requestId=++optionsRequestId;
+    const url='/api/efficiency/options?date_from='+encodeURIComponent(dateFrom)+
+      '&date_to='+encodeURIComponent(dateTo)+'&latest_roster_only='+$('latestRosterOnly').checked;
+    const resp=await fetch(url,{cache:'no-store'});
     const data=await resp.json();
+    if(requestId!==optionsRequestId)return;
     if(!resp.ok)throw new Error(data.detail||'Нет доступа к справочникам');
     options=data;
     if(!defaultsLoaded && data.defaults) {
@@ -289,14 +301,25 @@
       for(const code of data.defaults.allowed_zone_codes||[])zones.allowed_zone_codes.add(code);
       defaultsLoaded=true;
     }
-    for(const field of Object.keys(labels))drawChoices(field);
+    for(const field of Object.keys(labels)) {
+      if(pruneSelections){
+        const available=new Set(options[field]||[]);
+        for(const selected of choices[field])if(!available.has(selected))choices[field].delete(selected);
+      }
+      drawChoices(field);
+    }
     drawZones();
     $('selectionSummary').textContent=(options.plates||[]).length+' ТС';
+    $('latestRosterHint').textContent=data.latest_roster_day
+      ? 'Последняя разнарядка: '+data.latest_roster_day.split('-').reverse().join('.')+
+        ' · '+data.latest_roster_vehicles+' ТС · расчёты остаются за выбранные даты'
+      : 'Разнарядки пока не загружены';
   }
   function settingsPayload() {
     const n = id => Number($(id).value);
     return {
       date_from:$('dateFrom').value,date_to:$('dateTo').value,
+      latest_roster_only:$('latestRosterOnly').checked,
       plates:[...choices.plates],directorates:[...choices.directorates],users:[...choices.users],models:[...choices.models],
       office_zone_codes:[...zones.office_zone_codes],allowed_zone_codes:[...zones.allowed_zone_codes],
       lunch_exit_from:$('lunchExitFrom').value,lunch_exit_to:$('lunchExitTo').value,
@@ -428,7 +451,8 @@
   document.addEventListener('click',()=>document.querySelectorAll('.multiselect').forEach(n=>n.classList.remove('open')));
   document.querySelectorAll('.preset').forEach(b=>b.addEventListener('click',async()=>{setPeriod(b.dataset.period);try{await reloadOptions()}catch(e){showStatus(e.message,'error')}}));
   for(const field of ['dateFrom','dateTo'])$(field).addEventListener('change',async()=>{try{await reloadOptions()}catch(e){showStatus(e.message,'error')}});
-  $('resetFilters').addEventListener('click',()=>{for(const set of Object.values(choices))set.clear();for(const set of Object.values(zones))set.clear();setPeriod('7');reloadOptions().catch(e=>showStatus(e.message,'error'));});
+  $('latestRosterOnly').addEventListener('change',()=>reloadOptions({pruneSelections:true}).catch(e=>showStatus(e.message,'error')));
+  $('resetFilters').addEventListener('click',()=>{for(const set of Object.values(choices))set.clear();for(const set of Object.values(zones))set.clear();$('latestRosterOnly').checked=false;setPeriod('7');reloadOptions().catch(e=>showStatus(e.message,'error'));});
   $('toggleSettings').addEventListener('click',()=>{
     const el=$('settingsBody');el.classList.toggle('hidden');$('toggleSettings').textContent=el.classList.contains('hidden')?'Развернуть настройки ⌄':'Свернуть настройки ⌃';
   });
