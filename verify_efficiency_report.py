@@ -633,13 +633,22 @@ class RatingTest(unittest.TestCase):
             patch("efficiency_report.DailyMetricStore", FakeStore),
         ):
             base = settings(date_from=day, date_to=day, plates=["34TEST01"])
-            cold = generate_efficiency_report("readonly", base)
+            cold_progress = []
+            cold = generate_efficiency_report("readonly", base, progress=cold_progress.append)
+            self.assertEqual(cold_progress[0]["stage"], "loading")
+            self.assertEqual(cold_progress[-1]["stage"], "complete")
+            self.assertEqual(cold_progress[-1]["days_completed"], 1)
+            self.assertEqual(cold_progress[-1]["gps_calculated_vehicle_days"], 1)
             self.assertEqual(cold["coverage"]["gps_metric_persisted_writes"], 1)
             self.assertEqual(len(FakeStore.records), 1)
             _METRIC_CACHE.clear()  # Simulated restart of the portal process.
+            warm_progress = []
             warm = generate_efficiency_report(
-                "readonly", settings(date_from=day, date_to=day, directorates=["Механизация"])
+                "readonly", settings(date_from=day, date_to=day, directorates=["Механизация"]),
+                progress=warm_progress.append,
             )
+            self.assertEqual(warm_progress[-1]["cached_vehicle_days"], 1)
+            self.assertEqual(warm_progress[-1]["gps_calculated_vehicle_days"], 0)
             self.assertEqual(warm["coverage"]["gps_metric_persisted_hits"], 1)
             self.assertEqual(warm["coverage"]["gps_metric_cache_misses"], 0)
             self.assertEqual(warm["vehicles"][0]["moving_minutes"], 2)
@@ -650,6 +659,12 @@ class RatingTest(unittest.TestCase):
             )
             self.assertEqual(altered["coverage"]["gps_metric_persisted_hits"], 0)
             self.assertEqual(tracks.call_count, 2)
+            # Changing back to old settings must reuse the original variant.
+            _METRIC_CACHE.clear()
+            restored = generate_efficiency_report("readonly", base)
+            self.assertEqual(restored["coverage"]["gps_metric_persisted_hits"], 1)
+            self.assertEqual(tracks.call_count, 2)
+            self.assertEqual(len(FakeStore.records), 2)
             _METRIC_CACHE.clear()
             registry.version_refs = ("SITE@2",)
             generate_efficiency_report("readonly", base)
@@ -666,6 +681,32 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(stale["coverage"]["gps_metric_persisted_hits"], 0)
             self.assertEqual(stale["coverage"]["gps_metric_persisted_writes"], 0)
             self.assertIsNone(stale["vehicles"][0]["score"])
+
+    def test_persistent_store_sql_keeps_settings_variants_per_vehicle_day(self):
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        one = "a" * 64
+        two = "b" * 64
+        payload = asdict(GPSDailyMetrics(points=3, moving_minutes=2))
+        cursor.fetchall.return_value = [(one, payload), (two, payload)]
+        with patch("efficiency_metric_cache.psycopg.connect", return_value=connection):
+            with DailyMetricStore("test-only") as store:
+                stored = store.load([one, two])
+                self.assertEqual(set(stored), {one, two})
+                self.assertIn(
+                    "FROM efficiency_gps_metric_variants",
+                    cursor.execute.call_args.args[0],
+                )
+                saved = store.save([
+                    (one, date(2026, 11, 6), "34TEST01", payload),
+                    (two, date(2026, 11, 6), "34TEST01", payload),
+                ])
+        self.assertEqual(saved, 2)
+        sql, params = cursor.executemany.call_args.args
+        self.assertIn("INSERT INTO efficiency_gps_metric_variants", sql)
+        self.assertIn("ON CONFLICT (cache_key) DO UPDATE", sql)
+        self.assertNotIn("ON CONFLICT (report_day, normalized_plate)", sql)
+        self.assertEqual([entry[0] for entry in params], [one, two])
 
     def test_stale_or_corrupt_metrics_never_count_as_persistent_hit(self):
         self.assertIsNone(_restore_daily_metrics({"points": 1}))
@@ -1092,6 +1133,15 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("$('latestRosterOnly').checked=false", html)
         self.assertIn("data.latest_roster_day", html)
 
+    def test_job_progress_is_shown_in_browser(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("state.progress||{}", html)
+        self.assertIn("progress.days_completed+'/'+progress.days_total", html)
+        self.assertIn("progress.cached_vehicle_days", html)
+        self.assertIn("progress.gps_calculated_vehicle_days", html)
+
     def test_page_jobs_and_excel_routes_are_registered_once(self):
         app = FastAPI()
         apply_efficiency_portal(app, lambda: "not-used-during-registration")
@@ -1141,6 +1191,8 @@ class PortalRouteTest(unittest.TestCase):
                     break
                 await asyncio.sleep(.01)
             self.assertEqual(state["status"], "succeeded")
+            self.assertEqual(state["progress"]["stage"], "complete")
+            self.assertEqual(state["progress"]["days_completed"], 1)
             duplicate = await endpoints["/api/efficiency/jobs"](conf)
             self.assertEqual(duplicate["job_id"], job_id)
             result = await endpoints["/api/efficiency/jobs/{job_id}/result"](job_id)
@@ -1149,7 +1201,15 @@ class PortalRouteTest(unittest.TestCase):
             self.assertEqual(excel.status_code, 200)
             self.assertTrue(excel.body.startswith(b"PK"))
 
-        with patch("efficiency_portal.generate_efficiency_report", return_value=sample):
+        def generate_with_progress(_url, _settings, *, progress):
+            progress({
+                "stage": "complete", "days_completed": 1, "days_total": 1,
+                "cached_vehicle_days": 0, "gps_calculated_vehicle_days": 0,
+                "vehicle_days_total": 0,
+            })
+            return sample
+
+        with patch("efficiency_portal.generate_efficiency_report", side_effect=generate_with_progress):
             asyncio.run(lifecycle())
 
     def test_latest_roster_job_does_not_reuse_completed_historical_result(self):
@@ -1203,7 +1263,8 @@ class PersistenceBoundaryTest(unittest.TestCase):
         self.assertIn("cache_key = ANY(%s::text[])", query)
         self.assertEqual(args, ([key],))
         statement, records = cursor.executemany.call_args.args
-        self.assertIn("ON CONFLICT (report_day, normalized_plate)", statement)
+        self.assertIn("INSERT INTO efficiency_gps_metric_variants", statement)
+        self.assertIn("ON CONFLICT (cache_key)", statement)
         self.assertEqual(records[0][:3], (key, date(2026, 11, 6), "34TEST01"))
         self.assertEqual(connection.commit.call_count, 2)
 

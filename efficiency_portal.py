@@ -43,6 +43,7 @@ class EfficiencyJob:
     state: str = "queued"
     updated_at: float = field(default_factory=time.monotonic)
     result: dict[str, Any] | None = None
+    progress: dict[str, int | str] = field(default_factory=dict)
     detail: str = ""
     task: asyncio.Task[None] | None = None
 
@@ -68,7 +69,8 @@ async def _run(job: EfficiencyJob, database_url: Callable[[], str]) -> None:
         job.updated_at = time.monotonic()
         try:
             job.result = await run_in_threadpool(
-                generate_efficiency_report, database_url(), job.settings
+                generate_efficiency_report, database_url(), job.settings,
+                progress=lambda values: setattr(job, "progress", dict(values)),
             )
         except ValueError as exc:
             job.detail = str(exc)
@@ -175,6 +177,7 @@ def apply_efficiency_portal(app: FastAPI, database_url: Callable[[], str]) -> No
             "job_id": job.job_id,
             "status": job.state,
             "detail": job.detail if job.state == "failed" else "",
+            "progress": job.progress,
         }
 
     @app.get("/api/efficiency/jobs/{job_id}/result")

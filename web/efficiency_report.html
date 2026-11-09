@@ -348,7 +348,15 @@
         const state=await readJson(await fetch('/api/efficiency/jobs/'+encodeURIComponent(currentJob),{cache:'no-store'}));
         if(state.status==='failed')throw new Error(state.detail||'Расчёт завершился ошибкой');
         if(state.status==='succeeded')break;
-        showStatus('Выполняется GPS-анализ и контроль скорости · '+Math.round((Date.now()-startAt)/1000)+' сек. ('+state.status+')');
+        const progress=state.progress||{};
+        const stage={loading:'загрузка исходных данных',cache:'проверка кэша',gps:'GPS-анализ',aggregation:'сводные показатели'}[progress.stage]||state.status;
+        const days=Number.isFinite(progress.days_total)&&progress.days_total>0
+          ?' · дней '+progress.days_completed+'/'+progress.days_total:'';
+        const cached=Number.isFinite(progress.cached_vehicle_days)
+          ?' · из кэша '+progress.cached_vehicle_days:'';
+        const analyzed=Number.isFinite(progress.gps_calculated_vehicle_days)
+          ?' · рассчитано по GPS '+progress.gps_calculated_vehicle_days:'';
+        showStatus(stage+days+cached+analyzed+' · '+Math.round((Date.now()-startAt)/1000)+' сек.');
       }
       lastReport=await readJson(await fetch('/api/efficiency/jobs/'+encodeURIComponent(currentJob)+'/result',{cache:'no-store'}));
       render(lastReport);$('exportExcel').disabled=false;
