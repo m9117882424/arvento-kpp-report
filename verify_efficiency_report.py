@@ -372,11 +372,16 @@ class RatingTest(unittest.TestCase):
         book = load_workbook(io.BytesIO(workbook_from_report(report)))
         try:
             ranking = book["Рейтинг ТС"]
-            self.assertEqual(ranking.cell(1, 14).value, "Суммарное время стоянок в выбранных офисных зонах, мин")
-            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок за плановый рабочий день, мин")
+            self.assertEqual(ranking.cell(1, 14).value, "Суммарное время стоянок в выбранных офисных зонах, чч:мм")
+            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок за плановый рабочий день, чч:мм")
             for line in range(2, ranking.max_row + 1):
                 plate = ranking.cell(line, 2).value
-                self.assertEqual(ranking.cell(line, 15).value, vehicles[plate]["office_parking_minutes_per_day"])
+                self.assertEqual(
+                    ranking.cell(line, 15).value,
+                    timedelta(minutes=vehicles[plate]["office_parking_minutes_per_day"])
+                    if vehicles[plate]["office_parking_minutes_per_day"] is not None else None,
+                )
+                self.assertEqual(ranking.cell(line, 15).number_format, "[hh]:mm")
             self.assertEqual(ranking.auto_filter.ref, ranking.dimensions)
         finally:
             book.close()
@@ -858,9 +863,11 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(1,26).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
             self.assertEqual(book.worksheets[0].cell(1,27).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
-            self.assertEqual(book.worksheets[0].cell(1,13).value,"Среднее время движения внутри Аккую за плановый рабочий день, мин")
-            self.assertEqual(book.worksheets[0].cell(2,13).value,20)
-            self.assertEqual(book["По дням"].cell(2,10).value,20)
+            self.assertEqual(book.worksheets[0].cell(1,13).value,"Среднее время движения внутри Аккую за плановый рабочий день, чч:мм")
+            self.assertEqual(book.worksheets[0].cell(2,13).value,timedelta(minutes=20))
+            self.assertEqual(book["По дням"].cell(2,10).value,timedelta(minutes=20))
+            self.assertEqual(book.worksheets[0].cell(2,13).number_format,"[hh]:mm")
+            self.assertEqual(book["По дням"].cell(2,10).number_format,"[hh]:mm")
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
             self.assertEqual(book.worksheets[0].cell(2,26).value,50)
@@ -871,6 +878,76 @@ class RatingTest(unittest.TestCase):
             self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время офисных стоянок за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Превышения скорости вне площадки",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+        finally:
+            book.close()
+
+    def test_excel_times_keep_numeric_durations_over_24_hours_and_speed_seconds(self):
+        day = date(2026, 11, 6)
+        rows = [{
+            "report_day": day, "normalized_plate": "34TEST01", "plate": "34 TEST 01",
+            "company": "TSM", "user_name": "Тест", "model": "FIAT EGEA",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 40, "outside_km": 2, "cache_ready": True,
+        }]
+        gps = {(day, "34TEST01"): GPSDailyMetrics(
+            points=3, moving_minutes=125, office_parking_minutes=1565,
+        )}
+        report = aggregate_report(rows, gps, settings(
+            date_from=day, date_to=day, office_zone_codes=["OFFICE"],
+        ))
+        report["speed_events"] = [{
+            "plate": "34 TEST 01", "place": "На площадке",
+            "start": "2026-11-06T08:23:59+00:00",
+            "finish": "2026-11-06T08:24:36+00:00",
+            "duration_seconds": 37, "max_speed_kmh": 62, "threshold_kmh": 50,
+            "latitude": 36.2, "longitude": 33.1,
+        }]
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            rating, daily, speed = (
+                book["Рейтинг ТС"], book["По дням"], book["Превышения скорости"]
+            )
+            for cell, expected in [
+                (rating.cell(2, 13), timedelta(hours=2, minutes=5)),
+                (rating.cell(2, 14), timedelta(hours=26, minutes=5)),
+                (rating.cell(2, 15), timedelta(hours=26, minutes=5)),
+                (daily.cell(2, 10), timedelta(hours=2, minutes=5)),
+                (daily.cell(2, 11), timedelta(hours=26, minutes=5)),
+            ]:
+                self.assertEqual(cell.value, expected)
+                self.assertEqual(cell.number_format, "[hh]:mm")
+            self.assertEqual(speed.cell(2, 3).value, datetime(2026, 11, 6, 11, 23, 59))
+            self.assertEqual(speed.cell(2, 4).value, datetime(2026, 11, 6, 11, 24, 36))
+            self.assertEqual(speed.cell(2, 3).number_format, "dd.mm.yyyy hh:mm")
+            self.assertEqual(speed.cell(2, 4).number_format, "dd.mm.yyyy hh:mm")
+            self.assertEqual(speed.cell(2, 5).value, 37)
+            self.assertIn("Длительность коротких превышений остаётся в секундах", [
+                row[1].value for row in book["Методика"].iter_rows(min_row=2)
+                if row[0].value == "Формат времени в Excel"
+            ][0])
+        finally:
+            book.close()
+
+    def test_excel_missing_time_values_are_blank_not_zero(self):
+        day = date(2026, 11, 6)
+        rows = [{
+            "report_day": day, "normalized_plate": "34NOGPS", "plate": "34NOGPS",
+            "company": "TSM", "user_name": "Тест", "model": "FIAT EGEA",
+            "directorate": "Механизация", "in_roster": True,
+            "inside_km": 0, "outside_km": 0, "cache_ready": True,
+        }]
+        report = aggregate_report(rows, {}, settings(date_from=day, date_to=day))
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            for column in (13, 14, 15):
+                cell = book["Рейтинг ТС"].cell(2, column)
+                self.assertIsNone(cell.value)
+                self.assertEqual(cell.number_format, "[hh]:mm")
+            # The existing daily data contract uses zero for a missing GPS day.
+            for column in (10, 11):
+                cell = book["По дням"].cell(2, column)
+                self.assertEqual(cell.value, timedelta(0))
+                self.assertEqual(cell.number_format, "[hh]:mm")
         finally:
             book.close()
 

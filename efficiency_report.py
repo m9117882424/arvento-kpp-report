@@ -1051,6 +1051,20 @@ def _append_safe_excel_row(sheet: Worksheet, values: Sequence[Any]) -> None:
 
 def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     """Produce a highlighted, inspectable XLSX without another GPS calculation."""
+    # Keep durations numeric in Excel and let hours grow beyond 24 instead of wrapping.
+    duration_format = "[hh]:mm"
+
+    def as_excel_duration(minutes: float | None) -> timedelta | None:
+        return timedelta(minutes=minutes) if minutes is not None else None
+
+    def as_excel_event_time(value: str | datetime) -> str | datetime:
+        try:
+            instant = datetime.fromisoformat(value) if isinstance(value, str) else value
+        except ValueError:
+            return value
+        # GPS event stamps already include the offset; Excel requires naive datetimes.
+        return instant.astimezone(TZ).replace(tzinfo=None) if instant.tzinfo else instant
+
     workbook = Workbook()
     sheet = workbook.active
     sheet.title = "Рейтинг ТС"
@@ -1058,9 +1072,9 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "№ строки", "Госномер", "Марка / модель", "Дирекция", "Пользователь",
         "Дней с выполненным нормативом пробега", "Плановых рабочих дней", "Общий пробег внутри Аккую, км",
         "Средний пробег внутри Аккую, км/плановый рабочий день", "Общий пробег вне Аккую, км",
-        "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Среднее время движения внутри Аккую за плановый рабочий день, мин",
-        "Суммарное время стоянок в выбранных офисных зонах, мин",
-        "Среднее время офисных стоянок за плановый рабочий день, мин",
+        "Доля пробега внутри Аккую, %", "Доля пробега вне Аккую, %", "Среднее время движения внутри Аккую за плановый рабочий день, чч:мм",
+        "Суммарное время стоянок в выбранных офисных зонах, чч:мм",
+        "Среднее время офисных стоянок за плановый рабочий день, чч:мм",
         "Доля движения среди движения и офисных стоянок, %",
         "Выездов / возвращений с обеда, шт.", "Выходных дней с движением внутри Аккую",
         "Пробег вне разрешённых зон по GPS, км", "Эпизодов превышения скорости внутри Аккую", "Эпизодов превышения скорости вне Аккую",
@@ -1077,8 +1091,9 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
             vehicle["norm_days"], vehicle["eligible_days"], vehicle["inside_km"],
             vehicle["inside_km_per_day"],
             vehicle["outside_km"], vehicle["inside_share_percent"],
-            vehicle["outside_share_percent"], vehicle["moving_minutes_per_day"],
-            vehicle["office_parking_minutes"], vehicle["office_parking_minutes_per_day"],
+            vehicle["outside_share_percent"], as_excel_duration(vehicle["moving_minutes_per_day"]),
+            as_excel_duration(vehicle["office_parking_minutes"]),
+            as_excel_duration(vehicle["office_parking_minutes_per_day"]),
             vehicle["motion_vs_office_percent"],
             f'{vehicle["lunch_exits"]} / {vehicle["lunch_returns"]}',
             vehicle["weekend_site_days"], vehicle["unauthorized_km"],
@@ -1089,14 +1104,16 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         ]
         _append_safe_excel_row(sheet, cells)
         line = sheet.max_row
+        for column in (13, 14, 15):
+            sheet.cell(line, column).number_format = duration_format
         norm = vehicle["inside_daily_norm_km"]
         avg = vehicle["inside_km_per_day"]
         if avg is not None:
             sheet.cell(line, 9).fill = PatternFill("solid", fgColor="FDE2E2" if avg < norm else "E0F4E8")
         for parking_label, value, days in (
-            ("Суммарное время стоянок в выбранных офисных зонах, мин",
+            ("Суммарное время стоянок в выбранных офисных зонах, чч:мм",
              vehicle["office_parking_minutes"], vehicle["eligible_days"]),
-            ("Среднее время офисных стоянок за плановый рабочий день, мин",
+            ("Среднее время офисных стоянок за плановый рабочий день, чч:мм",
              vehicle["office_parking_minutes_per_day"], 1),
         ):
             band = parking_band(value, days)
@@ -1123,16 +1140,18 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     daily = workbook.create_sheet("По дням")
     _append_safe_excel_row(daily, [
         "Дата", "Госномер", "Модель", "Дирекция", "Пользователь", "Есть в разнарядке",
-        "Данные сводного кэша готовы", "Пробег внутри Аккую, км", "Пробег вне Аккую, км", "Время движения внутри Аккую, мин",
-        "Стоянки в выбранных офисных зонах, мин", "Эпизоды превышения скорости, шт.", "Количество GPS-точек",
+        "Данные сводного кэша готовы", "Пробег внутри Аккую, км", "Пробег вне Аккую, км", "Время движения внутри Аккую, чч:мм",
+        "Стоянки в выбранных офисных зонах, чч:мм", "Эпизоды превышения скорости, шт.", "Количество GPS-точек",
     ])
     for item in report["daily"]:
         _append_safe_excel_row(daily, [
             item["date"], item["plate"], item["model"], item["directorate"], item["user"],
             "Да" if item["in_roster"] else "Нет", "Да" if item["cache_ready"] else "Нет",
-            item["inside_km"], item["outside_km"], item["moving_minutes"],
-            item["office_minutes"], item["speed_events"], item["gps_points"],
+            item["inside_km"], item["outside_km"], as_excel_duration(item["moving_minutes"]),
+            as_excel_duration(item["office_minutes"]), item["speed_events"], item["gps_points"],
         ])
+        for column in (10, 11):
+            daily.cell(daily.max_row, column).number_format = duration_format
     daily.freeze_panes = "C2"
     daily.auto_filter.ref = daily.dimensions
 
@@ -1143,10 +1162,14 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     ])
     for event in report["speed_events"]:
         _append_safe_excel_row(speed, [
-            event["plate"], event["place"], event["start"], event["finish"],
+            event["plate"], event["place"], as_excel_event_time(event["start"]),
+            as_excel_event_time(event["finish"]),
             event["duration_seconds"], event["max_speed_kmh"], event["threshold_kmh"],
             event["latitude"], event["longitude"],
         ])
+        for column in (3, 4):
+            if isinstance(speed.cell(speed.max_row, column).value, datetime):
+                speed.cell(speed.max_row, column).number_format = "dd.mm.yyyy hh:mm"
     speed.freeze_panes = "C2"
     speed.auto_filter.ref = speed.dimensions
 
@@ -1173,6 +1196,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
     _append_safe_excel_row(notes, ["Источник пробегов", "consolidated_report_cache (сводный отчёт)"])
     _append_safe_excel_row(notes, ["Источник GPS", "gps_points; интервалы со связью и достоверной скоростью"])
     _append_safe_excel_row(notes, ["Часовой пояс", "Europe/Istanbul"])
+    _append_safe_excel_row(notes, ["Формат времени в Excel", "Время движения и офисных стоянок отображается в чч:мм; суммарная длительность не сбрасывается после 24 часов. Начало и окончание превышений скорости — дата и время (чч:мм). Длительность коротких превышений остаётся в секундах для точности"])
     _append_safe_excel_row(notes, [
         "Машины только из свежей разнарядки",
         "Да — отчёт включает лишь госномера из самой новой по дате загруженной разнарядки; историческая принадлежность к разнарядкам, рабочие дни и показатели сохраняются на свои даты. Нет — обычная выборка за период. Текущий выбор: "
