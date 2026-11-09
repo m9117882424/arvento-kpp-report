@@ -98,11 +98,40 @@ class EfficiencySettingsTest(unittest.TestCase):
         self.assertEqual(conf.other_min_inside_km, 30)
         self.assertEqual(conf.parking_min_minutes, 5)
         self.assertEqual(conf.speed_min_duration_seconds, 3)
+        self.assertEqual(conf.grades, [])
         self.assertFalse(conf.latest_roster_only)
         self.assertTrue(settings(latest_roster_only=True).latest_roster_only)
+        self.assertEqual(_metric_settings_signature(settings(grades=["7"])),
+                         _metric_settings_signature(settings(grades=["10"])),
+                         "Грейды не должны инвалидировать GPS-кэш")
         self.assertTrue(is_transit("FORD TRANSİT"))
         self.assertTrue(is_transit("Ford Transit Custom"))
         self.assertFalse(is_transit("FORD Tourneo Courier"))
+
+    def test_grade_multiselect_ignores_suffix_letters_and_intersects_other_filters(self):
+        config = settings(grades=["7a", "10", "7B", " 8,5 ", "8.5"],
+                          directorates=["Механизация"])
+        self.assertEqual(config.grades, ["7", "10", "8.5"])
+        connection = MagicMock()
+        cursor = connection.cursor.return_value.__enter__.return_value
+        base = {
+            "report_day": date(2026, 11, 6), "plate": "34TEST01",
+            "normalized_plate": "34TEST01", "directorate": "Механизация",
+            "user_name": "Тест", "model": "FIAT EGEA", "grade": "7A",
+        }
+        cursor.fetchall.return_value = [
+            base, {**base, "normalized_plate": "34TEST02", "grade": "10b"},
+            {**base, "normalized_plate": "34TEST03", "grade": "8.5"},
+            {**base, "normalized_plate": "34TEST04", "grade": "9"},
+            {**base, "normalized_plate": "34TEST05", "grade": ""},
+            {**base, "normalized_plate": "34TEST06", "grade": "7B",
+             "directorate": "Инжиниринг"},
+        ]
+        rows = load_daily_rows(connection, config)
+        self.assertEqual([row["normalized_plate"] for row in rows],
+                         ["34TEST01", "34TEST02", "34TEST03"])
+        with self.assertRaises(ValidationError):
+            settings(grades=["нет данных"])
 
     def test_latest_roster_query_restricts_plates_without_changing_historical_rosters(self):
         connection = MagicMock()
@@ -119,6 +148,8 @@ class EfficiencySettingsTest(unittest.TestCase):
             self.assertIn("newest.normalized_plate = COALESCE(r.normalized_plate,c.normalized_plate)", sql)
             self.assertIn("WHERE roster_day <= d.report_day ORDER BY roster_day DESC LIMIT 1", sql)
             self.assertIn("(r.normalized_plate IS NOT NULL) AS in_roster", sql)
+            self.assertIn("r.directorate, r.grade", sql)
+            self.assertIn("COALESCE(r.grade,'') AS grade", sql)
 
     def test_filter_options_respects_checkbox_and_discloses_newest_roster(self):
         connection = MagicMock()
@@ -129,7 +160,13 @@ class EfficiencySettingsTest(unittest.TestCase):
             patch("efficiency_report.psycopg.connect") as connect,
             patch("efficiency_report.load_daily_rows", return_value=[{
                 "plate": "34NEW01", "directorate": "Механизация", "user_name": "Тест",
-                "model": "Fiat",
+                "model": "Fiat", "grade": "7A",
+            }, {
+                "plate": "34NEW01", "directorate": "Механизация", "user_name": "Тест",
+                "model": "Fiat", "grade": "10b",
+            }, {
+                "plate": "34NEW01", "directorate": "Механизация", "user_name": "Тест",
+                "model": "Fiat", "grade": "3,5",
             }]) as load,
             patch("efficiency_report.load_shapes", return_value={}),
         ):
@@ -140,6 +177,7 @@ class EfficiencySettingsTest(unittest.TestCase):
             )
         self.assertTrue(load.call_args.args[1].latest_roster_only)
         self.assertEqual(result["plates"], ["34NEW01"])
+        self.assertEqual(result["grades"], ["3.5", "7", "10"])
         self.assertEqual(result["latest_roster_day"], "2026-11-09")
         self.assertEqual(result["latest_roster_vehicles"], 205)
 
@@ -936,6 +974,7 @@ class RatingTest(unittest.TestCase):
             self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время офисных стоянок за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Превышения скорости вне площадки",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+            self.assertIn("Фильтр по грейдам",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
         finally:
             book.close()
 
@@ -1149,6 +1188,17 @@ class PortalRouteTest(unittest.TestCase):
         self.assertIn("reloadOptions({pruneSelections:true})", html)
         self.assertIn("$('latestRosterOnly').checked=false", html)
         self.assertIn("data.latest_roster_day", html)
+
+    def test_grade_filter_is_multiselect_and_sent_with_report(self):
+        html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('data-field="grades"', html)
+        self.assertIn('grades:"Все грейды"', html)
+        self.assertIn('grades:new Set()', html)
+        self.assertIn('grades:[...choices.grades]', html)
+        self.assertIn('for(const field of Object.keys(labels))', html)
+        self.assertIn('for(const set of Object.values(choices))set.clear()', html)
 
     def test_job_progress_is_shown_in_browser(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(

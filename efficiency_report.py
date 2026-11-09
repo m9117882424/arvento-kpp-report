@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import math
+import re
 import threading
 import time as clock
 import unicodedata
@@ -56,6 +57,15 @@ MIN_MOVING_SPEED_KMH = 3.0
 MAX_PLAUSIBLE_SEGMENT_KM = 5.0
 SPEED_PENALTY_PER_EVENT = 3
 SPEED_PENALTY_CAP = 15
+GRADE_NUMBER_RE = re.compile(r"\d+(?:[.,]\d+)?")
+
+
+def normalize_grade(value: Any) -> str:
+    """Match roster grades by their numeric part: 7, 7A and 7b are all 7."""
+    match = GRADE_NUMBER_RE.search(str(value or ""))
+    return format(float(match.group().replace(",", ".")), "g") if match else ""
+
+
 SCORE_WEIGHTS = {
     "norm_days": 0.50,
     "office_motion": 0.25,
@@ -75,6 +85,7 @@ class EfficiencySettings(BaseModel):
     directorates: list[str] = Field(default_factory=list, max_length=250)
     users: list[str] = Field(default_factory=list, max_length=1500)
     models: list[str] = Field(default_factory=list, max_length=250)
+    grades: list[str] = Field(default_factory=list, max_length=250)
     office_zone_codes: list[str] = Field(default_factory=list, max_length=50)
     allowed_zone_codes: list[str] = Field(default_factory=list, max_length=50)
     lunch_exit_from: time = time(11, 30)
@@ -108,6 +119,15 @@ class EfficiencySettings(BaseModel):
         for attr in ("directorates", "users", "models", "office_zone_codes", "allowed_zone_codes"):
             values = getattr(self, attr)
             setattr(self, attr, list(dict.fromkeys(v.strip() for v in values if v.strip())))
+        normalized_grades = []
+        for grade in self.grades:
+            if not grade.strip():
+                continue
+            normalized = normalize_grade(grade)
+            if not normalized:
+                raise ValueError(f"Некорректный грейд: {grade!r}")
+            normalized_grades.append(normalized)
+        self.grades = list(dict.fromkeys(normalized_grades))
         return self
 
 
@@ -277,7 +297,7 @@ def _restore_daily_metrics(payload: Mapping[str, Any]) -> GPSDailyMetrics | None
 
 
 # Derived metrics (not raw tracks) are small enough to retain across requests.
-# Keep the key independent of plate/directorate/user/model filters so a change
+# Keep the key independent of plate/directorate/user/model/grade filters so a change
 # to the report selection does not re-read the same closed-day GPS history.
 _METRIC_CACHE: OrderedDict[tuple[Any, ...], tuple[float, GPSDailyMetrics]] = OrderedDict()
 _METRIC_CACHE_LOCK = threading.Lock()
@@ -493,7 +513,7 @@ def load_daily_rows(
         ),
         roster AS (
             SELECT d.report_day, r.normalized_plate, r.plate, r.company,
-                   r.user_name, r.model, r.directorate
+                   r.user_name, r.model, r.directorate, r.grade
             FROM effective d
             JOIN consolidated_roster_entries r ON r.roster_day=d.roster_day
         )
@@ -505,6 +525,7 @@ def load_daily_rows(
             COALESCE(r.user_name,c.user_name,'') AS user_name,
             COALESCE(r.model,'') AS model,
             COALESCE(r.directorate,'') AS directorate,
+            COALESCE(r.grade,'') AS grade,
             (r.normalized_plate IS NOT NULL) AS in_roster,
             COALESCE(c.inside_km,0) AS inside_km,
             COALESCE(c.outside_km,0) AS outside_km,
@@ -552,6 +573,7 @@ def matches_filters(row: Mapping[str, Any], settings: EfficiencySettings) -> boo
         and (not settings.directorates or row["directorate"] in settings.directorates)
         and (not settings.users or row["user_name"] in settings.users)
         and (not settings.models or row["model"] in settings.models)
+        and (not settings.grades or normalize_grade(row.get("grade")) in settings.grades)
     )
 
 
@@ -1044,6 +1066,8 @@ def filter_options(
         "directorates": sorted({row["directorate"] for row in rows if row["directorate"]}),
         "users": sorted({row["user_name"] for row in rows if row["user_name"]}),
         "models": sorted({row["model"] for row in rows if row["model"]}),
+        "grades": sorted({grade for row in rows if (grade := normalize_grade(row.get("grade")))},
+                         key=float),
         "zones": [
             {
                 "code": s.code, "name": s.name, "type": s.kind,
@@ -1258,6 +1282,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         "date_from": "Начало периода", "date_to": "Конец периода",
         "plates": "Фильтр по госномерам", "directorates": "Фильтр по дирекциям",
         "users": "Фильтр по пользователям", "models": "Фильтр по моделям",
+        "grades": "Фильтр по грейдам",
         "office_zone_codes": "Коды выбранных офисных геозон",
         "allowed_zone_codes": "Коды выбранных разрешённых геозон",
         "lunch_exit_from": "Окно выезда на обед: начало",
@@ -1275,7 +1300,7 @@ def workbook_from_report(report: Mapping[str, Any]) -> bytes:
         label = setting_labels.get(key, key)
         readable_value = ", ".join(str(x) for x in value) if isinstance(value, list) else str(value)
         if isinstance(value, list) and not value:
-            readable_value = "Не выбрано (все значения)" if key in {"plates", "directorates", "users", "models"} else "Не выбрано"
+            readable_value = "Не выбрано (все значения)" if key in {"plates", "directorates", "users", "models", "grades"} else "Не выбрано"
         _append_safe_excel_row(notes, [label, readable_value])
 
     for ws in workbook.worksheets:
