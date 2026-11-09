@@ -40,7 +40,16 @@ def source_hash(row) -> str:
 
 def ensure_schema(conn: psycopg.Connection) -> None:
     with conn.cursor() as cur:
-        cur.execute("ALTER TABLE gps_points ADD COLUMN IF NOT EXISTS region_name TEXT")
+        # Even ADD COLUMN IF NOT EXISTS requests ACCESS EXCLUSIVE on the parent
+        # partitioned table. It can queue behind a long GPS report cursor and
+        # block subsequent readers. Avoid DDL entirely once the column exists.
+        cur.execute(
+            """SELECT 1 FROM pg_attribute
+               WHERE attrelid = 'gps_points'::regclass
+                 AND attname = 'region_name' AND NOT attisdropped"""
+        )
+        if cur.fetchone() is None:
+            cur.execute("ALTER TABLE gps_points ADD COLUMN IF NOT EXISTS region_name TEXT")
     conn.commit()
 
 
@@ -48,35 +57,47 @@ def ensure_partition(conn: psycopg.Connection, day: date) -> None:
     start = datetime.combine(day, datetime.min.time(), TZ)
     end = start + timedelta(days=1)
     name = f"gps_points_{day:%Y_%m_%d}"
+    plate_index = f"ix_{name}_plate_time"
+    position_index = f"ix_{name}_position"
+    region_index = f"ix_{name}_region"
     with conn.cursor() as cur:
+        # CREATE TABLE ... PARTITION OF requires a strong parent-table lock,
+        # even with IF NOT EXISTS. Probe catalog names first to keep a routine
+        # GPS sync from blocking readers that analyze millions of rows.
         cur.execute(
-            psycopg.sql.SQL(
-                "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points "
-                "FOR VALUES FROM ({}) TO ({})"
-            ).format(
-                psycopg.sql.Identifier(name),
-                psycopg.sql.Literal(start),
-                psycopg.sql.Literal(end),
-            )
+            "SELECT to_regclass(%s), to_regclass(%s), to_regclass(%s), to_regclass(%s)",
+            (name, plate_index, position_index, region_index),
         )
-        cur.execute(
-            psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (normalized_plate, event_time)").format(
-                psycopg.sql.Identifier(f"ix_{name}_plate_time"),
-                psycopg.sql.Identifier(name),
+        partition, has_plate_index, has_position_index, has_region_index = cur.fetchone()
+        if partition is None:
+            cur.execute(
+                psycopg.sql.SQL(
+                    "CREATE TABLE IF NOT EXISTS {} PARTITION OF gps_points "
+                    "FOR VALUES FROM ({}) TO ({})"
+                ).format(
+                    psycopg.sql.Identifier(name),
+                    psycopg.sql.Literal(start),
+                    psycopg.sql.Literal(end),
+                )
             )
-        )
-        cur.execute(
-            psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} USING GIST (position)").format(
-                psycopg.sql.Identifier(f"ix_{name}_position"),
-                psycopg.sql.Identifier(name),
+        if has_plate_index is None:
+            cur.execute(
+                psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (normalized_plate, event_time)").format(
+                    psycopg.sql.Identifier(plate_index), psycopg.sql.Identifier(name),
+                )
             )
-        )
-        cur.execute(
-            psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (region_name)").format(
-                psycopg.sql.Identifier(f"ix_{name}_region"),
-                psycopg.sql.Identifier(name),
+        if has_position_index is None:
+            cur.execute(
+                psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} USING GIST (position)").format(
+                    psycopg.sql.Identifier(position_index), psycopg.sql.Identifier(name),
+                )
             )
-        )
+        if has_region_index is None:
+            cur.execute(
+                psycopg.sql.SQL("CREATE INDEX IF NOT EXISTS {} ON {} (region_name)").format(
+                    psycopg.sql.Identifier(region_index), psycopg.sql.Identifier(name),
+                )
+            )
 
 
 def partition_days(start: datetime, end: datetime) -> list[date]:

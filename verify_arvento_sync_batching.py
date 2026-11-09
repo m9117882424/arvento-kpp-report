@@ -4,6 +4,7 @@ from __future__ import annotations
 import inspect
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import arvento_postgres_sync_v2 as sync
 
@@ -14,6 +15,26 @@ class FakeConnection:
 
     def commit(self) -> None:
         self.commits += 1
+
+
+def check_existing_region_name_does_not_lock_gps_table() -> None:
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = (1,)
+    sync.ensure_schema(connection)
+    sql = [call.args[0] for call in cursor.execute.call_args_list]
+    assert len(sql) == 1, "An existing column must not cause repeated DDL"
+    assert "pg_attribute" in sql[0]
+    connection.commit.assert_called_once()
+
+    cursor.reset_mock()
+    connection.commit.reset_mock()
+    cursor.fetchone.return_value = None
+    sync.ensure_schema(connection)
+    sql = [call.args[0] for call in cursor.execute.call_args_list]
+    assert len(sql) == 2
+    assert "ALTER TABLE gps_points ADD COLUMN IF NOT EXISTS region_name" in sql[1]
+    connection.commit.assert_called_once()
 
 
 def check_partition_planning() -> None:
@@ -40,6 +61,28 @@ def check_partition_planning() -> None:
     assert calls == days
     assert len(calls) == len(set(calls)) == 2
     assert connection.commits == 1
+
+
+def check_existing_partition_skips_catalog_ddl() -> None:
+    connection = MagicMock()
+    cursor = connection.cursor.return_value.__enter__.return_value
+    cursor.fetchone.return_value = tuple(range(4))
+    sync.ensure_partition(connection, datetime(2026, 11, 7).date())
+    assert cursor.execute.call_count == 1, "Existing partitions/indexes must not request DDL"
+    query, params = cursor.execute.call_args.args
+    assert "to_regclass" in query
+    assert params == (
+        "gps_points_2026_11_07", "ix_gps_points_2026_11_07_plate_time",
+        "ix_gps_points_2026_11_07_position", "ix_gps_points_2026_11_07_region",
+    )
+
+    cursor.reset_mock()
+    cursor.fetchone.return_value = (None, None, None, None)
+    sync.ensure_partition(connection, datetime(2026, 11, 7).date())
+    assert cursor.execute.call_count == 5, "Missing partition needs the table and three indexes"
+    statements = [str(call.args[0]) for call in cursor.execute.call_args_list]
+    assert "CREATE TABLE IF NOT EXISTS" in statements[1]
+    assert all("CREATE INDEX IF NOT EXISTS" in value for value in statements[2:])
 
 
 def sample_row(timestamp: datetime) -> SimpleNamespace:
@@ -111,7 +154,9 @@ def check_no_per_row_sql_or_ddl() -> None:
 
 
 def main() -> int:
+    check_existing_region_name_does_not_lock_gps_table()
     check_partition_planning()
+    check_existing_partition_skips_catalog_ddl()
     check_stage_preparation()
     check_half_open_chunk_filter()
     check_no_per_row_sql_or_ddl()

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Optional, versioned PostgreSQL store for completed-day efficiency GPS metrics.
+"""Optional, multi-variant PostgreSQL store for completed-day efficiency GPS metrics.
 
-Only derived daily metrics are stored, never the raw GPS track. A source or
-calculation change yields a different key; provisional and stale days are not
+Only derived daily metrics are stored, never the raw GPS track. Each distinct
+source/settings version keeps its own key, so switching settings and switching
+back does not cause another GPS scan. Provisional and stale days are not
 eligible for persistence. Cache failures must not prevent report generation.
 """
 from __future__ import annotations
@@ -89,7 +90,7 @@ class DailyMetricStore:
             with connection.cursor() as cursor:
                 cursor.execute(
                     """SELECT cache_key, metrics
-                       FROM efficiency_gps_daily_metrics
+                       FROM efficiency_gps_metric_variants
                        WHERE cache_key = ANY(%s::text[])""",
                     (list(digests),),
                 )
@@ -112,11 +113,10 @@ class DailyMetricStore:
         try:
             with connection.cursor() as cursor:
                 cursor.executemany(
-                    """INSERT INTO efficiency_gps_daily_metrics
+                    """INSERT INTO efficiency_gps_metric_variants
                            (cache_key, report_day, normalized_plate, metrics)
                        VALUES (%s, %s, %s, %s)
-                       ON CONFLICT (report_day, normalized_plate) DO UPDATE SET
-                           cache_key = EXCLUDED.cache_key,
+                       ON CONFLICT (cache_key) DO UPDATE SET
                            metrics = EXCLUDED.metrics, stored_at = now()""",
                     [
                         (digest, day, plate, Jsonb(dict(payload)))

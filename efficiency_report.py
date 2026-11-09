@@ -18,7 +18,7 @@ import unicodedata
 from collections import OrderedDict, defaultdict
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date, datetime, time, timedelta
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -879,14 +879,30 @@ def aggregate_report(
 
 
 def generate_efficiency_report(
-    database_url: str, settings: EfficiencySettings
+    database_url: str, settings: EfficiencySettings,
+    progress: Callable[[dict[str, int | str]], None] | None = None,
 ) -> dict[str, Any]:
+    requested_days = (settings.date_to - settings.date_from).days + 1
+
+    def notify(stage: str, completed_days: int, cache_hits: int,
+               gps_calculated: int, vehicle_days: int) -> None:
+        if progress is not None:
+            progress({
+                "stage": stage, "days_total": requested_days,
+                "days_completed": completed_days,
+                "cached_vehicle_days": cache_hits,
+                "gps_calculated_vehicle_days": gps_calculated,
+                "vehicle_days_total": vehicle_days,
+            })
+
+    notify("loading", 0, 0, 0, 0)
     with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
         shapes = load_shapes(conn)
         office = choose_shapes(shapes, settings.office_zone_codes, "стоянок")
         allowed = choose_shapes(shapes, settings.allowed_zone_codes, "разрешённого движения")
         rows = load_daily_rows(conn, settings)
         coverage = _cached_coverage(conn, settings.date_from, settings.date_to)
+    notify("cache", 0, 0, 0, len(rows))
     roster_partial_days = apply_cache_coverage(rows, coverage)
     if not rows:
         result = aggregate_report([], {}, settings)
@@ -901,6 +917,7 @@ def generate_efficiency_report(
             {"date": day.isoformat(), "reasons": list(reasons)}
             for day, reasons in coverage.stale_reasons
         ]
+        notify("complete", requested_days, 0, 0, 0)
         return result
     registry = load_database_registry(database_url)
     metric_signature = (
@@ -933,6 +950,7 @@ def generate_efficiency_report(
                 pending_keys[(day, plate)] = key
                 pending_digests[(day, plate)] = metric_digest(key)
     persisted_hits = persisted_writes = 0
+    processed_vehicle_days = 0
     persist_available = persistent_cache_enabled()
     if day_plate_map:
         with DailyMetricStore(database_url) as store:
@@ -950,6 +968,9 @@ def generate_efficiency_report(
                 day: sorted({plate for plate in plates if (day, plate) not in gps})
                 for day, plates in day_plate_map.items()
             }
+            completed_days = requested_days - sum(bool(plates) for plates in remaining.values())
+            notify("gps" if any(remaining.values()) else "aggregation",
+                   completed_days, cache_hits, 0, len(rows))
             if any(remaining.values()):
                 with psycopg.connect(database_url, connect_timeout=10, options="-c statement_timeout=120000") as conn:
                     for day, plates in sorted(remaining.items()):
@@ -977,7 +998,13 @@ def generate_efficiency_report(
                         # Commit after each complete day: a later failing day
                         # must not discard the safely calculated earlier days.
                         persisted_writes += store.save(to_persist)
+                        processed_vehicle_days += len(plates)
+                        completed_days += 1
+                        notify("gps", completed_days, cache_hits,
+                               processed_vehicle_days, len(rows))
             persist_available = store.enabled
+    notify("aggregation", requested_days, cache_hits,
+           processed_vehicle_days, len(rows))
     result = aggregate_report(rows, gps, settings)
     result["coverage"]["roster_coverage_days"] = roster_partial_days
     result["coverage"]["score_preliminary"] |= bool(roster_partial_days)
@@ -990,6 +1017,8 @@ def generate_efficiency_report(
         {"date": day.isoformat(), "reasons": list(reasons)}
         for day, reasons in coverage.stale_reasons
     ]
+    notify("complete", requested_days, cache_hits,
+           processed_vehicle_days, len(rows))
     return result
 
 

@@ -22,6 +22,7 @@ def main() -> None:
         "003_roster_cache_policy.sql",
         "004_efficiency_gps_daily_metrics.sql",
         "005_geofence_independent_checks.sql",
+        "006_efficiency_gps_metric_variants.sql",
     ]
     assert len(migration_checksum(migrations[0])) == 64
     checksum = migration_checksum(migrations[0])
@@ -64,6 +65,12 @@ def main() -> None:
     assert "UPDATE geofences" in checks_sql
     # PostgreSQL CHECK accepts UNKNOWN (NULL); explicit non-NULL is required.
     assert "speed_threshold_kmh IS NOT NULL" in checks_sql
+    variants_sql = migrations[5].read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS efficiency_gps_metric_variants" in variants_sql
+    assert "cache_key TEXT PRIMARY KEY" in variants_sql
+    assert "UNIQUE (report_day, normalized_plate)" not in variants_sql
+    assert "FROM efficiency_gps_daily_metrics" in variants_sql
+    assert "ON CONFLICT (cache_key) DO NOTHING" in variants_sql
     print(f"OK: versioned migrations registered; files={len(migrations)}")
 
 
