@@ -373,7 +373,7 @@ class RatingTest(unittest.TestCase):
         try:
             ranking = book["Рейтинг ТС"]
             self.assertEqual(ranking.cell(1, 14).value, "Суммарное время стоянок в выбранных офисных зонах, чч:мм")
-            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок за плановый рабочий день, чч:мм")
+            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок в день, чч:мм")
             for line in range(2, ranking.max_row + 1):
                 plate = ranking.cell(line, 2).value
                 self.assertEqual(
@@ -803,8 +803,8 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(rating.cell(1,12).value,"Доля пробега вне Аккую, %")
             self.assertEqual(rating.cell(2,11).value,95.8)
             self.assertEqual(rating.cell(2,12).value,4.2)
-            self.assertEqual(rating.cell(2,27).value,42)
-            self.assertEqual(rating.cell(2,27).fill.patternType,None)
+            self.assertEqual(rating.cell(2,25).value,42)
+            self.assertEqual(rating.cell(2,25).fill.patternType,None)
         finally:
             book.close()
 
@@ -900,18 +900,35 @@ class RatingTest(unittest.TestCase):
             self.assertEqual(book.sheetnames,[
                 "Рейтинг ТС","По дням","Превышения скорости","ТОП-10","Методика"
             ])
-            self.assertEqual(book.worksheets[0].cell(2,2).value,"34 TEST 01")
-            self.assertEqual(book.worksheets[0].cell(1,9).value,"Средний пробег внутри Аккую, км/плановый рабочий день")
-            self.assertEqual(book.worksheets[0].cell(1,26).value,"Норматив внутри Аккую по текущей модели, км/плановый рабочий день")
-            self.assertEqual(book.worksheets[0].cell(1,27).value,"Средний пробег вне Аккую за рабочий день, км (без норматива)")
-            self.assertEqual(book.worksheets[0].cell(1,13).value,"Среднее время движения внутри Аккую за плановый рабочий день, чч:мм")
+            ranking = book["Рейтинг ТС"]
+            self.assertEqual(ranking.max_column, 25)
+            self.assertEqual(ranking.cell(2,2).value,"34 TEST 01")
+            expected_headers = {
+                9: "Средний пробег внутри Аккую, км/день",
+                13: "Среднее время движения внутри Аккую за день, чч:мм",
+                15: "Среднее время офисных стоянок в день, чч:мм",
+                16: "В движении на территории АККУЮ, %",
+                20: "количество превышений скорости внутри АККУЮ",
+                21: "количество превышений скорости вне Аккую",
+                22: "штрафные баллы за превышения скорости",
+                23: "Итоговый балл, 0–100",
+                24: "Место в рейтинге",
+                25: "Средний пробег вне Аккую за рабочий день, км (без норматива)",
+            }
+            for column, expected in expected_headers.items():
+                self.assertEqual(ranking.cell(1, column).value, expected)
+            self.assertNotIn("Статус оценки", [cell.value for cell in ranking[1]])
+            self.assertNotIn("Норматив внутри Аккую по текущей модели, км/плановый рабочий день",
+                             [cell.value for cell in ranking[1]])
+            self.assertEqual(ranking.cell(2,24).value, result["vehicles"][0]["rank"])
+            self.assertEqual(ranking.cell(2,25).value, result["vehicles"][0]["outside_km_per_day"])
             self.assertEqual(book.worksheets[0].cell(2,13).value,timedelta(minutes=20))
             self.assertEqual(book["По дням"].cell(2,10).value,timedelta(minutes=20))
             self.assertEqual(book.worksheets[0].cell(2,13).number_format,"[hh]:mm")
             self.assertEqual(book["По дням"].cell(2,10).number_format,"[hh]:mm")
             self.assertEqual(book.worksheets[0].cell(2,8).value,10)
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
-            self.assertEqual(book.worksheets[0].cell(2,26).value,50)
+            self.assertEqual(result["vehicles"][0]["inside_daily_norm_km"],50)
             self.assertEqual(book.worksheets[0].cell(2,9).fill.fgColor.rgb,"00FDE2E2")
             self.assertEqual(book.worksheets[0].cell(2,20).value,1)
             self.assertEqual(book.worksheets[0].cell(2,20).fill.fgColor.rgb,"00FDE2E2")
