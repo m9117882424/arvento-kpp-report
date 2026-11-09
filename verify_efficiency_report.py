@@ -410,16 +410,16 @@ class RatingTest(unittest.TestCase):
         book = load_workbook(io.BytesIO(workbook_from_report(report)))
         try:
             ranking = book["Рейтинг ТС"]
-            self.assertEqual(ranking.cell(1, 14).value, "Суммарное время стоянок в выбранных офисных зонах, чч:мм")
-            self.assertEqual(ranking.cell(1, 15).value, "Среднее время офисных стоянок в день, чч:мм")
+            self.assertEqual(ranking.cell(1, 15).value, "Суммарное время стоянок в выбранных офисных зонах, чч:мм")
+            self.assertEqual(ranking.cell(1, 16).value, "Среднее время офисных стоянок в день, чч:мм")
             for line in range(2, ranking.max_row + 1):
                 plate = ranking.cell(line, 2).value
                 self.assertEqual(
-                    ranking.cell(line, 15).value,
+                    ranking.cell(line, 16).value,
                     timedelta(minutes=vehicles[plate]["office_parking_minutes_per_day"])
                     if vehicles[plate]["office_parking_minutes_per_day"] is not None else None,
                 )
-                self.assertEqual(ranking.cell(line, 15).number_format, "[hh]:mm")
+                self.assertEqual(ranking.cell(line, 16).number_format, "[hh]:mm")
             self.assertEqual(ranking.auto_filter.ref, ranking.dimensions)
         finally:
             book.close()
@@ -495,8 +495,8 @@ class RatingTest(unittest.TestCase):
             expected = {"34GREEN": "00E0F4E8", "34YELLOW": "00FFF0CD", "34RED": "00FDE2E2"}
             for line in range(2, ranking.max_row + 1):
                 plate = ranking.cell(line, 2).value
-                self.assertEqual(ranking.cell(line, 14).fill.fgColor.rgb, expected[plate])
                 self.assertEqual(ranking.cell(line, 15).fill.fgColor.rgb, expected[plate])
+                self.assertEqual(ranking.cell(line, 16).fill.fgColor.rgb, expected[plate])
             self.assertIn("Цвет офисных стоянок", [
                 cell[0].value for cell in book["Методика"].iter_rows(min_row=2)
             ])
@@ -838,11 +838,11 @@ class RatingTest(unittest.TestCase):
         book=load_workbook(io.BytesIO(workbook_from_report(result)))
         try:
             rating=book["Рейтинг ТС"]
-            self.assertEqual(rating.cell(1,12).value,"Доля пробега вне Аккую, %")
-            self.assertEqual(rating.cell(2,11).value,95.8)
-            self.assertEqual(rating.cell(2,12).value,4.2)
-            self.assertEqual(rating.cell(2,25).value,42)
-            self.assertEqual(rating.cell(2,25).fill.patternType,None)
+            self.assertEqual(rating.cell(1,13).value,"Доля пробега вне Аккую, %")
+            self.assertEqual(rating.cell(2,12).value,95.8)
+            self.assertEqual(rating.cell(2,13).value,4.2)
+            self.assertEqual(rating.cell(2,26).value,42)
+            self.assertEqual(rating.cell(2,26).fill.patternType,None)
         finally:
             book.close()
 
@@ -879,7 +879,7 @@ class RatingTest(unittest.TestCase):
         try:
             ranking=book["Рейтинг ТС"]
             self.assertEqual(
-                [ranking.cell(line,9).fill.fgColor.rgb for line in (2,3)],
+                [ranking.cell(line,10).fill.fgColor.rgb for line in (2,3)],
                 ["00E0F4E8","00E0F4E8"],
             )
         finally:
@@ -939,42 +939,73 @@ class RatingTest(unittest.TestCase):
                 "Рейтинг ТС","По дням","Превышения скорости","ТОП-10","Методика"
             ])
             ranking = book["Рейтинг ТС"]
-            self.assertEqual(ranking.max_column, 25)
+            self.assertEqual(ranking.max_column, 26)
             self.assertEqual(ranking.cell(2,2).value,"34 TEST 01")
             expected_headers = {
-                9: "Средний пробег внутри Аккую, км/день",
-                13: "Среднее время движения внутри Аккую за день, чч:мм",
-                15: "Среднее время офисных стоянок в день, чч:мм",
-                16: "В движении на территории АККУЮ, %",
-                20: "количество превышений скорости внутри АККУЮ",
-                21: "количество превышений скорости вне Аккую",
-                22: "штрафные баллы за превышения скорости",
-                23: "Итоговый балл, 0–100",
-                24: "Место в рейтинге",
-                25: "Средний пробег вне Аккую за рабочий день, км (без норматива)",
+                5: "Пользователь",
+                6: "Грейд",
+                10: "Средний пробег внутри Аккую, км/день",
+                14: "Среднее время движения внутри Аккую за день, чч:мм",
+                16: "Среднее время офисных стоянок в день, чч:мм",
+                17: "В движении на территории АККУЮ, %",
+                21: "количество превышений скорости внутри АККУЮ",
+                22: "количество превышений скорости вне Аккую",
+                23: "штрафные баллы за превышения скорости",
+                24: "Итоговый балл, 0–100",
+                25: "Место в рейтинге",
+                26: "Средний пробег вне Аккую за рабочий день, км (без норматива)",
             }
             for column, expected in expected_headers.items():
                 self.assertEqual(ranking.cell(1, column).value, expected)
             self.assertNotIn("Статус оценки", [cell.value for cell in ranking[1]])
             self.assertNotIn("Норматив внутри Аккую по текущей модели, км/плановый рабочий день",
                              [cell.value for cell in ranking[1]])
-            self.assertEqual(ranking.cell(2,24).value, result["vehicles"][0]["rank"])
-            self.assertEqual(ranking.cell(2,25).value, result["vehicles"][0]["outside_km_per_day"])
-            self.assertEqual(book.worksheets[0].cell(2,13).value,timedelta(minutes=20))
-            self.assertEqual(book["По дням"].cell(2,10).value,timedelta(minutes=20))
-            self.assertEqual(book.worksheets[0].cell(2,13).number_format,"[hh]:mm")
-            self.assertEqual(book["По дням"].cell(2,10).number_format,"[hh]:mm")
-            self.assertEqual(book.worksheets[0].cell(2,8).value,10)
+            self.assertEqual(ranking.cell(2,25).value, result["vehicles"][0]["rank"])
+            self.assertEqual(ranking.cell(2,26).value, result["vehicles"][0]["outside_km_per_day"])
+            self.assertEqual(book.worksheets[0].cell(2,14).value,timedelta(minutes=20))
+            self.assertEqual(book["По дням"].cell(2,11).value,timedelta(minutes=20))
+            self.assertEqual(book.worksheets[0].cell(2,14).number_format,"[hh]:mm")
+            self.assertEqual(book["По дням"].cell(2,11).number_format,"[hh]:mm")
             self.assertEqual(book.worksheets[0].cell(2,9).value,10)
+            self.assertEqual(book.worksheets[0].cell(2,10).value,10)
             self.assertEqual(result["vehicles"][0]["inside_daily_norm_km"],50)
-            self.assertEqual(book.worksheets[0].cell(2,9).fill.fgColor.rgb,"00FDE2E2")
-            self.assertEqual(book.worksheets[0].cell(2,20).value,1)
-            self.assertEqual(book.worksheets[0].cell(2,20).fill.fgColor.rgb,"00FDE2E2")
+            self.assertEqual(book.worksheets[0].cell(2,10).fill.fgColor.rgb,"00FDE2E2")
+            self.assertEqual(book.worksheets[0].cell(2,21).value,1)
+            self.assertEqual(book.worksheets[0].cell(2,21).fill.fgColor.rgb,"00FDE2E2")
             self.assertIn("Средний пробег за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время движения внутри Аккую за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Среднее время офисных стоянок за плановый рабочий день",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Превышения скорости вне площадки",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
             self.assertIn("Фильтр по грейдам",[row[0].value for row in book["Методика"].iter_rows(min_row=2)])
+        finally:
+            book.close()
+
+    def test_grade_column_uses_latest_vehicle_grade_and_daily_roster_grade(self):
+        friday, saturday = date(2026, 11, 6), date(2026, 11, 7)
+        rows = [{
+            "report_day": day, "normalized_plate": "34TEST01", "plate": "34 TEST 01",
+            "company": "TSM", "user_name": user, "grade": grade,
+            "model": "FIAT EGEA", "directorate": "Механизация", "in_roster": True,
+            "inside_km": 40, "outside_km": 0, "cache_ready": True,
+        } for day, user, grade in (
+            (friday, "Первый пользователь", "7A"),
+            (saturday, "Второй пользователь", "8B"),
+        )]
+        report = aggregate_report(rows, {}, settings(date_from=friday, date_to=saturday))
+        self.assertEqual(report["vehicles"][0]["user"], "Второй пользователь")
+        self.assertEqual(report["vehicles"][0]["grade"], "8")
+        self.assertEqual([day["grade"] for day in report["daily"]], ["7", "8"])
+        book = load_workbook(io.BytesIO(workbook_from_report(report)))
+        try:
+            for title in ("Рейтинг ТС", "По дням"):
+                sheet = book[title]
+                self.assertEqual(sheet.cell(1, 5).value, "Пользователь")
+                self.assertEqual(sheet.cell(1, 6).value, "Грейд")
+                self.assertEqual(sheet.auto_filter.ref, sheet.dimensions)
+            self.assertEqual(book["Рейтинг ТС"].cell(2, 5).value, "Второй пользователь")
+            self.assertEqual(book["Рейтинг ТС"].cell(2, 6).value, "8")
+            self.assertEqual(book["По дням"].cell(2, 6).value, "7")
+            self.assertEqual(book["По дням"].cell(3, 6).value, "8")
         finally:
             book.close()
 
@@ -1005,11 +1036,11 @@ class RatingTest(unittest.TestCase):
                 book["Рейтинг ТС"], book["По дням"], book["Превышения скорости"]
             )
             for cell, expected in [
-                (rating.cell(2, 13), timedelta(hours=2, minutes=5)),
-                (rating.cell(2, 14), timedelta(hours=26, minutes=5)),
+                (rating.cell(2, 14), timedelta(hours=2, minutes=5)),
                 (rating.cell(2, 15), timedelta(hours=26, minutes=5)),
-                (daily.cell(2, 10), timedelta(hours=2, minutes=5)),
-                (daily.cell(2, 11), timedelta(hours=26, minutes=5)),
+                (rating.cell(2, 16), timedelta(hours=26, minutes=5)),
+                (daily.cell(2, 11), timedelta(hours=2, minutes=5)),
+                (daily.cell(2, 12), timedelta(hours=26, minutes=5)),
             ]:
                 self.assertEqual(cell.value, expected)
                 self.assertEqual(cell.number_format, "[hh]:mm")
@@ -1036,12 +1067,12 @@ class RatingTest(unittest.TestCase):
         report = aggregate_report(rows, {}, settings(date_from=day, date_to=day))
         book = load_workbook(io.BytesIO(workbook_from_report(report)))
         try:
-            for column in (13, 14, 15):
+            for column in (14, 15, 16):
                 cell = book["Рейтинг ТС"].cell(2, column)
                 self.assertIsNone(cell.value)
                 self.assertEqual(cell.number_format, "[hh]:mm")
             # The existing daily data contract uses zero for a missing GPS day.
-            for column in (10, 11):
+            for column in (11, 12):
                 cell = book["По дням"].cell(2, column)
                 self.assertEqual(cell.value, timedelta(0))
                 self.assertEqual(cell.number_format, "[hh]:mm")
@@ -1144,16 +1175,18 @@ class PortalRouteTest(unittest.TestCase):
     def test_all_table_columns_are_sortable_with_distinct_office_metrics(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
         for field in (
-            "plate", "directorate", "norm_days", "inside_km_per_day", "outside_km_per_day",
+            "plate", "directorate", "grade", "norm_days", "inside_km_per_day", "outside_km_per_day",
             "inside_share_percent", "moving_minutes_per_day", "office_parking_minutes",
             "office_parking_minutes_per_day", "lunch", "weekend_site_days", "unauthorized_km",
             "speed_events", "score",
         ):
             self.assertIn(f'data-sort="{field}"', html)
-        self.assertEqual(html.count('data-sort="'), 14)
+        self.assertEqual(html.count('data-sort="'), 15)
         self.assertIn("sortedVehicles(report.vehicles)", html)
         self.assertIn("th.setAttribute('aria-sort'", html)
-        self.assertIn('colspan="14"', html)
+        self.assertIn('colspan="15"', html)
+        self.assertIn("grade: {label:'Грейд',get:r=>r.grade||null}", html)
+        self.assertIn("esc(r.grade||'—')", html)
 
     def test_outside_speed_scope_is_explained_to_operators(self):
         html = (Path(__file__).parent / "web" / "efficiency_report.html").read_text(encoding="utf-8")
