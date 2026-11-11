@@ -21,10 +21,11 @@ from openpyxl.utils import get_column_letter
 import consolidated_cache as cache
 import consolidated_report as core
 from consolidated_export_layout import (
-    EXPORT_HEADERS,
     REPORT_SHEET,
     RosterExportDetails,
+    _apply_roster_layout,
     load_roster_export_details,
+    remove_forbidden_export_columns,
 )
 from excel_formatting import save_report_workbook
 from fuel_enriched_consolidated_report import FUEL_HEADER, FUEL_SOURCE
@@ -244,116 +245,10 @@ def write_cached_workbook_fast(
     }
 
 
-def _apply_roster_layout(
-    workbook,
-    roster_details: Mapping[tuple[date, str], RosterExportDetails],
-) -> dict[str, int]:
-    """Apply the established roster export contract to an already-open workbook."""
-    if REPORT_SHEET not in workbook.sheetnames:
-        raise RuntimeError(f"В книге отсутствует лист «{REPORT_SHEET}»")
-    sheet = workbook[REPORT_SHEET]
-    headers = {str(cell.value or "").strip(): cell.column for cell in sheet[1]}
-    day_column = headers.get("Дата")
-    plate_column = next(
-        (
-            headers[name]
-            for name in ("Госномер / Plaka", "Госномер", "Номерной знак")
-            if name in headers
-        ),
-        None,
-    )
-    source_driver_column = next(
-        (
-            headers[name]
-            for name in ("ПОЛЬЗОВАТЕЛЬ / KULLANICI", "Пользователь", "Водитель")
-            if name in headers
-        ),
-        None,
-    )
-    source_grade_column = next(
-        (
-            headers[name]
-            for name in ("Грейд / SCALA", "Грейд", "SCALA", "Grade")
-            if name in headers
-        ),
-        None,
-    )
-    if day_column is None or plate_column is None:
-        raise RuntimeError("В сводном отчёте не найдены столбцы даты или госномера")
-
-    original_last_column = sheet.max_column
-    header_template = sheet.cell(1, original_last_column)
-    export_columns: dict[str, int] = {}
-    next_column = original_last_column + 1
-    for header_name in EXPORT_HEADERS:
-        existing = headers.get(header_name)
-        column = existing or next_column
-        if existing is None:
-            next_column += 1
-        export_columns[header_name] = column
-        cell = sheet.cell(1, column, header_name)
-        _copy_header_style(header_template, cell)
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-
-    widths = {
-        "Имя водителя": 38,
-        "Грейд": 12,
-        "Дирекция": 52,
-        "Ответственный": 36,
-    }
-    enriched_rows = 0
-    for row_index in range(2, sheet.max_row + 1):
-        report_day = _as_day(sheet.cell(row_index, day_column).value)
-        normalized_plate = normalize_plate(sheet.cell(row_index, plate_column).value)
-        details = (
-            roster_details.get((report_day, normalized_plate))
-            if report_day is not None and normalized_plate
-            else None
-        )
-        fallback_driver = (
-            str(sheet.cell(row_index, source_driver_column).value or "")
-            if source_driver_column is not None
-            else ""
-        )
-        fallback_grade = (
-            str(sheet.cell(row_index, source_grade_column).value or "")
-            if source_grade_column is not None
-            else ""
-        )
-        values = {
-            "Имя водителя": details.driver_name
-            if details and details.driver_name
-            else fallback_driver,
-            "Грейд": details.grade if details and details.grade else fallback_grade,
-            "Дирекция": details.directorate if details else "",
-            "Ответственный": details.responsible if details else "",
-        }
-        if details is not None:
-            enriched_rows += 1
-        for header_name, value in values.items():
-            cell = sheet.cell(row_index, export_columns[header_name], value)
-            cell.alignment = Alignment(vertical="center", wrap_text=True)
-
-    for header_name, column in export_columns.items():
-        sheet.column_dimensions[get_column_letter(column)].width = widths[header_name]
-    sheet.auto_filter.ref = sheet.dimensions
-    sheet.sheet_view.showGridLines = False
-
-    for sheet_name in list(workbook.sheetnames):
-        if sheet_name != REPORT_SHEET:
-            del workbook[sheet_name]
-    workbook.active = 0
-    return {
-        "rows": max(0, sheet.max_row - 1),
-        "enriched_rows": enriched_rows,
-        "sheets": 1,
-        "columns": sheet.max_column,
-    }
-
-
 def _apply_mileage_review(
     workbook,
     candidates: Mapping[tuple[date, str], MileageReviewCandidate],
+    roster_details: Mapping[tuple[date, str], RosterExportDetails] | None = None,
 ) -> dict[str, int]:
     """Apply the established mileage-review sheet without reopening the file."""
     sheet = workbook[REPORT_SHEET]
@@ -419,6 +314,9 @@ def _apply_mileage_review(
             if driver_column is not None
             else ""
         )
+        details = roster_details.get(key) if roster_details is not None else None
+        if details and details.driver_name:
+            driver = details.driver_name
         row_details[key] = (display_plate, company, driver)
         cell = sheet.cell(row_index, review_column)
         if key in candidates:
@@ -534,7 +432,10 @@ def finalize_consolidated_output_fast(
     workbook = load_workbook(output_path)
     try:
         layout_stats = _apply_roster_layout(workbook, roster_details)
-        review_stats = _apply_mileage_review(workbook, candidates)
+        review_stats = _apply_mileage_review(workbook, candidates, roster_details)
+        # Review annotation intentionally adds its marker; hide it only at the
+        # final download/preview boundary, retaining the diagnostic sheet.
+        remove_forbidden_export_columns(workbook[REPORT_SHEET])
         save_report_workbook(workbook, output_path)
         columns, rows, total_rows = _preview_loaded(workbook)
     finally:
