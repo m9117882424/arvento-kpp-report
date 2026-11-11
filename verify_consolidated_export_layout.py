@@ -4,16 +4,18 @@
 from __future__ import annotations
 
 import tempfile
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.datetime import CALENDAR_MAC_1904
 
 from consolidated_export_layout import (
     EXPORT_HEADERS,
+    PLATE_DATE_HEADER,
     REPORT_SHEET,
     RosterExportDetails,
     finalize_consolidated_workbook,
@@ -123,16 +125,18 @@ def retained_snapshot(sheet):
         )
         for cell in sheet[1]
         if cell.value not in FORBIDDEN_HEADERS and cell.value not in EXPORT_HEADERS
+        and cell.value != PLATE_DATE_HEADER
     }
 
 
 def assert_export(sheet, original):
     headers = [cell.value for cell in sheet[1]]
+    assert headers[0] == PLATE_DATE_HEADER
     assert not set(FORBIDDEN_HEADERS).intersection(headers), headers
     assert tuple(headers[-4:]) == ("Марка", "Должность", "Дирекция", "Ответственный")
     assert tuple(headers[-4:]) == EXPORT_HEADERS
     assert retained_snapshot(sheet) == original
-    assert sheet.freeze_panes == "E2"
+    assert sheet.freeze_panes == "F2"
     assert len(sheet.sheet_view.selection) == 3
     assert sheet.row_dimensions[1].height == 48
     assert sheet.auto_filter.ref == sheet.dimensions
@@ -140,6 +144,10 @@ def assert_export(sheet, original):
     assert len(filters) == 1
     assert filters[0].colId == headers.index("Заправка, л")
     assert filters[0].filters.filter == ["12.3"]
+    assert [sheet.cell(row, 1).value for row in (2, 3, 4)] == [
+        "34ABC12346267", "34EMPTY146267", "34MISSING246267",
+    ]
+    assert sheet.cell(2, 1).number_format == "@"
     assert [sheet.cell(2, headers.index(name) + 1).value for name in EXPORT_HEADERS] == [
         MODEL, "Начальник участка / Şef", "Дирекция", "Ответственный",
     ]
@@ -184,10 +192,48 @@ def verify_roster_loader() -> None:
     ]
 
 
+def verify_plate_date_keys(temp_dir: Path) -> None:
+    for use_mac_epoch in (False, True):
+        output_path = temp_dir / f"keys_{use_mac_epoch}.xlsx"
+        workbook = Workbook()
+        if use_mac_epoch:
+            workbook.epoch = CALENDAR_MAC_1904
+        report = workbook.active
+        report.title = REPORT_SHEET
+        report.append(["Дата", "Госномер / Plaka"])
+        for day, plate in (
+            (date(2026, 11, 8), "46 AJP 556"),
+            (datetime(2026, 11, 9, 13, 15), "46ajp556"),
+            ("08.11.2026", "46AJP556"),
+            (44872 if use_mac_epoch else 46334, "46AJP556"),
+            (None, "46AJP556"),
+            (date(2026, 11, 8), None),
+        ):
+            report.append([day, plate])
+        workbook.save(output_path)
+        workbook.close()
+        for _ in range(2):
+            finalize_consolidated_workbook(output_path, {})
+            result = load_workbook(output_path, data_only=True)
+            try:
+                sheet = result[REPORT_SHEET]
+                expected = "46AJP55644872" if use_mac_epoch else "46AJP55646334"
+                next_day = "46AJP55644873" if use_mac_epoch else "46AJP55646335"
+                assert [sheet.cell(row, 1).value for row in range(2, 8)] == [
+                    expected, next_day, expected, expected, None, None,
+                ]
+                assert [cell.value for cell in sheet[1]].count(PLATE_DATE_HEADER) == 1
+                assert sheet.cell(1, 1).value == PLATE_DATE_HEADER
+                assert sheet.cell(2, 1).data_type == "s"
+            finally:
+                result.close()
+
+
 def main() -> int:
     verify_roster_loader()
     with tempfile.TemporaryDirectory(prefix="verify_consolidated_export_") as temp_name:
         temp_dir = Path(temp_name)
+        verify_plate_date_keys(temp_dir)
         verify_responsible_source(temp_dir)
         output_path = temp_dir / "report.xlsx"
         workbook = Workbook()
