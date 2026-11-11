@@ -22,6 +22,7 @@ import consolidated_cache as cache
 import consolidated_report as core
 from consolidated_export_layout import (
     REPORT_SHEET,
+    RosterExportDetails,
     _apply_roster_layout,
     load_roster_export_details,
     remove_forbidden_export_columns,
@@ -247,6 +248,7 @@ def write_cached_workbook_fast(
 def _apply_mileage_review(
     workbook,
     candidates: Mapping[tuple[date, str], MileageReviewCandidate],
+    roster_details: Mapping[tuple[date, str], RosterExportDetails] | None = None,
 ) -> dict[str, int]:
     """Apply the established mileage-review sheet without reopening the file."""
     sheet = workbook[REPORT_SHEET]
@@ -312,6 +314,9 @@ def _apply_mileage_review(
             if driver_column is not None
             else ""
         )
+        details = roster_details.get(key) if roster_details is not None else None
+        if details and details.driver_name:
+            driver = details.driver_name
         row_details[key] = (display_plate, company, driver)
         cell = sheet.cell(row_index, review_column)
         if key in candidates:
@@ -427,7 +432,7 @@ def finalize_consolidated_output_fast(
     workbook = load_workbook(output_path)
     try:
         layout_stats = _apply_roster_layout(workbook, roster_details)
-        review_stats = _apply_mileage_review(workbook, candidates)
+        review_stats = _apply_mileage_review(workbook, candidates, roster_details)
         # Review annotation intentionally adds its marker; hide it only at the
         # final download/preview boundary, retaining the diagnostic sheet.
         remove_forbidden_export_columns(workbook[REPORT_SHEET])

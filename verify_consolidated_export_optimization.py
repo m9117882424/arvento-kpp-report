@@ -76,6 +76,7 @@ def main() -> int:
         headers = [cell.value for cell in workbook[REPORT_SHEET][1]]
         assert headers[-1] == REVIEW_HEADER
         assert workbook[REPORT_SHEET].cell(2, len(headers)).value == REVIEW_VALUE
+        assert workbook[REVIEW_SHEET].cell(2, 4).value == "Пользователь из отчёта"
         workbook.close()
 
         # Exercise the actual final boundary, including a second run, both
@@ -120,6 +121,7 @@ def main() -> int:
                 assert review.max_row == len(candidates) + 1
                 assert review.freeze_panes == "A2"
                 if candidates:
+                    assert review.cell(2, 4).value == "Актуальный водитель"
                     assert review.cell(2, 5).value == 123.4
                     assert review.cell(2, 6).value == 100.0
                     assert review.cell(2, 9).value == REVIEW_VALUE
