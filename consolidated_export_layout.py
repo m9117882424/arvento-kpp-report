@@ -12,6 +12,7 @@ from __future__ import annotations
 from copy import copy
 from dataclasses import dataclass
 from datetime import date, datetime
+from math import isfinite
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -24,12 +25,14 @@ from openpyxl.utils import (
     get_column_letter,
     range_boundaries,
 )
+from openpyxl.utils.datetime import to_excel
 from excel_formatting import save_report_workbook
 
 from responsible_roster_fields import ensure_schema
 from roster_registry import normalize_plate
 
 REPORT_SHEET = "Сводный отчет"
+PLATE_DATE_HEADER = "Госномер + дата"
 EXPORT_HEADERS = (
     "Марка",
     "Должность",
@@ -216,6 +219,50 @@ def remove_forbidden_export_columns(sheet) -> None:
     sheet.auto_filter.ref = sheet.dimensions
 
 
+def _add_plate_date_column(workbook, sheet, day_column: int, plate_column: int) -> None:
+    """Prepend a text join key using the workbook's numeric Excel date."""
+    if sheet.cell(1, 1).value != PLATE_DATE_HEADER:
+        sheet.insert_cols(1)
+        day_column += 1
+        plate_column += 1
+
+        # openpyxl does not shift widths, filters or frozen panes on insertion.
+        dimensions = []
+        for key, original in sheet.column_dimensions.items():
+            dimension = copy(original)
+            dimension.min = (original.min or column_index_from_string(key)) + 1
+            dimension.max = (original.max or original.min or column_index_from_string(key)) + 1
+            dimension.index = get_column_letter(dimension.min)
+            dimensions.append(dimension)
+        sheet.column_dimensions.clear()
+        for dimension in dimensions:
+            sheet.column_dimensions[dimension.index] = dimension
+        if sheet.auto_filter.ref:
+            for column_filter in sheet.auto_filter.filterColumn:
+                column_filter.colId += 1
+        if sheet.freeze_panes:
+            row, column = coordinate_to_tuple(sheet.freeze_panes)
+            sheet.sheet_view.selection = sheet.sheet_view.selection[-1:]
+            sheet.freeze_panes = f"{get_column_letter(column + 1)}{row}"
+
+    header = sheet.cell(1, 1, PLATE_DATE_HEADER)
+    _copy_header_style(sheet.cell(1, day_column), header)
+    header.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    sheet.column_dimensions["A"].width = 26
+    for row_index in range(2, sheet.max_row + 1):
+        source_date = sheet.cell(row_index, day_column).value
+        day = _as_day(source_date)
+        serial = int(to_excel(day, workbook.epoch)) if day is not None else None
+        if serial is None and isinstance(source_date, (int, float)) and not isinstance(source_date, bool):
+            serial = int(source_date) if isfinite(source_date) else None
+        plate = normalize_plate(sheet.cell(row_index, plate_column).value)
+        cell = sheet.cell(row_index, 1)
+        cell._style = copy(sheet.cell(row_index, plate_column)._style)
+        cell.number_format = "@"
+        cell.value = f"{plate}{serial}" if plate and serial is not None else None
+    sheet.auto_filter.ref = sheet.dimensions
+
+
 def _apply_roster_layout(
     workbook,
     roster_details: Mapping[tuple[date, str], RosterExportDetails],
@@ -281,6 +328,7 @@ def _apply_roster_layout(
 
     for header_name, column in export_columns.items():
         sheet.column_dimensions[get_column_letter(column)].width = widths[header_name]
+    _add_plate_date_column(workbook, sheet, day_column, plate_column)
     sheet.auto_filter.ref = sheet.dimensions
     sheet.sheet_view.showGridLines = False
 
@@ -341,6 +389,7 @@ def finalize_consolidated_export(
 
 __all__ = [
     "EXPORT_HEADERS",
+    "PLATE_DATE_HEADER",
     "REPORT_SHEET",
     "RosterExportDetails",
     "finalize_consolidated_export",

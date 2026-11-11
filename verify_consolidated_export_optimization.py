@@ -11,7 +11,7 @@ from unittest.mock import patch
 from openpyxl import Workbook, load_workbook
 
 import consolidated_cache_portal as cache_portal
-from consolidated_export_layout import REPORT_SHEET
+from consolidated_export_layout import PLATE_DATE_HEADER, REPORT_SHEET
 from consolidated_export_optimization import (
     _add_cached_fuel_and_parameters,
     _apply_mileage_review,
@@ -95,6 +95,8 @@ def main() -> int:
             roster_loader.assert_called_once_with("offline", [REPORT_DAY])
             review_loader.assert_called_once_with("offline", REPORT_DAY, REPORT_DAY)
             columns, rows = stats["columns"], stats["rows"]
+            assert columns[0] == PLATE_DATE_HEADER
+            assert rows[0][0] == "34ABC12346267"
             assert not set(FORBIDDEN_HEADERS).intersection(columns), columns
             assert stats["total_rows"] == len(rows) == 3
             assert stats["layout"]["enriched_rows"] == 2
