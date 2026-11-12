@@ -15,6 +15,8 @@ from openpyxl.utils.datetime import CALENDAR_MAC_1904
 
 from consolidated_export_layout import (
     EXPORT_HEADERS,
+    GRADE_HEADER,
+    GRADE_HEADERS,
     PLATE_DATE_HEADER,
     REPORT_SHEET,
     RosterExportDetails,
@@ -52,7 +54,6 @@ def verify_responsible_source(temp_dir: Path) -> None:
 REPORT_DAY = date(2026, 9, 2)
 MODEL = "FORD TRANSIT 2.2 TDCi / 16+1"
 FORBIDDEN_HEADERS = (
-    "Грейд / SCALA", "Грейд", "SCALA", "Grade",
     "Нарушение геозоны / Sınır ihlali", "Нарушение геозоны",
     "Имя водителя", "Проверка пробега",
 )
@@ -125,6 +126,7 @@ def retained_snapshot(sheet):
         )
         for cell in sheet[1]
         if cell.value not in FORBIDDEN_HEADERS and cell.value not in EXPORT_HEADERS
+        and cell.value not in GRADE_HEADERS
         and cell.value != PLATE_DATE_HEADER
     }
 
@@ -132,18 +134,25 @@ def retained_snapshot(sheet):
 def assert_export(sheet, original):
     headers = [cell.value for cell in sheet[1]]
     assert headers[0] == PLATE_DATE_HEADER
+    assert headers.count(GRADE_HEADER) == 1
+    assert headers.index(GRADE_HEADER) == headers.index("ПОЛЬЗОВАТЕЛЬ / KULLANICI") + 1
+    assert not (set(GRADE_HEADERS) - {GRADE_HEADER}).intersection(headers)
     assert not set(FORBIDDEN_HEADERS).intersection(headers), headers
     assert tuple(headers[-4:]) == ("Марка", "Должность", "Дирекция", "Ответственный")
     assert tuple(headers[-4:]) == EXPORT_HEADERS
     assert retained_snapshot(sheet) == original
-    assert sheet.freeze_panes == "F2"
+    assert sheet.freeze_panes == "G2"
     assert len(sheet.sheet_view.selection) == 3
     assert sheet.row_dimensions[1].height == 48
     assert sheet.auto_filter.ref == sheet.dimensions
     filters = sheet.auto_filter.filterColumn
-    assert len(filters) == 1
-    assert filters[0].colId == headers.index("Заправка, л")
-    assert filters[0].filters.filter == ["12.3"]
+    assert len(filters) == 2
+    by_column = {item.colId: item.filters.filter for item in filters}
+    assert by_column[headers.index("Заправка, л")] == ["12.3"]
+    assert by_column[headers.index(GRADE_HEADER)] == ["7a"]
+    assert [sheet.cell(row, headers.index(GRADE_HEADER) + 1).value for row in (2, 3, 4)] == [
+        "9b", "7a", "7a",
+    ]
     assert [sheet.cell(row, 1).value for row in (2, 3, 4)] == [
         "34ABC12346267", "34EMPTY146267", "34MISSING246267",
     ]
@@ -229,11 +238,119 @@ def verify_plate_date_keys(temp_dir: Path) -> None:
                 result.close()
 
 
+def verify_grade_restored_without_source_column(temp_dir: Path) -> None:
+    output_path = temp_dir / "restore_grade.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = REPORT_SHEET
+    sheet.append([PLATE_DATE_HEADER, "Дата", "Госномер / Plaka", "Пользователь", "Пробег общий, км"])
+    sheet.append(["old key", REPORT_DAY, "34 ABC 123", "Пользователь 1", 123.4])
+    sheet.append(["old key", REPORT_DAY + timedelta(days=1), "34 ABC 123", "Пользователь 2", 50.0])
+    sheet.append(["old key", REPORT_DAY, "34 UNKNOWN 1", "Неизвестный", 0.0])
+    sheet.column_dimensions["E"].width = 25
+    sheet.freeze_panes = "E2"
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.auto_filter.add_filter_column(4, ["123.4"])
+    workbook.save(output_path)
+    workbook.close()
+    details = {
+        (REPORT_DAY, "34ABC123"): RosterExportDetails(grade="9b"),
+        (REPORT_DAY + timedelta(days=1), "34ABC123"): RosterExportDetails(grade="10a"),
+    }
+    for _ in range(2):
+        finalize_consolidated_workbook(output_path, details)
+        result = load_workbook(output_path)
+        try:
+            sheet = result[REPORT_SHEET]
+            headers = [cell.value for cell in sheet[1]]
+            assert headers[:6] == [PLATE_DATE_HEADER, "Дата", "Госномер / Plaka", "Пользователь", GRADE_HEADER, "Пробег общий, км"]
+            assert [sheet.cell(row, 5).value for row in (2, 3, 4)] == ["9b", "10a", None]
+            assert headers.count(GRADE_HEADER) == 1
+            assert sheet.column_dimensions["F"].width == 25
+            assert sheet.freeze_panes == "F2"
+            assert sheet.auto_filter.filterColumn[0].colId == 5
+            assert sheet.cell(2, 6).value == 123.4
+            assert sheet.cell(2, 1).value == "34ABC12346267"
+        finally:
+            result.close()
+
+
+def verify_moved_grade_metadata(temp_dir: Path) -> None:
+    output_path = temp_dir / "moved_grade.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = REPORT_SHEET
+    sheet.append([PLATE_DATE_HEADER, "Дата", "Госномер / Plaka", "Грейд / SCALA", "Пользователь", "Пробег общий, км"])
+    sheet.append(["old key", REPORT_DAY, "34 ABC 123", "7a", "Пользователь", 123.4])
+    sheet["D1"].fill = PatternFill("solid", fgColor="112233")
+    sheet["D2"].fill = PatternFill("solid", fgColor="FDE68A")
+    sheet["D2"].font = Font(italic=True)
+    sheet.column_dimensions["D"].width = 23
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.auto_filter.add_filter_column(3, ["7a"])
+    sheet.freeze_panes = "F2"
+    workbook.save(output_path)
+    workbook.close()
+    for _ in range(2):
+        finalize_consolidated_workbook(output_path, {})
+        result = load_workbook(output_path)
+        try:
+            sheet = result[REPORT_SHEET]
+            assert sheet["D1"].value == "Пользователь"
+            assert sheet["E1"].value == GRADE_HEADER
+            assert sheet["E2"].value == "7a"
+            assert sheet["E1"].fill.fgColor.rgb == "00112233"
+            assert sheet["E2"].fill.fgColor.rgb == "00FDE68A"
+            assert sheet["E2"].font.italic
+            assert sheet.column_dimensions["E"].width == 23
+            assert sheet.auto_filter.filterColumn[0].colId == 4
+            assert sheet.auto_filter.filterColumn[0].filters.filter == ["7a"]
+            assert sheet.freeze_panes == "F2"
+            assert sheet["F2"].value == 123.4
+        finally:
+            result.close()
+
+
+def verify_grouped_grade_dimensions(temp_dir: Path) -> None:
+    for grade_first in (False, True):
+        output_path = temp_dir / f"grouped_grade_{grade_first}.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = REPORT_SHEET
+        sheet.append(["Дата", "Госномер / Plaka", "Грейд" if grade_first else "Пользователь",
+                      "Пользователь" if grade_first else "Грейд", "Пробег общий, км", "Заправка, л"])
+        sheet.append([REPORT_DAY, "34 ABC 123", "7a" if grade_first else "Пользователь",
+                      "Пользователь" if grade_first else "7a", 123.4, 5.0])
+        start = "C" if grade_first else "D"
+        sheet.column_dimensions.group(start, "F", hidden=True)
+        sheet.column_dimensions[start].width = 23
+        workbook.save(output_path)
+        workbook.close()
+        for _ in range(2):
+            finalize_consolidated_workbook(output_path, {})
+            result = load_workbook(output_path)
+            try:
+                sheet = result[REPORT_SHEET]
+                headers = [cell.value for cell in sheet[1]]
+                for name in (GRADE_HEADER, "Пробег общий, км", "Заправка, л"):
+                    column = headers.index(name) + 1
+                    dimensions = [dimension for dimension in sheet.column_dimensions.values()
+                                  if dimension.min <= column <= dimension.max]
+                    assert dimensions, (name, sheet.column_dimensions)
+                    assert all(dimension.hidden and dimension.outlineLevel == 1 and dimension.width == 23
+                               for dimension in dimensions), (name, dimensions)
+            finally:
+                result.close()
+
+
 def main() -> int:
     verify_roster_loader()
     with tempfile.TemporaryDirectory(prefix="verify_consolidated_export_") as temp_name:
         temp_dir = Path(temp_name)
         verify_plate_date_keys(temp_dir)
+        verify_grade_restored_without_source_column(temp_dir)
+        verify_moved_grade_metadata(temp_dir)
+        verify_grouped_grade_dimensions(temp_dir)
         verify_responsible_source(temp_dir)
         output_path = temp_dir / "report.xlsx"
         workbook = Workbook()

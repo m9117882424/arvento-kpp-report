@@ -33,6 +33,8 @@ from roster_registry import normalize_plate
 
 REPORT_SHEET = "Сводный отчет"
 PLATE_DATE_HEADER = "Госномер + дата"
+GRADE_HEADER = "Грейд"
+GRADE_HEADERS = ("Грейд / SCALA", GRADE_HEADER, "SCALA", "Grade")
 EXPORT_HEADERS = (
     "Марка",
     "Должность",
@@ -40,7 +42,6 @@ EXPORT_HEADERS = (
     "Ответственный",
 )
 REMOVED_EXPORT_HEADERS = frozenset({
-    "Грейд / SCALA", "Грейд", "SCALA", "Grade",
     "Нарушение геозоны / Sınır ihlali", "Нарушение геозоны",
     "Имя водителя", "Проверка пробега",
 })
@@ -174,6 +175,11 @@ def remove_forbidden_export_columns(sheet) -> None:
         cell.column for cell in sheet[1]
         if str(cell.value or "").strip().casefold() in forbidden
     ]
+    _remove_export_columns(sheet, removed)
+
+
+def _remove_export_columns(sheet, removed: Sequence[int]) -> None:
+    """Remove selected columns together with their worksheet metadata."""
     if not removed:
         return
 
@@ -219,31 +225,98 @@ def remove_forbidden_export_columns(sheet) -> None:
     sheet.auto_filter.ref = sheet.dimensions
 
 
+def _insert_export_column(sheet, index: int) -> None:
+    """Insert a column while keeping widths, filters and frozen columns aligned."""
+    dimensions = []
+    for key, original in sheet.column_dimensions.items():
+        dimension = copy(original)
+        start = original.min or column_index_from_string(key)
+        end = original.max or start
+        dimension.min = start + (start >= index)
+        dimension.max = end + (end >= index)
+        dimension.index = get_column_letter(dimension.min)
+        dimensions.append(dimension)
+    if sheet.auto_filter.ref:
+        first, _, _, _ = range_boundaries(sheet.auto_filter.ref)
+        for column_filter in sheet.auto_filter.filterColumn:
+            if first + column_filter.colId >= index:
+                column_filter.colId += 1
+    if sheet.freeze_panes:
+        row, column = coordinate_to_tuple(sheet.freeze_panes)
+        if column >= index:
+            sheet.sheet_view.selection = sheet.sheet_view.selection[-1:]
+            sheet.freeze_panes = f"{get_column_letter(column + 1)}{row}"
+    sheet.insert_cols(index)
+    sheet.column_dimensions.clear()
+    for dimension in dimensions:
+        sheet.column_dimensions[dimension.index] = dimension
+    sheet.auto_filter.ref = sheet.dimensions
+
+
+def _ensure_grade_column(sheet) -> None:
+    """Keep one dated grade immediately after the user, including legacy exports."""
+    aliases = {name.casefold() for name in GRADE_HEADERS}
+    grade_columns = [cell.column for cell in sheet[1]
+                     if str(cell.value or "").strip().casefold() in aliases]
+    user_column = next((cell.column for cell in sheet[1]
+                        if str(cell.value or "").strip() in
+                        ("ПОЛЬЗОВАТЕЛЬ / KULLANICI", "Пользователь", "Водитель")), None)
+    target = user_column + 1 if user_column is not None else (
+        grade_columns[0] if grade_columns else sheet.max_column + 1
+    )
+    ordered = ([target] if target in grade_columns else []) + [
+        column for column in grade_columns if column != target
+    ]
+    source = ordered[0] if ordered else user_column or 1
+    header_style = copy(sheet.cell(1, source)._style)
+    data_styles = [copy(sheet.cell(row, source)._style) for row in range(2, sheet.max_row + 1)]
+    source_dimension = sheet.column_dimensions.get(get_column_letter(source)) if ordered else None
+    if source_dimension is None and ordered:
+        source_dimension = next((dimension for key, dimension in sheet.column_dimensions.items()
+                                 if (dimension.min or column_index_from_string(key)) <= source <=
+                                 (dimension.max or dimension.min or column_index_from_string(key))), None)
+    grade_dimension = copy(source_dimension) if source_dimension is not None else None
+    grade_filter = None
+    if ordered and sheet.auto_filter.ref:
+        first, _, _, _ = range_boundaries(sheet.auto_filter.ref)
+        grade_filter = next((copy(item) for item in sheet.auto_filter.filterColumn
+                             if first + item.colId == source), None)
+    fallback = [next((str(sheet.cell(row, column).value) for column in ordered
+                      if sheet.cell(row, column).value not in (None, "")), "")
+                for row in range(2, sheet.max_row + 1)]
+    relocated = target not in grade_columns
+    if relocated:
+        _insert_export_column(sheet, target)
+        grade_columns = [column + (column >= target) for column in grade_columns]
+    removed = [column for column in grade_columns if column != target]
+    _remove_export_columns(sheet, removed)
+    target -= sum(column < target for column in removed)
+    sheet.cell(1, target, GRADE_HEADER)
+    sheet.cell(1, target)._style = header_style
+    if relocated and grade_dimension is not None:
+        grade_dimension.index = get_column_letter(target)
+        grade_dimension.min = grade_dimension.max = target
+        sheet.column_dimensions[grade_dimension.index] = grade_dimension
+    elif not ordered:
+        sheet.column_dimensions[get_column_letter(target)].width = 12
+    if grade_filter is not None:
+        first, _, _, _ = range_boundaries(sheet.auto_filter.ref)
+        grade_filter.colId = target - first
+        if not any(item.colId == grade_filter.colId for item in sheet.auto_filter.filterColumn):
+            sheet.auto_filter.filterColumn.append(grade_filter)
+    for row, (value, style) in enumerate(zip(fallback, data_styles), 2):
+        cell = sheet.cell(row, target)
+        cell._style = style
+        cell.value = value
+        cell.number_format = "@"
+
+
 def _add_plate_date_column(workbook, sheet, day_column: int, plate_column: int) -> None:
     """Prepend a text join key using the workbook's numeric Excel date."""
     if sheet.cell(1, 1).value != PLATE_DATE_HEADER:
-        sheet.insert_cols(1)
+        _insert_export_column(sheet, 1)
         day_column += 1
         plate_column += 1
-
-        # openpyxl does not shift widths, filters or frozen panes on insertion.
-        dimensions = []
-        for key, original in sheet.column_dimensions.items():
-            dimension = copy(original)
-            dimension.min = (original.min or column_index_from_string(key)) + 1
-            dimension.max = (original.max or original.min or column_index_from_string(key)) + 1
-            dimension.index = get_column_letter(dimension.min)
-            dimensions.append(dimension)
-        sheet.column_dimensions.clear()
-        for dimension in dimensions:
-            sheet.column_dimensions[dimension.index] = dimension
-        if sheet.auto_filter.ref:
-            for column_filter in sheet.auto_filter.filterColumn:
-                column_filter.colId += 1
-        if sheet.freeze_panes:
-            row, column = coordinate_to_tuple(sheet.freeze_panes)
-            sheet.sheet_view.selection = sheet.sheet_view.selection[-1:]
-            sheet.freeze_panes = f"{get_column_letter(column + 1)}{row}"
 
     header = sheet.cell(1, 1, PLATE_DATE_HEADER)
     _copy_header_style(sheet.cell(1, day_column), header)
@@ -272,8 +345,10 @@ def _apply_roster_layout(
         raise RuntimeError(f"В книге отсутствует лист «{REPORT_SHEET}»")
     sheet = workbook[REPORT_SHEET]
     remove_forbidden_export_columns(sheet)
+    _ensure_grade_column(sheet)
     headers = {str(cell.value or "").strip(): cell.column for cell in sheet[1]}
     day_column = headers.get("Дата")
+    grade_column = headers[GRADE_HEADER]
     plate_column = next(
         (
             headers[name]
@@ -322,6 +397,8 @@ def _apply_roster_layout(
         }
         if details is not None:
             enriched_rows += 1
+            if details.grade:
+                sheet.cell(row_index, grade_column).value = details.grade
         for header_name, value in values.items():
             cell = sheet.cell(row_index, export_columns[header_name], value)
             cell.alignment = Alignment(vertical="center", wrap_text=True)
@@ -389,6 +466,7 @@ def finalize_consolidated_export(
 
 __all__ = [
     "EXPORT_HEADERS",
+    "GRADE_HEADER",
     "PLATE_DATE_HEADER",
     "REPORT_SHEET",
     "RosterExportDetails",
