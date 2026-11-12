@@ -271,6 +271,10 @@ def _ensure_grade_column(sheet) -> None:
     header_style = copy(sheet.cell(1, source)._style)
     data_styles = [copy(sheet.cell(row, source)._style) for row in range(2, sheet.max_row + 1)]
     source_dimension = sheet.column_dimensions.get(get_column_letter(source)) if ordered else None
+    if source_dimension is None and ordered:
+        source_dimension = next((dimension for key, dimension in sheet.column_dimensions.items()
+                                 if (dimension.min or column_index_from_string(key)) <= source <=
+                                 (dimension.max or dimension.min or column_index_from_string(key))), None)
     grade_dimension = copy(source_dimension) if source_dimension is not None else None
     grade_filter = None
     if ordered and sheet.auto_filter.ref:
@@ -280,7 +284,8 @@ def _ensure_grade_column(sheet) -> None:
     fallback = [next((str(sheet.cell(row, column).value) for column in ordered
                       if sheet.cell(row, column).value not in (None, "")), "")
                 for row in range(2, sheet.max_row + 1)]
-    if target not in grade_columns:
+    relocated = target not in grade_columns
+    if relocated:
         _insert_export_column(sheet, target)
         grade_columns = [column + (column >= target) for column in grade_columns]
     removed = [column for column in grade_columns if column != target]
@@ -288,7 +293,7 @@ def _ensure_grade_column(sheet) -> None:
     target -= sum(column < target for column in removed)
     sheet.cell(1, target, GRADE_HEADER)
     sheet.cell(1, target)._style = header_style
-    if grade_dimension is not None:
+    if relocated and grade_dimension is not None:
         grade_dimension.index = get_column_letter(target)
         grade_dimension.min = grade_dimension.max = target
         sheet.column_dimensions[grade_dimension.index] = grade_dimension

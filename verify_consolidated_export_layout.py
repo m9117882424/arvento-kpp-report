@@ -311,6 +311,38 @@ def verify_moved_grade_metadata(temp_dir: Path) -> None:
             result.close()
 
 
+def verify_grouped_grade_dimensions(temp_dir: Path) -> None:
+    for grade_first in (False, True):
+        output_path = temp_dir / f"grouped_grade_{grade_first}.xlsx"
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = REPORT_SHEET
+        sheet.append(["Дата", "Госномер / Plaka", "Грейд" if grade_first else "Пользователь",
+                      "Пользователь" if grade_first else "Грейд", "Пробег общий, км", "Заправка, л"])
+        sheet.append([REPORT_DAY, "34 ABC 123", "7a" if grade_first else "Пользователь",
+                      "Пользователь" if grade_first else "7a", 123.4, 5.0])
+        start = "C" if grade_first else "D"
+        sheet.column_dimensions.group(start, "F", hidden=True)
+        sheet.column_dimensions[start].width = 23
+        workbook.save(output_path)
+        workbook.close()
+        for _ in range(2):
+            finalize_consolidated_workbook(output_path, {})
+            result = load_workbook(output_path)
+            try:
+                sheet = result[REPORT_SHEET]
+                headers = [cell.value for cell in sheet[1]]
+                for name in (GRADE_HEADER, "Пробег общий, км", "Заправка, л"):
+                    column = headers.index(name) + 1
+                    dimensions = [dimension for dimension in sheet.column_dimensions.values()
+                                  if dimension.min <= column <= dimension.max]
+                    assert dimensions, (name, sheet.column_dimensions)
+                    assert all(dimension.hidden and dimension.outlineLevel == 1 and dimension.width == 23
+                               for dimension in dimensions), (name, dimensions)
+            finally:
+                result.close()
+
+
 def main() -> int:
     verify_roster_loader()
     with tempfile.TemporaryDirectory(prefix="verify_consolidated_export_") as temp_name:
@@ -318,6 +350,7 @@ def main() -> int:
         verify_plate_date_keys(temp_dir)
         verify_grade_restored_without_source_column(temp_dir)
         verify_moved_grade_metadata(temp_dir)
+        verify_grouped_grade_dimensions(temp_dir)
         verify_responsible_source(temp_dir)
         output_path = temp_dir / "report.xlsx"
         workbook = Workbook()
