@@ -267,22 +267,41 @@ def _ensure_grade_column(sheet) -> None:
     ordered = ([target] if target in grade_columns else []) + [
         column for column in grade_columns if column != target
     ]
+    source = ordered[0] if ordered else user_column or 1
+    header_style = copy(sheet.cell(1, source)._style)
+    data_styles = [copy(sheet.cell(row, source)._style) for row in range(2, sheet.max_row + 1)]
+    source_dimension = sheet.column_dimensions.get(get_column_letter(source)) if ordered else None
+    grade_dimension = copy(source_dimension) if source_dimension is not None else None
+    grade_filter = None
+    if ordered and sheet.auto_filter.ref:
+        first, _, _, _ = range_boundaries(sheet.auto_filter.ref)
+        grade_filter = next((copy(item) for item in sheet.auto_filter.filterColumn
+                             if first + item.colId == source), None)
     fallback = [next((str(sheet.cell(row, column).value) for column in ordered
                       if sheet.cell(row, column).value not in (None, "")), "")
                 for row in range(2, sheet.max_row + 1)]
     if target not in grade_columns:
         _insert_export_column(sheet, target)
         grade_columns = [column + (column >= target) for column in grade_columns]
-        _copy_header_style(sheet.cell(1, user_column or 1), sheet.cell(1, target))
-        for row in range(2, sheet.max_row + 1):
-            sheet.cell(row, target)._style = copy(sheet.cell(row, user_column or 1)._style)
     removed = [column for column in grade_columns if column != target]
     _remove_export_columns(sheet, removed)
     target -= sum(column < target for column in removed)
     sheet.cell(1, target, GRADE_HEADER)
-    sheet.column_dimensions[get_column_letter(target)].width = 12
-    for row, value in enumerate(fallback, 2):
+    sheet.cell(1, target)._style = header_style
+    if grade_dimension is not None:
+        grade_dimension.index = get_column_letter(target)
+        grade_dimension.min = grade_dimension.max = target
+        sheet.column_dimensions[grade_dimension.index] = grade_dimension
+    elif not ordered:
+        sheet.column_dimensions[get_column_letter(target)].width = 12
+    if grade_filter is not None:
+        first, _, _, _ = range_boundaries(sheet.auto_filter.ref)
+        grade_filter.colId = target - first
+        if not any(item.colId == grade_filter.colId for item in sheet.auto_filter.filterColumn):
+            sheet.auto_filter.filterColumn.append(grade_filter)
+    for row, (value, style) in enumerate(zip(fallback, data_styles), 2):
         cell = sheet.cell(row, target)
+        cell._style = style
         cell.value = value
         cell.number_format = "@"
 

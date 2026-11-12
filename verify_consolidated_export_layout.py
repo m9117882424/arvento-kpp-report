@@ -275,12 +275,49 @@ def verify_grade_restored_without_source_column(temp_dir: Path) -> None:
             result.close()
 
 
+def verify_moved_grade_metadata(temp_dir: Path) -> None:
+    output_path = temp_dir / "moved_grade.xlsx"
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = REPORT_SHEET
+    sheet.append([PLATE_DATE_HEADER, "Дата", "Госномер / Plaka", "Грейд / SCALA", "Пользователь", "Пробег общий, км"])
+    sheet.append(["old key", REPORT_DAY, "34 ABC 123", "7a", "Пользователь", 123.4])
+    sheet["D1"].fill = PatternFill("solid", fgColor="112233")
+    sheet["D2"].fill = PatternFill("solid", fgColor="FDE68A")
+    sheet["D2"].font = Font(italic=True)
+    sheet.column_dimensions["D"].width = 23
+    sheet.auto_filter.ref = sheet.dimensions
+    sheet.auto_filter.add_filter_column(3, ["7a"])
+    sheet.freeze_panes = "F2"
+    workbook.save(output_path)
+    workbook.close()
+    for _ in range(2):
+        finalize_consolidated_workbook(output_path, {})
+        result = load_workbook(output_path)
+        try:
+            sheet = result[REPORT_SHEET]
+            assert sheet["D1"].value == "Пользователь"
+            assert sheet["E1"].value == GRADE_HEADER
+            assert sheet["E2"].value == "7a"
+            assert sheet["E1"].fill.fgColor.rgb == "00112233"
+            assert sheet["E2"].fill.fgColor.rgb == "00FDE68A"
+            assert sheet["E2"].font.italic
+            assert sheet.column_dimensions["E"].width == 23
+            assert sheet.auto_filter.filterColumn[0].colId == 4
+            assert sheet.auto_filter.filterColumn[0].filters.filter == ["7a"]
+            assert sheet.freeze_panes == "F2"
+            assert sheet["F2"].value == 123.4
+        finally:
+            result.close()
+
+
 def main() -> int:
     verify_roster_loader()
     with tempfile.TemporaryDirectory(prefix="verify_consolidated_export_") as temp_name:
         temp_dir = Path(temp_name)
         verify_plate_date_keys(temp_dir)
         verify_grade_restored_without_source_column(temp_dir)
+        verify_moved_grade_metadata(temp_dir)
         verify_responsible_source(temp_dir)
         output_path = temp_dir / "report.xlsx"
         workbook = Workbook()
