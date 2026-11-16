@@ -40,6 +40,7 @@ RUNTIME_CHECKS = (
     "verify_cache_freshness.py",
     "verify_cache_workbook.py",
     "verify_database_migrations.py",
+    "verify_database_status.py",
     "verify_download_delivery.py",
     "verify_operational_geofences.py",
     "verify_report_contracts.py",
