@@ -4,22 +4,24 @@
 
 The original endpoint calculated ``max(event_time)`` over the full partitioned
 ``gps_points`` table. On a multi-gigabyte production database that scanned all
-partitions and blocked the single Uvicorn worker. This patch reads the latest
-vehicle timestamp from the small ``vehicles`` table and scans only today's GPS
-partition for the current-day point count.
+partitions. Read the small vehicle summary first, then bind explicit day bounds
+for the GPS count so PostgreSQL can prune every other daily partition.
 """
 from __future__ import annotations
 
-from datetime import tzinfo
+import logging
+from datetime import datetime, timedelta, tzinfo
 from typing import Any, Callable
 
 import psycopg
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.routing import APIRoute
 
 
 DATABASE_STATUS_PATH = "/api/database-status"
 DATABASE_STATUS_STATEMENT_TIMEOUT_MS = 10_000
+LOGGER = logging.getLogger(__name__)
+DATABASE_STATUS_ERROR = "Проверка состояния временно недоступна. Повторная попытка через минуту."
 
 
 def database_status_payload(
@@ -38,13 +40,6 @@ def database_status_payload(
             (SELECT max(v.last_seen_at) FROM vehicles v) AS latest_event_time,
             now() AS database_time,
             (
-                SELECT count(*)
-                FROM gps_points g
-                CROSS JOIN bounds
-                WHERE g.event_time >= bounds.day_start
-                  AND g.event_time < bounds.day_end
-            ) AS today_points,
-            (
                 SELECT count(DISTINCT v.normalized_plate)
                 FROM vehicles v
                 CROSS JOIN bounds
@@ -58,9 +53,17 @@ def database_status_payload(
         connect_timeout=5,
         options=f"-c statement_timeout={DATABASE_STATUS_STATEMENT_TIMEOUT_MS}",
     ) as connection:
-        latest, database_time, today_points, today_vehicles = connection.execute(
+        latest, database_time, today_vehicles = connection.execute(
             query
         ).fetchone()
+        day = database_time.astimezone(timezone_value).date()
+        day_start = datetime.combine(day, datetime.min.time(), timezone_value)
+        day_end = datetime.combine(day + timedelta(days=1), datetime.min.time(), timezone_value)
+        today_points = connection.execute(
+            "SELECT count(*) FROM gps_points "
+            "WHERE event_time >= %s AND event_time < %s",
+            (day_start, day_end),
+        ).fetchone()[0]
 
     if latest is None:
         return {
@@ -126,7 +129,15 @@ def apply_database_status_patch(
     app.router.routes[:] = retained_routes
 
     def database_status() -> dict[str, Any]:
-        return database_status_payload(db_url(), timezone_value)
+        try:
+            return database_status_payload(db_url(), timezone_value)
+        except psycopg.Error as exc:
+            LOGGER.warning("Database status query failed: %s", type(exc).__name__)
+            raise HTTPException(
+                status_code=503,
+                detail=DATABASE_STATUS_ERROR,
+                headers={"Retry-After": "60"},
+            ) from exc
 
     app.add_api_route(
         DATABASE_STATUS_PATH,

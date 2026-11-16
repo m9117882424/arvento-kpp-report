@@ -52,5 +52,8 @@ jobs:
           docker compose -f docker-compose.server.yml config --quiet
 
       - name: Build verified server image
+        # The server image intentionally has no Node.js runtime.
+        # Check browser behavior on the runner before building Python services.
         run: |
+          node verify_database_status_ui.cjs
           docker build --pull -f Dockerfile.server -t arvento-report:ci .
